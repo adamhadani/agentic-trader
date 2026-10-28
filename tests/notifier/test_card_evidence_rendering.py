@@ -47,16 +47,16 @@ def test_both_cards_say_setup_not_trade_signal(eval_res):
 
 def test_the_block_sits_between_the_target_and_the_thesis_in_both_renderers(eval_res):
     card = format_alert_card(eval_res, "TREND_PULLBACK", card_evidence=EVIDENCE)
-    assert card.index("<b>Target (2.0:1):</b>") < card.index("Measured record") < card.index("Implied EV")
+    assert card.index("<b>Target (2.0:1):</b>") < card.index("Expected excess") < card.index("replay 2021")
     assert card.index("Not validated alpha") < card.index("Risk &amp; Portfolio Context") < card.index("Thesis")
     term = format_terminal_card(eval_res, "TREND_PULLBACK", card_evidence=EVIDENCE)
-    assert term.index("• Target:") < term.index("• Measured record (") < term.index("Not validated alpha")
+    assert term.index("• Target:") < term.index("• Expected excess (") < term.index("Not validated alpha")
     assert term.index("Not validated alpha") < term.index("Risk & Portfolio Context") < term.index("Thesis")
 
 
 def test_a_card_without_evidence_renders_no_block(eval_res):
     card = format_alert_card(eval_res, "TREND_PULLBACK")
-    assert "Measured record" not in card and "Not validated alpha" not in card
+    assert "Expected excess" not in card and "Not validated alpha" not in card
     assert "(+8.00 pts | +$200.00)\n\n🛡️" in card  # the old layout, byte for byte around the gap
 
 
@@ -98,13 +98,13 @@ async def _dispatch(temp_db, eval_res, notification_extra):
 async def test_a_queued_card_without_evidence_delivers_unchanged(temp_db, eval_res):
     item, text = await _dispatch(temp_db, eval_res, {})
     assert item.status == WorkStatus.DELIVERED
-    assert "📋 <b>SETUP:" in text and "Measured record" not in text
+    assert "📋 <b>SETUP:" in text and "Expected excess" not in text
 
 
 async def test_a_card_with_evidence_delivers_its_block(temp_db, eval_res):
     item, text = await _dispatch(temp_db, eval_res, {"card_evidence": EVIDENCE})
     assert item.status == WorkStatus.DELIVERED
-    assert "• <b>Implied EV at 2.0:1:</b> -0.25R" in text
+    assert "• <b>Expected excess</b> (TREND_PULLBACK 4h, LONG): -0.06R ± 0.10 vs beta-matched SPY after cost" in text
 
 
 async def test_malformed_evidence_delivers_as_no_statistics(temp_db, eval_res):

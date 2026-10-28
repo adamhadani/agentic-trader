@@ -221,6 +221,9 @@ class CardStatsSnapshot(BaseModel, frozen=True, allow_inf_nan=False):
 
     @property
     def snapshot_key(self) -> str:
+        """The journal key this snapshot was written under: the v1 key when it carries no unit."""
+        if self.unit is None:
+            return f"card_stats/{self.window_end.isoformat()}"
         return card_stats_key(self.window_end)
 
     def stats(self, strategy: str, timeframe: str, direction: str) -> CardKeyStats | None:

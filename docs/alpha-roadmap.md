@@ -34,7 +34,10 @@ competing orderings in this file with one queue:
   are sent the cards that are measured. Status: built on `feature/phase0-fail-safes` (static
   tier-1 calendar, `UNKNOWN` regime, journal-only swing scans, broad-index exclusion, complete scan
   journal); merge and deploy are recorded in the review README. The PEAD probe renewal (D1) is done.
-- **Phase 1.** Honest measurement, and a paper book that actually fills.
+- **Phase 1.** Honest measurement, and a paper book that actually fills. Item 1.2 (card statistics v2:
+  the `net_excess_r_v1` unit, time-matured cohorts, a frozen replay prior shrunk toward the live record,
+  `card_policy` on the posterior in `preview` at 0.0 since 2026-10-28) is done; see
+  [card evidence](card-evidence.md) and the [prior](card-stats-prior-2026-10-28.md).
 - **Phase 2.** New evidence on session-correct bars against a beta-matched yardstick.
 - **Phase 3.** Architecture and longer-horizon work.
 

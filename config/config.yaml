@@ -495,10 +495,10 @@ scan:
 # Honest cards (docs/card-evidence.md): measured-evidence send policy, statistics worker, card validity.
 # Quote "off": YAML reads a bare off as false (the loader maps false back to "off").
 card_policy:
-  mode: "off"             # off -> preview -> enforce, an operator decision after reading the evidence
-  min_measured_ev: null   # R after cost; required for preview and enforce
+  mode: "preview"         # off -> preview -> enforce; preview since 2026-10-28, enforce is an operator decision
+  min_measured_ev: 0.0    # posterior expected excess R, net_excess_r_v1; required for preview and enforce
   min_mature_cards: 20
-  stats_window_days: 90
+  stats_window_days: 180
   stats_time_et: "08:30"
   stats_poll_seconds: 300
   stats_max_age_seconds: 345600

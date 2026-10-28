@@ -24,22 +24,34 @@ from agentic_trader.research.setups.net_excess import (
 def key_stats(
     strategy: str = "TREND_PULLBACK", direction: str = "LONG", timeframe: str = "4h", **overrides: Any
 ) -> dict[str, Any]:
-    """One snapshot key row: 30 mature, 20% target / 70% stop / 10% timeout, mean -0.35R, timeouts +0.5R."""
+    """One snapshot key row: 23 mature since 2026-09-24, 43% target / 52% stop / 4% timeout, live -0.12R.
+
+    The replay prior is -0.05R over 7,049 setups and the posterior -0.06R +- 0.10 (net_excess_r_v1).
+    """
     row = {
         "strategy": strategy,
         "timeframe": timeframe,
         "direction": direction,
-        "n_mature": 30,
+        "n_mature": 23,
         "n_immature": 4,
         "n_fetch_failed": 0,
-        "target_rate": 0.2,
-        "stop_rate": 0.7,
-        "timeout_rate": 0.1,
+        "target_rate": 0.43,
+        "stop_rate": 0.52,
+        "timeout_rate": 0.04,
         "mean_r_cost": -0.35,
         "mean_timeout_r": 0.5,
         "median_holding_sessions": 3.0,
-        "first_decided_at": "2026-07-15T14:35:00+00:00",
+        "first_decided_at": "2026-09-24T14:35:00+00:00",
         "last_decided_at": "2026-10-07T18:35:00+00:00",
+        "live_mean": -0.12,
+        "live_se": 0.2,
+        "posterior_mean": -0.06,
+        "posterior_se": 0.10,
+        "prior_mean": -0.05,
+        "prior_se": 0.26,
+        "prior_weight": 40.0,
+        "prior_n_rows": 7049,
+        "prior_source": "replay",
     }
     return {**row, **overrides}
 
@@ -62,6 +74,11 @@ def make_snapshot(
             "events_considered": 40,
             "rows_labelled": 120,
             "keys": keys if keys is not None else [key_stats()],
+            "unit": NET_EXCESS_UNIT,
+            "prior_sha256": "6" * 64,
+            "prior_window_start": "2021-06-01",
+            "prior_window_end": "2026-01-29",
+            "prior_feed": "sip",
         }
     )
 

@@ -80,6 +80,7 @@ async def test_the_journal_carries_every_ranked_native_candidate_with_no_card_ev
             "n_mature": None,
             "would_withhold": None,
             "n_fetch_failed": None,
+            "unit": None,
         }
     assert p["funnel"]["raw_setups"] == p["funnel"]["admitted"] == 5
     assert (summary["approved"], summary["sent"], summary["runners_up"]) == (5, 0, [])

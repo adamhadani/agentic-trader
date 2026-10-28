@@ -15,15 +15,23 @@ Top-level `card_policy:` (`CardPolicyConfig`; unknown keys fail the load):
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `mode` | `"off"` | `off`: the policy is not evaluated (the evidence block is still rendered); `preview`: evaluate and journal `would_withhold`, still send; `enforce`: withhold |
-| `min_measured_ev` | `null` | Threshold on the measured mean R after cost; required when `mode` is not `off` |
-| `min_mature_cards` | `20` | Mature labels a `(strategy, direction)` needs before the policy may withhold; also the card's "insufficient evidence" floor |
-| `stats_window_days` | `90` | Labeller window, in New York calendar days |
+| `min_measured_ev` | `null` | Threshold on the posterior expected excess R in `net_excess_r_v1`; required when `mode` is not `off` (the key keeps its name) |
+| `min_mature_cards` | `20` | Mature labels a `(strategy, timeframe, direction)` needs before the policy may withhold; also the card's "insufficient evidence" floor |
+| `stats_window_days` | `90` (shipped `180`) | Labeller window, in New York calendar days |
 | `stats_time_et` | `"08:30"` | Daily due time of the statistics worker (HH:MM New York) |
 | `stats_poll_seconds` | `300` | Worker poll interval |
 | `stats_max_age_seconds` | `345600` | Evidence older than this is `stale` on cards and in `card_stats` readiness (four days covers weekends and holidays) |
 | `validity` | `"session_close"` | Card validity; see [Card validity](#card-validity) |
+| `prior_path` | `config/research/card-stats-prior-v1.json` | The frozen replay prior ([provenance](card-stats-prior-2026-10-28.md)); a relative path resolves from the workspace root |
+| `prior_sha256` | `null` | SHA-256 of the prior file; the worker refuses a missing or mismatched digest |
 
 Validation requires `stats_max_age_seconds` to exceed `stats_poll_seconds`.
+
+The code default is `off`. `config/config.yaml` ships `mode: "preview"`, `min_measured_ev: 0.0`,
+`stats_window_days: 180`, the prior path and its pinned digest since 2026-10-28. Under `preview` cards are
+still sent and `would_withhold` is journaled. `enforce` stays the operator's switch: no validator refuses
+it, but a policy that is read every day should wait for an always-valid confidence sequence over the
+posterior (spec section 5), because daily peeking at a fixed threshold inflates false withholds.
 
 Quote `"off"` in YAML. YAML 1.1 reads a bare `off` as `false`; the loader maps `false` back to `"off"`
 and rejects `on`/`true`.
@@ -106,36 +114,56 @@ scan windows and running scans.
 ## Evidence block
 
 `TradingCopilot.run_scan` reads the newest `card_stats` snapshot in this scope once per scan
-(`CardStatsRepository.latest`) and looks up each native candidate's `(strategy, direction)`
+(`CardStatsRepository.latest`) and looks up each native candidate's `(strategy, timeframe, direction)`
 (`lookup`). The result, `CardEvidence`, is stored in the signal's `decision_provenance["card_evidence"]`
-and in its outbox notification (with the key's `n_fetch_failed`, 0 without a row, and its
-`first_decided_at`), so the Telegram card, the terminal card, the dry-run print and a
-re-priced replacement render the same facts from one helper (`format_evidence_lines`). PEAD drift
-cards keep their own block and carry none. The block sits inside the card, right after the target
-line:
+and in its outbox notification (with the key's `n_fetch_failed` and `n_unresolved`, 0 without a row, its
+`first_decided_at`, the posterior and the prior), so the Telegram card, the terminal card, the dry-run print
+and a re-priced replacement render the same facts from one helper (`format_evidence_lines`). PEAD drift
+cards keep their own block and carry none. The block sits inside the card, right after the target line.
 
-| Status | When | Line |
+The unit is `net_excess_r_v1`: the journaled bracket's R, less the round-trip per-name cost
+(`2·c/1e4·fill/risk_unit`, `c` at least 5 bp per side and growing with the name's volatility and the
+order's share of its dollar volume), less beta times the matched SPY return (a past-only 120-session
+beta), clipped to ±10R. The live record is the mean of that unit over matured, de-duplicated
+suggestion-scan candidates; it is shrunk toward the frozen replay prior of its
+`(strategy, timeframe, direction)` (`posterior = (n·x̄ + k·prior) / (n + k)`, `k = sd² / (tau² +
+se_session²)`), so with no mature live rows the card states the prior alone, and a key the replay never
+covered gets a skeptical prior at zero.
+
+`lookup` returns `unavailable` for a snapshot whose `unit` is not `net_excess_r_v1`: a v1 snapshot read on
+deploy day renders "no statistics in this scope" and never withholds (`CardStatsSnapshot.snapshot_key` names
+a snapshot without a unit by the v1 key `card_stats/{date}`).
+
+| Status | When | Lines |
 | --- | --- | --- |
-| `measured` | snapshot fresh, at least `min_mature_cards` mature labels with rates and a finite mean R | `• Measured record (STRATEGY, DIRECTION): N mature candidates since FIRST_DECIDED: T% target / S% stop / O% timeout, mean ±X.XXR after cost`, then `• Implied EV at R.R:1: ±Y.YYR` |
-| `insufficient` | fewer mature labels, or no row for the key (the `("*", "*")` aggregate is never a fallback) | `• Measured record: insufficient evidence (N/MIN mature candidates)` |
+| `measured` | snapshot fresh, at least `min_mature_cards` mature labels, rates and a finite posterior | `• Expected excess (STRATEGY TIMEFRAME, DIRECTION): ±P.PPR ± S.SS vs beta-matched SPY after cost`, then `  replay 2021–26: ±X.XXR over N setups · live: ±Y.YYR over N mature since FIRST_DECIDED (T% target / S% stop / O% timeout)` |
+| `insufficient` | fewer mature labels (the prior and posterior are still shown), or no row for the key (the `("*", "*", "*")` aggregate is never a fallback) | the same two lines with `live: N/MIN mature, not yet decisive`; with no row, `• Measured record: insufficient evidence (0/MIN mature candidates)` |
 | `stale` | snapshot older than `stats_max_age_seconds` | `• Measured record: statistics stale (last computed DATE)` |
-| `unavailable` | no snapshot in this scope (every dry scan), a failed read, an unreadable payload (including a non-finite number), or a key at or over the floor without rates or a finite mean R | `• Measured record: no statistics in this scope` |
+| `unavailable` | no snapshot in this scope (every dry scan), a failed read, an unreadable payload (including a non-finite number), a snapshot not in the v2 unit, or a key at or over the floor without rates or a finite posterior | `• Measured record: no statistics in this scope` |
+
+A skeptical prior reads `no replay prior (shrunk toward 0)` in place of the replay part. When the key has
+fetch failures or unresolved candidates the second line ends ` · K unreadable (never withheld)`.
+
+Example, measured:
+
+    • Expected excess (TREND_PULLBACK 4h, LONG): -0.06R ± 0.10 vs beta-matched SPY after cost
+      replay 2021–26: -0.05R over 7,049 setups · live: -0.12R over 23 mature since 2026-09-24 (43% target / 52% stop / 4% timeout)
 
 `FIRST_DECIDED` is the New York date of the key's first journaled decision (`first_decided_at`), or
 `window_start` when the key has none: the count is of mature labelled candidates, sent or not, not of
 cards. A stored payload is rendered by the same rule: `insufficient` only below the floor, and a
-`measured` payload without rates or a mean renders the `unavailable` line.
+`measured` payload without a posterior or live mean renders the `unavailable` line. A queued notification
+whose `card_evidence` predates the unit parses with `unit` null and renders the `unavailable` line.
 
-The last line is always, in italics: "Not validated alpha. Record measured on journaled candidates'
-deterministic brackets at the next hourly open (FEED, C bp/side)." The parenthesis is omitted when no
-snapshot exists.
+The last line is always, in italics: "Not validated alpha. Replay prior (SIP 2021–26) and live record
+(FEED) on journaled candidates' deterministic brackets; mature = 21+ sessions old; per-name cost ≥ 5
+bp/side." Evidence without a prior window (no snapshot) carries a shorter caveat. The old "Implied EV at
+R:R" line is gone: it mixed gross target and stop R with after-cost timeout R, and was computed from
+censored rates.
 
-`mean` is the directly measured quantity: the mean cost-adjusted R of the key's mature labels at the
-journaled bracket. The implied EV is `target_rate·rr − stop_rate + timeout_rate·mean_timeout_r` at the
-card's own ratio `rr` (no timeouts' R counts as 0); it is labelled implied because the card's ratio can
-differ from the journaled bracket. It mixes gross R for target and stop hits (`+rr` and `−1`, before
-cost) with the timeouts' after-cost mean R, so it is not an after-cost figure and is not comparable to
-`mean`.
+Two properties of the snapshot the card reads: `events_considered` counts only suggestion-scan universe
+events (not every journaled scan), and a journaled event whose `decided_at` does not parse is skipped,
+not counted and not labelled.
 
 The card title reads `📋 SETUP:` (it read `🚨 TRADE SIGNAL:`). `Macro Check` states the deterministic
 lockout gate: a candidate that reached the LLM already passed it, so the evaluator sets
@@ -148,17 +176,21 @@ block; a malformed one renders the `unavailable` line and still delivers.
 `decide(policy, evidence)` (`agentic_trader/execution/card_policy.py`) is pure:
 
     would_withhold = mode != "off" and evidence.status == "measured"
-                     and n_mature >= min_mature_cards and n_fetch_failed == 0
-                     and mean_r_cost < min_measured_ev
+                     and n_mature >= min_mature_cards
+                     and n_fetch_failed == 0 and n_unresolved == 0
+                     and posterior_mean < min_measured_ev
     withhold       = would_withhold and mode == "enforce"
+
+`posterior_mean` is the expected excess R in `net_excess_r_v1`; `CardPolicyDecision.measured_ev` and the
+journal key `measured_ev` carry it (the field names are unchanged).
 
 It runs in `run_scan`'s send loop for native candidates only, after the card-budget refusals and before
 the LLM. A withheld candidate gets the fixed outcome `card_policy_withheld`
 (`RankedOutcome.CARD_POLICY_WITHHELD`), spends no scan, session or LLM budget, becomes a runner-up with
-reason `card policy: measured EV -0.39R over 30 < +0.00R` (three decimals when two would print the EV
+reason `card policy: expected excess -0.06R over 23 < +0.00R` (three decimals when two would print the value
 and the threshold as equal, such as `-0.004R … < +0.000R`), and the next rank is considered, like an
-LLM veto. Insufficient, stale, unavailable or partial (`n_fetch_failed > 0`) evidence never withholds:
-the policy is a switch on complete measured evidence, not a fail-closed rule. Every scan applies it
+LLM veto. Insufficient, stale, unavailable or partial (`n_fetch_failed > 0` or `n_unresolved > 0`) evidence never
+withholds: the policy is a switch on complete measured evidence, not a fail-closed rule. Every scan applies it
 (suggestion, `/scan`, Re-evaluate); the daemon's swing and intraday jobs are journal-only
 (`ScanBudget.JOURNAL_ONLY`) and read neither the snapshot nor the policy. Every full-universe scan
 (suggestion, swing including its run at daemon start, unrestricted `/scan`) is journaled and labelled
@@ -180,9 +212,10 @@ has every field null. Whether such a card is sent belongs to its versioned polic
 Evidence recorded:
 
 - `scan_candidates_ranked` gains top-level `card_policy: {mode, min_measured_ev, min_mature_cards,
-  snapshot_key}` and, per candidate, `card_policy: {measured_ev, n_mature, would_withhold,
-  n_fetch_failed}` (`measured_ev`/`n_mature` null unless the evidence is measured; `would_withhold` null
-  while the mode is `off`; `n_fetch_failed` is the key's count, 0 without a row; every field null for a
+  snapshot_key, unit}` and, per candidate, `card_policy: {measured_ev, n_mature, would_withhold,
+  n_fetch_failed, unit}` (`unit` is `net_excess_r_v1`, and marks new blocks apart from old ones, which have
+  none; `measured_ev`, the posterior, and `n_mature` are null unless the evidence is measured;
+  `would_withhold` null while the mode is `off`; `n_fetch_failed` is the key's count, 0 without a row; every field, `unit` included, null for a
   policy-locked candidate). `would_withhold` is the policy's verdict on every other native candidate,
   whether or not it reached the send step.
 - A sent card's `decision_provenance` carries the same `card_policy` block and its `card_evidence`.
@@ -197,6 +230,14 @@ Evidence recorded:
 
 Operate it in order: `off` until a snapshot exists; `preview` with a threshold, reading `would_withhold`
 for several sessions; then `enforce`. Each change is a config edit and the controlled restart.
+
+What `preview` at 0.0 will show. The replay prior for TREND_PULLBACK 4h LONG is near -0.05R, so once a
+key's live floor (`min_mature_cards`) is met the posterior sits just below zero unless the live record is
+positive enough to lift it, and most native cards will journal `would_withhold: true`. Under `preview`
+every card is still sent. That journaled contrast tests whether the replay prior describes live, gated
+cards; it is not a verdict on the strategies. `enforce` is a later operator decision, and with a prior this
+close to the threshold it would withhold most native cards: read the preview first. Do not enforce on a
+daily-peeking basis without the always-valid confidence sequence (spec section 5).
 
 ## Broad-index exclusion
 

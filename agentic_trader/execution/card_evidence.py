@@ -18,6 +18,7 @@ from sqlalchemy import select
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.setups.card_stats import CARD_STATS_STREAM, CardStatsSnapshot, card_stats_key
+from agentic_trader.research.setups.net_excess import NET_EXCESS_UNIT
 from agentic_trader.storage.models import DomainEventRecord
 
 
@@ -37,27 +38,43 @@ __all__ = [
 ]
 
 EvidenceStatus = Literal["measured", "insufficient", "stale", "unavailable"]
-CAVEAT = "Not validated alpha. Record measured on journaled candidates' deterministic brackets at the next hourly open"
+CAVEAT = (
+    "Not validated alpha. Expected excess is measured on journaled candidates' deterministic brackets; "
+    "mature = 21+ sessions old; per-name cost >= 5 bp/side."
+)
 
 
 class CardEvidence(BaseModel, frozen=True):
     """What one card displays; stored in provenance and in its notification as ``card_evidence``.
 
-    ``n_fetch_failed`` is the key's count of candidates whose bars could not be read (0 without a
-    row): a partial key is shown as measured but never withheld (``card_policy.decide``).
+    ``posterior_mean`` is the expected excess R in ``net_excess_r_v1`` (a frozen replay prior shrunk
+    toward the live record). A key with any ``n_fetch_failed`` or ``n_unresolved`` candidate is partial:
+    shown as measured but never withheld (``card_policy.decide``). ``unit`` is None for evidence that
+    predates the unit (a stored v1 notification), which renders as no statistics.
     """
 
     status: EvidenceStatus
     strategy: str
     direction: str
+    timeframe: str | None = None
+    unit: str | None = None
     n_mature: int | None = None
     min_mature: int = Field(default=0, ge=0)
     n_fetch_failed: int = Field(default=0, ge=0)
+    n_unresolved: int = Field(default=0, ge=0)
     target_rate: float | None = None
     stop_rate: float | None = None
     timeout_rate: float | None = None
     mean_r_cost: float | None = None
     mean_timeout_r: float | None = None
+    live_mean: float | None = None
+    posterior_mean: float | None = None
+    posterior_se: float | None = None
+    prior_mean: float | None = None
+    prior_n_rows: int = 0
+    prior_source: str | None = None
+    prior_window_start: date | None = None
+    prior_window_end: date | None = None
     window_start: date | None = None
     window_end: date | None = None
     feed: str | None = None
@@ -65,12 +82,6 @@ class CardEvidence(BaseModel, frozen=True):
     snapshot_key: str | None = None
     computed_at: AwareDatetime | None = None
     first_decided_at: AwareDatetime | None = None
-
-    def implied_ev(self, rr: float) -> float | None:
-        """``target_rate·rr − stop_rate + timeout_rate·mean_timeout_r`` (no timeouts' R counts as 0); None unless measured."""
-        if self.status != "measured" or self.target_rate is None or self.stop_rate is None or self.timeout_rate is None:
-            return None
-        return self.target_rate * rr - self.stop_rate + self.timeout_rate * (self.mean_timeout_r or 0.0)
 
 
 def lookup(
@@ -85,16 +96,20 @@ def lookup(
 ) -> CardEvidence:
     """The evidence a card for ``(strategy, timeframe, direction)`` displays, from the latest snapshot in this scope.
 
-    ``stale`` past ``max_age``; ``insufficient`` below ``min_mature`` (or no row: the aggregate is
-    never a fallback); ``unavailable`` without a snapshot or, over the floor, without rates and a
-    finite mean R; otherwise ``measured``. ``n_fetch_failed`` and ``first_decided_at`` come from the
-    key's row whenever it exists.
+    ``unavailable`` without a snapshot or for one not in ``net_excess_r_v1`` (a v1 snapshot read on
+    deploy day); ``stale`` past ``max_age``; ``insufficient`` below ``min_mature`` (or no row: the
+    aggregate is never a fallback), still carrying the row's prior and posterior; ``unavailable``
+    over the floor without rates or a finite posterior; otherwise ``measured``.
     """
-    if snapshot is None:
-        return CardEvidence(status="unavailable", strategy=strategy, direction=direction, min_mature=min_mature)
+    if snapshot is None or snapshot.unit != NET_EXCESS_UNIT:
+        return CardEvidence(
+            status="unavailable", strategy=strategy, direction=direction, timeframe=timeframe, min_mature=min_mature
+        )
     provenance: dict[str, Any] = {
         "strategy": strategy,
         "direction": direction,
+        "timeframe": timeframe,
+        "unit": snapshot.unit,
         "min_mature": min_mature,
         "window_start": snapshot.window_start,
         "window_end": snapshot.window_end,
@@ -102,18 +117,29 @@ def lookup(
         "cost_bps_per_side": snapshot.cost_bps_per_side,
         "snapshot_key": snapshot.snapshot_key,
         "computed_at": snapshot.computed_at,
+        "prior_window_start": snapshot.prior_window_start,
+        "prior_window_end": snapshot.prior_window_end,
     }
     stats = snapshot.stats(strategy, timeframe, direction)
     if stats is not None:
-        provenance["n_fetch_failed"] = stats.n_fetch_failed
-        provenance["first_decided_at"] = stats.first_decided_at
+        provenance |= {
+            "n_fetch_failed": stats.n_fetch_failed,
+            "n_unresolved": stats.n_unresolved,
+            "first_decided_at": stats.first_decided_at,
+            "live_mean": stats.live_mean,
+            "posterior_mean": stats.posterior_mean,
+            "posterior_se": stats.posterior_se,
+            "prior_mean": stats.prior_mean,
+            "prior_n_rows": stats.prior_n_rows,
+            "prior_source": stats.prior_source,
+        }
     if now - snapshot.computed_at > max_age:
         return CardEvidence(status="stale", **provenance)
     n_mature = stats.n_mature if stats is not None else 0
     if stats is None or n_mature < min_mature:
         return CardEvidence(status="insufficient", n_mature=n_mature, **provenance)
-    if None in (stats.mean_r_cost, stats.target_rate, stats.stop_rate, stats.timeout_rate):
-        # Over the floor but nothing measurable (no finite mean R): never "insufficient".
+    if None in (stats.posterior_mean, stats.target_rate, stats.stop_rate, stats.timeout_rate):
+        # Over the floor but nothing measurable (no finite posterior): never "insufficient".
         return CardEvidence(status="unavailable", n_mature=n_mature, **provenance)
     return CardEvidence(
         status="measured",
@@ -155,7 +181,22 @@ def _since(evidence: CardEvidence) -> date | None:
     return evidence.window_start
 
 
-def format_evidence_lines(evidence: CardEvidence, rr: float, *, html: bool) -> list[str]:
+def _years(start: date, end: date) -> str:
+    return f"{start.year}\u2013{end.year % 100:02d}"
+
+
+def _caveat(evidence: CardEvidence) -> str:
+    """The italic caveat: names the replay prior and the live feed when the evidence carries them."""
+    if evidence.unit is None or evidence.prior_window_start is None or evidence.prior_window_end is None:
+        return CAVEAT
+    years = _years(evidence.prior_window_start, evidence.prior_window_end)
+    return (
+        f"Not validated alpha. Replay prior (SIP {years}) and live record ({evidence.feed}) on journaled "
+        "candidates' deterministic brackets; mature = 21+ sessions old; per-name cost \u2265 5 bp/side."
+    )
+
+
+def format_evidence_lines(evidence: CardEvidence, *, html: bool) -> list[str]:
     """The card's evidence block, one line per item; the Telegram (``html``) and terminal cards share it."""
 
     def bold(text: str) -> str:
@@ -164,37 +205,49 @@ def format_evidence_lines(evidence: CardEvidence, rr: float, *, html: bool) -> l
     def text(value: object) -> str:
         return escape(str(value), quote=False) if html else str(value)
 
-    ev = evidence.implied_ev(rr)
-    if evidence.status == "measured" and ev is not None and evidence.mean_r_cost is not None:
-        lines = [
-            (
-                f"• {bold('Measured record')} ({text(evidence.strategy)}, {text(evidence.direction)}): "
-                f"{evidence.n_mature} mature candidates since {_since(evidence)}: {_pct(evidence.target_rate)} target / "
-                f"{_pct(evidence.stop_rate)} stop / {_pct(evidence.timeout_rate)} timeout, "
-                f"mean {evidence.mean_r_cost:+.2f}R after cost"
-            ),
-            f"• {bold(f'Implied EV at {rr:.1f}:1:')} {ev:+.2f}R",
-        ]
-    elif evidence.status in ("measured", "insufficient") and (evidence.n_mature or 0) < evidence.min_mature:
-        # Only a sample below the floor is "insufficient"; one over it without rates or a mean
-        # (a stored payload) has nothing measurable to show and falls through to "no statistics".
-        lines = [
-            (
-                f"• {bold('Measured record:')} insufficient evidence "
-                f"({evidence.n_mature or 0}/{evidence.min_mature} mature candidates)"
+    n_mature = evidence.n_mature or 0
+    headline = None
+    if evidence.unit is not None and evidence.posterior_mean is not None and evidence.posterior_se is not None:
+        headline = (
+            f"\u2022 {bold('Expected excess')} ({text(evidence.strategy)} {text(evidence.timeframe)}, "
+            f"{text(evidence.direction)}): {evidence.posterior_mean:+.2f}R \u00b1 {evidence.posterior_se:.2f} "
+            "vs beta-matched SPY after cost"
+        )
+    if evidence.unit is not None and headline is not None and evidence.status in ("measured", "insufficient"):
+        if evidence.prior_source == "skeptical" or evidence.prior_mean is None:
+            prior_part = "no replay prior (shrunk toward 0)"
+        elif evidence.prior_window_start is not None and evidence.prior_window_end is not None:
+            prior_part = (
+                f"replay {_years(evidence.prior_window_start, evidence.prior_window_end)}: "
+                f"{evidence.prior_mean:+.2f}R over {evidence.prior_n_rows:,} setups"
             )
+        else:
+            prior_part = f"replay: {evidence.prior_mean:+.2f}R over {evidence.prior_n_rows:,} setups"
+        live_part = None
+        if evidence.status == "measured" and evidence.live_mean is not None and n_mature >= evidence.min_mature:
+            live_part = (
+                f"live: {evidence.live_mean:+.2f}R over {n_mature} mature since {_since(evidence)} "
+                f"({_pct(evidence.target_rate)} target / {_pct(evidence.stop_rate)} stop / "
+                f"{_pct(evidence.timeout_rate)} timeout)"
+            )
+        elif n_mature < evidence.min_mature:
+            live_part = f"live: {n_mature}/{evidence.min_mature} mature, not yet decisive"
+        if live_part is not None:
+            unreadable = evidence.n_fetch_failed + evidence.n_unresolved
+            tail = f" \u00b7 {unreadable} unreadable (never withheld)" if unreadable > 0 else ""
+            lines = [headline, f"  {prior_part} \u00b7 {live_part}{tail}"]
+        else:
+            lines = [f"\u2022 {bold('Measured record:')} no statistics in this scope"]
+    elif evidence.status == "insufficient" and n_mature < evidence.min_mature:
+        lines = [
+            f"\u2022 {bold('Measured record:')} insufficient evidence ({n_mature}/{evidence.min_mature} mature candidates)"
         ]
     elif evidence.status == "stale":
         computed = evidence.computed_at.astimezone(ET_TZ).date().isoformat() if evidence.computed_at else "unknown"
-        lines = [f"• {bold('Measured record:')} statistics stale (last computed {computed})"]
+        lines = [f"\u2022 {bold('Measured record:')} statistics stale (last computed {computed})"]
     else:
-        lines = [f"• {bold('Measured record:')} no statistics in this scope"]
-    source = (
-        f" ({evidence.feed}, {evidence.cost_bps_per_side:g} bp/side)."
-        if evidence.feed is not None and evidence.cost_bps_per_side is not None
-        else "."
-    )
-    caveat = CAVEAT + source
+        lines = [f"\u2022 {bold('Measured record:')} no statistics in this scope"]
+    caveat = _caveat(evidence)
     lines.append(f"<i>{escape(caveat, quote=False)}</i>" if html else caveat)
     return lines
 

@@ -160,7 +160,7 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    Every LLM-evaluated card records `llm_verdict` (applied for native cards, commentary for
    catalog probes) and `cards outcomes` decomposes selection, LLM gate, market exposure (a beta-one SPY
    control beside a past-only 120-session beta-matched one and an own-asset buy-and-hold control, with
-   excess by asset class; [card evidence](docs/card-evidence.md)), fill slippage, news, the journaled regime with the derived SPY tape, and setup recurrence
+   excess by asset class and the per-row `net_excess_r_v1` unit, `mean_net_excess_r` and `n_net_excess`; [card evidence](docs/card-evidence.md)), fill slippage, news, the journaled regime with the derived SPY tape, and setup recurrence
    (`regime_context`, `recurrence`; [card evidence](docs/card-evidence.md#regime-and-recurrence-context));
    these are descriptive, never gates. Every journaled universe scan carries a top-level `regime` block
    (`regime_journal_block`), except a lockout-gated one (`regime: null`: it stops before the regime read),
@@ -169,10 +169,12 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    replayed history; a pass only makes a construction rule eligible); v1 ran 2026-10-14 and did not fire (`no_change`: repeats −0.067R vs firsts on 2021–2026, [result](docs/setup-recurrence-2026-10-14.md)).
    `alpha bracket-counterfactual` is the predeclared, research-only exit-policy test (five bracket arms paired by setup on replayed history, rules B1–B5, one-shot confirmation read declared in `confirmation.json` before the read; a pass only makes a card-construction PR eligible), and `cards outcomes` reports the same arms descriptively under `counterfactual`, never as a gate. v1 ran 2026-10-18 and did not fire (`no_change`: no arm beats the live 2R bracket net of SPY; the live ratchet arm is worse by 0.013R; every arm trails a beta-one SPY control by 0.10–0.15R; the 2026-10-23 erratum, against a past-only 120-session beta-matched control, gives −0.04 to −0.06R in 2021–2026 and 0.00 to −0.01R in 2017–2021 on the current universe (ex BIL/SHY), −0.05 to −0.07R and −0.01 to −0.02R on near-equity-only rows, and no positive arm, [result](docs/bracket-counterfactual-2026-10-18.md)); the bracket is closed as an explanation and the next alpha work is on the entry side.
    The one gate derived from measured outcomes is `card_policy` ([card evidence](docs/card-evidence.md)):
-   operator-configured, default `off`, `preview` before `enforce`, withholding native cards only on
-   complete measured evidence above a sample floor (`card_policy_withheld`; partial, stale or missing
-   evidence never withholds; alpha, probe and catalog cards are exempt), and never touching risk,
-   admission or the broker.
+   operator-configured, code default `off` (config ships `preview` at 0.0 since 2026-10-28), `preview` before
+   `enforce`, withholding native cards only on complete, time-matured evidence above a sample floor, judged on
+   the posterior expected excess over a beta-matched SPY after per-name cost (`net_excess_r_v1`, a frozen
+   replay prior shrunk toward the live record; [card evidence](docs/card-evidence.md)) (`card_policy_withheld`;
+   partial, stale or missing evidence never withholds; alpha, probe and catalog cards are exempt), and never
+   touching risk, admission or the broker.
 9. **Language:** `/macro` owns combined volatility/macro context; no `/regime` alias.
    Render configured policy and real feed dates. GEX is a research estimate with
    quality notes, never fabricated spot data or measured dealer inventory.
