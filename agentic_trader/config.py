@@ -288,6 +288,17 @@ class CardPolicyConfig(BaseModel):
     stats_poll_seconds: int = Field(default=300, ge=10, le=3600)
     stats_max_age_seconds: int = Field(default=345600, gt=0)
     validity: CardValidity = "session_close"
+    # The frozen replay prior (docs/card-stats-prior-2026-10-28.md): an immutable file pinned by SHA-256.
+    prior_path: Path = Field(default=Path("config/research/card-stats-prior-v1.json"), validate_default=True)
+    prior_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("prior_path", mode="after")
+    @classmethod
+    def _resolve_prior_path(cls, value: Path) -> Path:
+        """A relative path must mean the same file for the daemon, an operator CLI invocation and a test alike."""
+        if value.is_absolute():
+            return value
+        return (WORKSPACE_ROOT / value).resolve()
 
     @field_validator("mode", mode="before")
     @classmethod

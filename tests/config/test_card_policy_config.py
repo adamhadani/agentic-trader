@@ -109,4 +109,4 @@ def test_a_bare_or_missing_block_loads_the_defaults(tmp_path, body):
 
 def test_the_shipped_config_keeps_the_policy_off():
     shipped = yaml.safe_load((REPO / "config" / "config.yaml").read_text())["card_policy"]
-    assert CardPolicyConfig(**shipped) == CardPolicyConfig()
+    assert CardPolicyConfig(**shipped) == CardPolicyConfig(prior_sha256=shipped["prior_sha256"])
