@@ -1,4 +1,5 @@
-"""Every parsed LLM answer is recorded as ``llm_verdict``; only a native card applies it."""
+"""Every LLM-evaluated card records ``llm_verdict`` -- an approval, a veto or an error -- and only a
+native card applies it."""
 
 import json
 from types import SimpleNamespace
@@ -6,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agentic_trader.agent.prompts import gate_prompt_sha256
 from agentic_trader.execution.durable import RankedOutcome
 from tests.agent.test_evaluator import evaluator_factory  # noqa: F401  (fixture)
 from tests.agent.test_evaluator_catalog import LLM_VETO, drift_candidate
@@ -45,6 +47,10 @@ async def test_native_veto_is_applied_and_recorded(evaluator_factory, monkeypatc
         "stop_loss": result.stop_loss,
         "take_profit": result.take_profit,
         "applied": True,
+        "model": None,  # the mock response carries no ``model``
+        "prompt_sha256": gate_prompt_sha256(evaluator.config),
+        "error": None,
+        "malformed": False,
     }
 
 
@@ -79,7 +85,7 @@ async def test_catalog_verdict_is_recorded_but_not_applied(evaluator_factory, mo
     )
 
 
-@pytest.mark.parametrize("approved", ["false", "no", 1, None, "True", True])
+@pytest.mark.parametrize("approved", ["false", "no", 1, None, "True", "true", True])
 async def test_commentary_verdict_keeps_the_explicit_true_rule(evaluator_factory, monkeypatch, approved):  # noqa: F811
     evaluator = evaluator_factory()
     evaluator.config.openai_api_key = "isolated-test-placeholder"
@@ -87,10 +93,13 @@ async def test_commentary_verdict_keeps_the_explicit_true_rule(evaluator_factory
 
     result = await evaluator.evaluate_candidate(drift_candidate(), use_llm=True)
 
-    assert result.llm_verdict["approved"] is (approved is True or approved == "True")
+    # Only the JSON boolean true approves; a string "True" is a malformed veto, recorded as commentary.
+    assert result.approved is True
+    assert result.llm_verdict["approved"] is (approved is True)
+    assert result.llm_verdict["malformed"] is (approved is not True and approved is not False)
 
 
-async def test_no_verdict_when_the_llm_did_not_decide(evaluator_factory, monkeypatch):  # noqa: F811
+async def test_no_verdict_without_the_llm_and_an_error_verdict_when_it_fails(evaluator_factory, monkeypatch):  # noqa: F811
     evaluator = evaluator_factory()
     evaluator.config.openai_api_key = "isolated-test-placeholder"
 
@@ -99,8 +108,11 @@ async def test_no_verdict_when_the_llm_did_not_decide(evaluator_factory, monkeyp
 
     failing = AsyncMock(side_effect=RuntimeError("provider down"))
     monkeypatch.setattr("agentic_trader.agent.evaluator.litellm.acompletion", failing)
-    fallback = await evaluator.evaluate_candidate(native_candidate(), use_llm=True)
-    assert fallback.approved is True and fallback.llm_verdict is None
+    unavailable = await evaluator.evaluate_candidate(native_candidate(), use_llm=True)
+    assert unavailable.approved is False and unavailable.thesis_summary == "LLM unavailable (RuntimeError)"
+    assert unavailable.llm_verdict is not None
+    assert unavailable.llm_verdict["error"] == "RuntimeError" and unavailable.llm_verdict["applied"] is True
+    assert "provider down" not in unavailable.model_dump_json()
 
 
 async def test_macro_line_is_the_deterministic_gate_not_the_llm(evaluator_factory, monkeypatch):  # noqa: F811

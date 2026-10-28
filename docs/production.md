@@ -54,9 +54,9 @@ its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID 
 
 Scans stage suggestions; on a live or simulator account an operator approves entry orders. On the Alpaca
 paper account with `execution.auto_entry: paper` (shipped) the scheduled suggestion job also enters its sent
-native cards itself ([auto-entry runbook](#auto-entry-paper)); catalog, watch, alpha and probe cards stay
-tap-only. Configuration loads at construction. The journal-backed alpha registry reloads
-atomically between scans; external config edits still require restart.
+native cards that the LLM gate approved itself ([auto-entry runbook](#auto-entry-paper)); a `--no-llm` daemon's
+cards, catalog, watch, alpha and probe cards stay tap-only. Configuration loads at construction. The
+journal-backed alpha registry reloads atomically between scans; external config edits still require restart.
 
 ### Suggestion scans
 
@@ -551,6 +551,47 @@ headlines); see [news context](news-context.md). Inspect it with `copilot db eve
 --limit 1` (the `news` key per candidate, universe scans) and `copilot cards outcomes --days 30`
 (`news_context`). A fetch or scoring failure shows as `unavailable` or `scoring failed` on the card and
 never changes the scan, readiness or the halt state; `news.enabled: false` removes the step.
+
+### LLM gate outage
+
+The native-card LLM gate has a deadline: `llm_gate.timeout_seconds` (default 60, 0 < x <= 180), applied both as
+`asyncio.wait_for` and as litellm's `timeout`. A timeout, an exception, a non-JSON or non-object reply, an invalid
+approval or a missing LLM API key on an LLM scan (type name `LLMKeyMissing`) is an error, and an error never
+approves. During an outage:
+
+- no native card is sent; each affected candidate is journaled with the outcome `llm_unavailable` and an `llm`
+  block carrying the error type name (`Timeout` or `TimeoutError` for a deadline), and no signal is recorded, so
+  nothing is auto-entered;
+- catalog cards (PEAD drift, paper probes and insider watch cards) are still sent, labelled "LLM commentary
+  unavailable ({TypeName})";
+- the first error opens a per-scan breaker: later candidates in that scan make no LLM call and read
+  `LLMUnavailableEarlierInScan`. The breaker resets at the next scan. A breaker-skipped candidate still spends LLM
+  budget, so at most `max_llm_evaluations_per_scan` candidates are journaled `llm_unavailable` and the rest read
+  `LLM evaluation budget spent`;
+- with the shipped defaults a hung LLM provider adds at most about 85 s to a scan: the news scorer's bound
+  (`news.score_timeout_seconds`, 20 s, plus its 5 s hard margin; its calls run concurrently) and one gate deadline
+  (`llm_gate.timeout_seconds`, 60 s);
+- the first scheduled suggestion scan of a New York date whose breaker opens queues one Telegram message, keyed
+  `llm-gate-unavailable/{et_date}` and committed with that scan's journal event (as the
+  `regime-unavailable/{et_date}` notice is): "⚠️ LLM gate unavailable ({TypeName}) at the {HH:MM} scan: native
+  cards are withheld until it recovers; catalog cards are labelled. See logs." ({HH:MM} is the scan's configured
+  New York slot). Later scans that day add none; operator `/scan`, `/scan SYMBOL`, Re-evaluate, the swing job and
+  dry runs never send it. A `/scan SYMBOL` or Re-evaluate that hits the outage replies "LLM unavailable
+  ({TypeName}); try again later." A Re-evaluate still spends the card's one re-evaluation: a later `/scan SYMBOL`
+  or scheduled scan considers the setup again once its duplicate window ends. The local log keeps the details:
+  the `llm_gate_breaker_open` warning, the evaluator's `LLM evaluation failed` warning with its traceback and, at
+  DEBUG, an unusable reply's length and first 200 characters (`llm_gate_reply_unusable`);
+- the end-of-session digest reads "LLM vetoes: N; LLM unavailable: N."; unavailable candidates are not listed in
+  its "top:" runners-up;
+- `copilot cards outcomes` reports mature ones as `llm_gate.llm_errors`, and `copilot db events --stream
+  scan/<date>` shows the outcome. Exception text never reaches the card, journal, provenance or notice.
+
+The gate sends `model`, `messages`, `response_format`, `timeout` and `drop_params=False`, with no `temperature`:
+`openai/gpt-5.6` with reasoning on only accepts the default, so production has always run at the model's default
+temperature and the old `0.2` was dropped silently. No code sets litellm's global `drop_params`; the macro
+explainer, doctor and chat graph opt in per call. Running at temperature 0.2 would need reasoning off, a behaviour
+change that requires its own prompt evaluation (traces plus the replay harness) first. See
+[card evidence](card-evidence.md#llm-gate-identity-and-outages).
 
 ### Shadow card ranker
 
@@ -1265,6 +1306,11 @@ on Alpaca paper with `execution.native_entry_lifetime: session`; a live account,
 off`, refuses to start with it set, and the simulator leaves it inactive. `/status` and
 `scripts/verify_runtime.py` show the setting and whether it is active.
 
+- **Only LLM-approved cards.** A native card is marked for auto-entry only when the LLM gate approved it (its
+  `llm_verdict` applied, `approved: true`, no `error`). A daemon started with `copilot service daemon --no-llm`
+  records deterministic approvals with no verdict, so its suggestion cards are ordinary tap cards (Execute and
+  Dismiss, no auto line) and the sweep enters none; an LLM error withholds the native card altogether
+  ([LLM gate outage](#llm-gate-outage)).
 - **Turn it off.** Set `execution.auto_entry: off` in `config/config.yaml` and do the
   [controlled restart](#controlled-maintenance-and-restart). There is no runtime command; `/panic` halts all
   new risk at once, and `/resume` follows the usual rules. Cards recorded while it was on keep their marker;

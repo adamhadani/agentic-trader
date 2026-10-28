@@ -554,7 +554,7 @@ async def test_a_non_finite_llm_stop_restores_the_deterministic_bracket(evaluato
     _assert_deterministic_bracket(result, deterministic)
 
 
-async def test_a_non_numeric_llm_stop_falls_back_to_the_deterministic_card(evaluator_factory, monkeypatch):  # noqa: F811
+async def test_a_non_numeric_llm_stop_on_a_veto_is_a_malformed_veto(evaluator_factory, monkeypatch):  # noqa: F811
     evaluator = evaluator_factory()
     deterministic, result = await _deterministic_and_llm(
         evaluator,
@@ -564,9 +564,20 @@ async def test_a_non_numeric_llm_stop_falls_back_to_the_deterministic_card(evalu
         rejection_reason=lambda card: "thin thesis",
         stop_loss=lambda card: "abc",
     )
-    # An unparseable answer is no LLM verdict: the deterministic fallback approves the card.
-    assert result.approved is True and result.llm_verdict is None
-    assert "LLM fallback used" in result.thesis_summary
+    # A veto that fails validation still vetoes (fail closed) on the deterministic bracket.
+    assert result.approved is False and result.rejection_reason == "thin thesis"
+    assert result.llm_verdict is not None and result.llm_verdict["malformed"] is True
+    _assert_deterministic_bracket(result, deterministic)
+
+
+async def test_a_non_numeric_llm_stop_on_an_approval_is_an_error(evaluator_factory, monkeypatch):  # noqa: F811
+    evaluator = evaluator_factory()
+    deterministic, result = await _deterministic_and_llm(
+        evaluator, monkeypatch, make_candidate(), stop_loss=lambda card: "abc"
+    )
+    # A JSON-true approval that fails validation never approves.
+    assert result.approved is False and result.thesis_summary == "LLM unavailable (ValidationError)"
+    assert result.llm_verdict is not None and result.llm_verdict["error"] == "ValidationError"
     _assert_deterministic_bracket(result, deterministic)
 
 
@@ -767,7 +778,7 @@ async def test_a_tighter_llm_stop_keeps_the_deterministic_tiers(evaluator_factor
     assert all(tier["risk_dollars"] >= tier["quantity"] * 4.0 for tier in result.sizing_tiers)
 
 
-async def test_an_unparseable_answer_after_a_resize_falls_back_to_the_deterministic_card(
+async def test_an_invalid_approval_with_a_resizing_stop_is_withheld_on_the_deterministic_card(
     evaluator_factory,  # noqa: F811
     monkeypatch,
 ):
@@ -788,7 +799,8 @@ async def test_an_unparseable_answer_after_a_resize_falls_back_to_the_determinis
     response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
     monkeypatch.setattr("agentic_trader.agent.evaluator.litellm.acompletion", AsyncMock(return_value=response))
     result = await evaluator.evaluate_candidate(candidate, use_llm=True)
-    assert "LLM fallback used" in result.thesis_summary and result.llm_verdict is None
+    assert result.approved is False and result.thesis_summary == "LLM unavailable (ValidationError)"
+    assert result.llm_verdict is not None and result.llm_verdict["error"] == "ValidationError"
     _assert_deterministic_bracket(result, deterministic)
     assert (result.quantity, result.notional_value, result.effective_leverage) == (
         deterministic.quantity,

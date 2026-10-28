@@ -2,6 +2,7 @@
 
 import html
 import re
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Literal
@@ -59,6 +60,20 @@ def auto_entry_status_line(config: AppConfig) -> str:
     return "Auto-entry: inactive (not an Alpaca paper account)"
 
 
+def llm_approved(llm_verdict: Mapping[str, Any] | None) -> bool:
+    """True only for a verdict the LLM gate applied and approved without error.
+
+    ``applied`` and ``approved`` must be exactly ``True`` and ``error`` absent or None. A card no LLM saw (a
+    ``--no-llm`` scan's deterministic approval: no verdict) is never LLM-approved.
+    """
+    return (
+        llm_verdict is not None
+        and llm_verdict.get("applied") is True
+        and llm_verdict.get("approved") is True
+        and llm_verdict.get("error") is None
+    )
+
+
 def auto_entry_marker(
     config: AppConfig,
     *,
@@ -66,14 +81,21 @@ def auto_entry_marker(
     is_catalog: bool,
     alpha: bool,
     lifetime_marker: dict[str, Any] | None,
+    llm_verdict: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """The marker an eligible card records: a native, lifetime-marked card of a scheduled suggestion scan."""
+    """The marker an eligible card records: a native, lifetime-marked card of a scheduled suggestion scan that the
+    LLM gate approved.
+
+    ``llm_verdict`` is the card's recorded ``llm_verdict`` block (``TradingCopilot._llm_block``); see
+    ``llm_approved``. Without an LLM approval the card is an ordinary tap card.
+    """
     if (
         not auto_entry_active(config)
         or trigger != ScanTrigger.SUGGESTION_SCAN
         or is_catalog
         or alpha
         or lifetime_marker is None
+        or not llm_approved(llm_verdict)
     ):
         return None
     return dict(AUTO_ENTRY_MARKER)

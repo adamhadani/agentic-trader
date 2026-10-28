@@ -54,7 +54,8 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
 1. **Entry authorization:** CLI/buttons call `EntryExecutionService`, atomically
    reserve risk and join the durable FIFO. On an Alpaca paper account with `execution.auto_entry: paper`
    (shipped; requires `native_entry_lifetime: session`) the scheduled suggestion job's sweep calls the same
-   `execute_signal_by_id` for its sent native `SUGGESTION_SCAN` cards, tagged `entry_trigger: auto`; catalog,
+   `execute_signal_by_id` for its sent native `SUGGESTION_SCAN` cards that the LLM gate approved (applied,
+   `approved: true`, no error), tagged `entry_trigger: auto`; a `--no-llm` scan's cards, catalog,
    watch, alpha and probe cards stay tap-only, and a live account refuses to start with it set
    ([paper auto-entry](docs/paper-auto-entry.md)). Only a valid preflight token commits
    `submitting`; never expire or replay a broker submission. Unknown outcomes halt
@@ -147,6 +148,15 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    `risk.macro_calendar_renewal_days` (30) left before `valid_through`; publishing
    `us-tier1-vN+1.json` and pinning its digest before the check degrades is a standing operator duty
    ([runbook](docs/production.md#tier-1-calendar-renewal)).
+   LLM gate hygiene: an LLM error never approves. A native card is withheld as `llm_unavailable` (no signal)
+   behind a per-scan breaker (the first error stops LLM calls for the rest of that scan; the first scheduled
+   suggestion scan of a New York date to open it queues the one `llm-gate-unavailable/{et_date}` notice with its
+   journal event, as the regime notice is queued), a catalog card is sent
+   labelled "LLM commentary unavailable ({TypeName})", and only the JSON boolean `true` approves, so a malformed veto
+   fails closed. `llm_verdict` carries `model` and `prompt_sha256`, and `cards outcomes` groups the gate by them.
+   The gate sends no temperature (production has always run with reasoning on at the default temperature) and
+   `drop_params=False`; no code sets litellm's global `drop_params`
+   ([card evidence](docs/card-evidence.md#llm-gate-identity-and-outages), [outage](docs/production.md#llm-gate-outage)).
    Every LLM-evaluated card records `llm_verdict` (applied for native cards, commentary for
    catalog probes) and `cards outcomes` decomposes selection, LLM gate, market exposure (a beta-one SPY
    control beside a past-only 120-session beta-matched one and an own-asset buy-and-hold control, with

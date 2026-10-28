@@ -1,4 +1,8 @@
-"""The auto-entry switch: one resolver and one card marker rule."""
+"""The auto-entry switch: one resolver and one card marker rule.
+
+A card is marked only when an LLM evaluated it and approved it: its verdict present, applied, ``approved`` exactly
+``True`` and error-free. A ``--no-llm`` scan has no verdict, so its native cards are ordinary tap cards.
+"""
 
 import pytest
 
@@ -15,6 +19,18 @@ from agentic_trader.execution.durable import ScanTrigger
 
 
 LIFETIME = {"version": 3}
+# The scan's ``llm`` block of a native card the LLM approved (``TradingCopilot._llm_block``).
+APPROVED = {
+    "approved": True,
+    "rejection_reason": None,
+    "stop_loss": 98.0,
+    "take_profit": 104.0,
+    "applied": True,
+    "model": "gpt-5.6-sol",
+    "prompt_sha256": "ab" * 32,
+    "error": None,
+    "malformed": False,
+}
 
 
 def _config(*, mode=ExecutionMode.ALPACA, paper=True, lifetime="session", auto="paper") -> AppConfig:
@@ -67,14 +83,55 @@ def test_constants():
     ],
 )
 def test_auto_entry_marker_only_for_native_suggestion_cards(trigger, is_catalog, alpha, lifetime, expected):
-    marker = auto_entry_marker(_config(), trigger=trigger, is_catalog=is_catalog, alpha=alpha, lifetime_marker=lifetime)
+    marker = auto_entry_marker(
+        _config(), trigger=trigger, is_catalog=is_catalog, alpha=alpha, lifetime_marker=lifetime, llm_verdict=APPROVED
+    )
+
+    assert marker == expected
+
+
+@pytest.mark.parametrize(
+    ("llm_verdict", "expected"),
+    [
+        (APPROVED, {"mode": "paper"}),
+        # No LLM saw the card: a `--no-llm` (deterministic) scan, or an evaluation without a verdict.
+        (None, None),
+        # The verdict was commentary, not the gate.
+        ({**APPROVED, "applied": False}, None),
+        # The LLM vetoed it.
+        ({**APPROVED, "approved": False, "rejection_reason": "thesis weak"}, None),
+        # The gate errored: never marked, whatever its approval says.
+        ({**APPROVED, "error": "Timeout"}, None),
+        ({**APPROVED, "approved": False, "error": "LLMUnavailableEarlierInScan", "model": None}, None),
+        # Only the boolean True approves.
+        ({**APPROVED, "approved": "true"}, None),
+        ({**APPROVED, "approved": 1}, None),
+        ({**APPROVED, "applied": 1}, None),
+        ({key: value for key, value in APPROVED.items() if key != "approved"}, None),
+        ({key: value for key, value in APPROVED.items() if key != "applied"}, None),
+    ],
+)
+def test_auto_entry_marker_requires_an_applied_error_free_llm_approval(llm_verdict, expected):
+    marker = auto_entry_marker(
+        _config(),
+        trigger=ScanTrigger.SUGGESTION_SCAN,
+        is_catalog=False,
+        alpha=False,
+        lifetime_marker=LIFETIME,
+        llm_verdict=llm_verdict,
+    )
 
     assert marker == expected
 
 
 def test_marker_is_a_fresh_copy_and_inactive_config_gives_none():
     marker = auto_entry_marker(
-        _config(), trigger=ScanTrigger.SUGGESTION_SCAN, is_catalog=False, alpha=False, lifetime_marker=LIFETIME
+        _config(),
+        trigger=ScanTrigger.SUGGESTION_SCAN,
+        is_catalog=False,
+        alpha=False,
+        lifetime_marker=LIFETIME,
+        llm_verdict=APPROVED,
     )
     marker["mode"] = "x"
     assert AUTO_ENTRY_MARKER == {"mode": "paper"}
@@ -85,6 +142,7 @@ def test_marker_is_a_fresh_copy_and_inactive_config_gives_none():
             is_catalog=False,
             alpha=False,
             lifetime_marker=LIFETIME,
+            llm_verdict=APPROVED,
         )
         is None
     )

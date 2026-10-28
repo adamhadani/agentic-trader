@@ -419,6 +419,18 @@ class NewsConfig(BaseModel):
     model: str | None = None
 
 
+class LLMGateConfig(BaseModel):
+    """The native-card LLM gate (docs/superpowers/specs/2026-10-27-llm-gate-hygiene-design.md).
+
+    Each gate call has one deadline, ``timeout_seconds``, enforced by the evaluator and passed to the
+    client. A timeout, a provider error or an invalid reply never approves a native card.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    timeout_seconds: float = Field(default=60.0, gt=0, le=180, allow_inf_nan=False)
+
+
 class InsiderWatchConfig(BaseModel):
     """Insider watch cards (docs/superpowers/specs/2026-10-23-insider-watch-cards-design.md).
 
@@ -943,6 +955,7 @@ class AppConfig(BaseModel):
     book_sizing: BookSizingConfig = Field(default_factory=BookSizingConfig)
     corporate_actions: CorporateActionsConfig = Field(default_factory=CorporateActionsConfig)
     news: NewsConfig = Field(default_factory=NewsConfig)
+    llm_gate: LLMGateConfig = Field(default_factory=LLMGateConfig)
     insider_watch: InsiderWatchConfig = Field(default_factory=InsiderWatchConfig)
     explicit_contracts: tuple[str, ...] | None = None
     risk: RiskConfig = Field(default_factory=RiskConfig)
@@ -1218,6 +1231,7 @@ def load_config(
         book_sizing=BookSizingConfig(**(cfg_dict.get("book_sizing") or {})),
         corporate_actions=CorporateActionsConfig(**(cfg_dict.get("corporate_actions") or {})),
         news=NewsConfig(**(cfg_dict.get("news") or {})),
+        llm_gate=LLMGateConfig(**(cfg_dict.get("llm_gate") or {})),
         insider_watch=InsiderWatchConfig(**(cfg_dict.get("insider_watch") or {})),
         explicit_contracts=tuple(explicit_contracts),
         risk=RiskConfig(**cfg_dict.get("risk", {})),

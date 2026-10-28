@@ -509,6 +509,30 @@ nothing in `risk/`, `card_policy`, `card_stats` or admission reads it, and a wat
 - **Reading it.** The sent-versus-unsent comparison is the only view of whether the discretionary tap helps or
   hurts; both are small, censored samples, so read them as a record, never as a gate or an edge estimate.
 
+## LLM gate identity and outages
+
+Every native candidate the LLM evaluated carries an `llm` block in its `scan_candidates_ranked` entry, and
+a sent card's `decision_provenance["llm_verdict"]` is the same block. It has nine keys: `approved`,
+`rejection_reason`, `stop_loss`, `take_profit`, `applied`, `model` (the provider's returned snapshot, null on
+error), `prompt_sha256` (SHA-256 of the rendered system prompt plus the user template, without per-card
+values; the hash is the prompt's identity), `error` (an exception type name such as `Timeout`, never its
+text) and `malformed` (true for a veto whose reply was malformed). Rows journaled before this change was deployed
+have only the first five.
+
+An LLM error never approves. A native card is journaled with the fixed outcome `llm_unavailable`
+(`RankedOutcome.LLM_UNAVAILABLE`, a runner-up class like `llm_vetoed`), records no signal and sends no card; its
+block is `{"error": <TypeName>, "applied": true, "approved": false, "model": null, "prompt_sha256": ...}`. A
+malformed veto is `llm_vetoed` with `malformed: true`; a well-formed veto without a reason reads "veto without a
+reason". Only the JSON boolean `true` approves.
+
+In `cards outcomes`, rows gain `llm_model`, `llm_prompt_sha256` and `llm_error`. An error row has `llm_ran`
+false: it is excluded from approved/vetoed attribution and counted in `llm_gate.llm_errors`, which, like `ran`,
+`vetoed` and `approved`, counts mature rows only (an immature or fetch-failed error row keeps its `llm_error`
+column but is not counted), so the mature rows that reached the gate are `ran + llm_errors`. `llm_gate` also
+carries `by_identity`, the same statistics (`ran`, `vetoed`, `approved`, mean R and bracket-edit fields)
+grouped by `"{model}|{prompt_sha256}"`, with rows that predate identity under `"null|null"`, so a prompt or
+model change is never averaged into the older sample. Both are descriptive, never a gate.
+
 ## Operator outcomes
 
 `cards outcomes` records what was done with each sent card, now that native suggestion cards are entered on

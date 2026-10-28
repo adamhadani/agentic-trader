@@ -123,6 +123,9 @@ _COLUMNS = (
     "entry_time",
     "exit_time",
     "llm_ran",
+    "llm_model",
+    "llm_prompt_sha256",
+    "llm_error",
     "llm_vetoed",
     "llm_bracket_edited",
     "llm_r_cost",
@@ -397,6 +400,7 @@ def _row(
     regime: dict[str, Any] = raw_regime if isinstance(raw_regime, dict) else {}
     decided_at = entry["decided_at"]
     outcome = entry.get("outcome")
+    llm_error = llm.get("error") if llm is not None else None
     beta_market_value = beta * market_value if (beta is not None and market_value is not None) else None
     return {
         "scan_id": entry.get("scan_id"),
@@ -421,7 +425,11 @@ def _row(
         "holding_sessions": holding_sessions,
         "entry_time": entry_time,
         "exit_time": exit_time,
-        "llm_ran": llm is not None,
+        # An error row (an LLM outage) never ran the gate: it is counted, not attributed.
+        "llm_ran": llm is not None and llm_error is None and outcome != RankedOutcome.LLM_UNAVAILABLE,
+        "llm_model": llm.get("model") if llm is not None else None,
+        "llm_prompt_sha256": llm.get("prompt_sha256") if llm is not None else None,
+        "llm_error": llm_error,
         "llm_vetoed": outcome == RankedOutcome.LLM_VETOED,
         "llm_bracket_edited": _llm_bracket_edited(entry, llm),
         "llm_r_cost": llm_r_cost,
@@ -861,6 +869,62 @@ def _mean_delta(edits: pd.DataFrame) -> float | None:
     return float((edits["llm_r_cost"] - edits["r_cost"]).mean()) if len(edits) else None
 
 
+def _llm_gate_stats(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any]:
+    """Gate statistics over ``frame`` (all rows) and its mature rows; error rows never ran."""
+    ran = mature.loc[mature["llm_ran"].astype(bool)]
+    vetoed = ran.loc[ran["llm_vetoed"].astype(bool)]
+    approved = ran.loc[~ran["llm_vetoed"].astype(bool)]
+    # An edited bracket counts whatever its maturity; its delta needs both brackets resolved,
+    # and an approved edit (the bracket that traded) is averaged apart from a vetoed one.
+    edited_mature = (
+        ran.loc[ran["llm_bracket_edited"].astype(bool)].dropna(subset=["llm_r_cost"]).astype({"llm_r_cost": float})
+    )
+    approved_edits = edited_mature.loc[~edited_mature["llm_vetoed"].astype(bool)]
+    vetoed_edits = edited_mature.loc[edited_mature["llm_vetoed"].astype(bool)]
+    return {
+        "ran": len(ran),
+        "vetoed": len(vetoed),
+        "approved": len(approved),
+        "vetoed_mean_r_cost": float(vetoed["r_cost"].mean()) if len(vetoed) else None,
+        "approved_mean_r_cost": float(approved["r_cost"].mean()) if len(approved) else None,
+        "bracket_edited": int(frame["llm_bracket_edited"].astype(bool).sum()),
+        "bracket_edit_mature": len(edited_mature),
+        "bracket_edit_mean_delta_r": _mean_delta(approved_edits),
+        "vetoed_bracket_edit_mean_delta_r": _mean_delta(vetoed_edits),
+    }
+
+
+def _identity_part(value: Any) -> str:
+    return "null" if value is None or pd.isna(value) else str(value)
+
+
+def _llm_gate_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any]:
+    """The LLM gate block: overall statistics, the outage count and the same statistics per
+    ``"{model}|{prompt_sha256}"`` (rows from before identity was recorded sit under ``null|null``).
+
+    ``llm_errors`` counts mature error rows, the basis of ``ran``, ``vetoed`` and ``approved``, so the mature rows
+    that reached the gate are ``ran + llm_errors``."""
+    ran_frame = frame.loc[frame["llm_ran"].astype(bool)]
+    keys = pd.Series(
+        [
+            f"{_identity_part(m)}|{_identity_part(h)}"
+            for m, h in zip(ran_frame["llm_model"], ran_frame["llm_prompt_sha256"], strict=True)
+        ],
+        index=ran_frame.index,
+        dtype=str,
+    )
+    mature_keys = keys.reindex(mature.index)
+    by_identity = {
+        str(key): _llm_gate_stats(ran_frame.loc[keys == key], mature.loc[mature_keys == key])
+        for key in sorted(keys.unique())
+    }
+    return {
+        **_llm_gate_stats(frame, mature),
+        "llm_errors": int(mature["llm_error"].notna().sum()),
+        "by_identity": by_identity,
+    }
+
+
 def _book_sizing_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any]:
     """Counts by journaled book-sizing status and the descriptive R of rows that would be scaled."""
     has_status = frame["book_sizing_status"].notna()
@@ -1259,6 +1323,8 @@ def summarize(
             "base_rates": {"sent": None, "runner_up": None, "journal_only": None},
             "selection": {"setup_quality": None, "shadow_score": None, "random": None, "scans_basis": "all"},
             "llm_gate": {
+                "llm_errors": 0,
+                "by_identity": {},
                 "ran": 0,
                 "vetoed": 0,
                 "approved": 0,
@@ -1315,27 +1381,7 @@ def summarize(
         "shadow_score": _selection_by_score(comparable, "shadow_score") if has_shadow_scores else None,
         "random": _selection_random(comparable),
     }
-    ran = mature.loc[mature["llm_ran"].astype(bool)]
-    vetoed = ran.loc[ran["llm_vetoed"].astype(bool)]
-    approved = ran.loc[~ran["llm_vetoed"].astype(bool)]
-    # An edited bracket counts whatever its maturity; its delta needs both brackets resolved,
-    # and an approved edit (the bracket that traded) is averaged apart from a vetoed one.
-    edited_mature = (
-        ran.loc[ran["llm_bracket_edited"].astype(bool)].dropna(subset=["llm_r_cost"]).astype({"llm_r_cost": float})
-    )
-    approved_edits = edited_mature.loc[~edited_mature["llm_vetoed"].astype(bool)]
-    vetoed_edits = edited_mature.loc[edited_mature["llm_vetoed"].astype(bool)]
-    llm_gate = {
-        "ran": len(ran),
-        "vetoed": len(vetoed),
-        "approved": len(approved),
-        "vetoed_mean_r_cost": float(vetoed["r_cost"].mean()) if len(vetoed) else None,
-        "approved_mean_r_cost": float(approved["r_cost"].mean()) if len(approved) else None,
-        "bracket_edited": int(frame["llm_bracket_edited"].astype(bool).sum()),
-        "bracket_edit_mature": len(edited_mature),
-        "bracket_edit_mean_delta_r": _mean_delta(approved_edits),
-        "vetoed_bracket_edit_mean_delta_r": _mean_delta(vetoed_edits),
-    }
+    llm_gate = _llm_gate_summary(frame, mature)
     controlled = mature.dropna(subset=["market_r"])
     market_reasons = frame["market_reason"].dropna()
     market_exposure = {

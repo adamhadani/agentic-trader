@@ -25,10 +25,14 @@ changes risk rules, admission, `card_policy`, book sizing or the card budget.
 - A card is auto-eligible only when it was **sent** by a `SUGGESTION_SCAN` (not the swing or intraday
   journal-only jobs, not an operator `/scan`), is native (not a catalog card: no PEAD drift, no insider watch
   card, no `alpha_policy`/`alpha_version`), carries the 1.3 lifetime marker
-  (`decision_provenance["entry_lifetime"]`), and `auto_entry_active` held at record time. It records
-  `decision_provenance["auto_entry"] = {"mode": "paper"}`, which the card renderer, notices, digest and
+  (`decision_provenance["entry_lifetime"]`), **the LLM gate approved it** (its `llm_verdict` is present, with
+  `applied` and `approved` exactly `true` and `error` null), and `auto_entry_active` held at record time. It
+  records `decision_provenance["auto_entry"] = {"mode": "paper"}`, which the card renderer, notices, digest and
   `cards outcomes` read. A re-priced card never carries it: it is an ordinary tap card. Watch, catalog, alpha
-  and probe cards stay tap-only.
+  and probe cards stay tap-only. A card no LLM approved is never auto-entered: a daemon started with
+  `copilot service daemon --no-llm` scans with deterministic approvals and no verdict, so its native cards are
+  ordinary tap cards (Execute and Dismiss, no auto line), and an LLM error withholds the native card altogether
+  (`llm_unavailable`, [production](production.md#llm-gate-outage)).
 
 ## The entry
 

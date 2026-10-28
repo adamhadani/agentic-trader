@@ -112,7 +112,11 @@ Current Quantitative Macro Telemetry:
 
         model_name = self.config.llm_model if self.config else "openai/gpt-4o"
         resp = await litellm.acompletion(
-            api_key=self.config.llm_api_key if self.config else None, model=model_name, messages=messages, timeout=35
+            api_key=self.config.llm_api_key if self.config else None,
+            model=model_name,
+            messages=messages,
+            timeout=35,
+            drop_params=True,
         )
         content = resp.choices[0].message.content or ""
         if format_mode == "html":

@@ -10,7 +10,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from agentic_trader.config import ExecutionConfig, load_config
+from agentic_trader.config import AppConfig, ExecutionConfig, LLMGateConfig, load_config
 from agentic_trader.execution.auto_entry import auto_entry_active
 
 
@@ -87,6 +87,23 @@ def test_the_shipped_insider_watch_block_reaches_app_config():
     assert watch.backfill_from.isoformat() == "2026-10-01"
     assert watch.pooled_cache_dir == Path("~/agentic-trader-research/pooled-cache-v1").expanduser()
     assert {"enabled", "archive_dir", "backfill_from", "pooled_cache_dir"} <= watch.model_fields_set
+
+
+def test_the_shipped_llm_gate_block_reaches_app_config():
+    config = load_config(str(SHIPPED), environ=PRODUCTION)
+
+    assert config.llm_gate.timeout_seconds == 60
+    # The shipped value equals the code default; the field being set proves the YAML block was read.
+    assert "timeout_seconds" in config.llm_gate.model_fields_set
+
+
+def test_llm_gate_defaults_and_bounds():
+    assert LLMGateConfig().timeout_seconds == 60.0
+    assert AppConfig().llm_gate == LLMGateConfig()
+    assert LLMGateConfig(timeout_seconds=180).timeout_seconds == 180
+    for bad in ({"timeout_seconds": 0}, {"timeout_seconds": 180.5}, {"timeout_seconds": float("inf")}, {"other": 1}):
+        with pytest.raises(ValidationError):
+            LLMGateConfig(**bad)
 
 
 def test_shipped_config_enables_paper_auto_entry():

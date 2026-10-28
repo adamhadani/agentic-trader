@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import litellm
 import numpy as np
 import pandas as pd
 import psycopg2
@@ -62,6 +63,14 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "postgres" in item.keywords:
                 item.add_marker(pytest.mark.skip(reason="PostgreSQL integration tests require --run-postgres."))
+
+
+@pytest.fixture(autouse=True)
+def _litellm_drop_params_stays_false():
+    """``litellm.drop_params`` is process-wide: a test may never leave it changed."""
+    assert litellm.drop_params is False
+    yield
+    assert litellm.drop_params is False
 
 
 @pytest.fixture(autouse=True)
