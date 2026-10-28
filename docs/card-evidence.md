@@ -144,10 +144,10 @@ a snapshot without a unit by the v1 key `card_stats/{date}`).
 A skeptical prior reads `no replay prior (shrunk toward 0)` in place of the replay part. When the key has
 fetch failures or unresolved candidates the second line ends ` · K unreadable (never withheld)`.
 
-Example, measured:
+Example, measured (illustrative live figures):
 
-    • Expected excess (TREND_PULLBACK 4h, LONG): -0.06R ± 0.10 vs beta-matched SPY after cost
-      replay 2021–26: -0.05R over 7,049 setups · live: -0.12R over 23 mature since 2026-09-24 (43% target / 52% stop / 4% timeout)
+    • Expected excess (TREND_PULLBACK 4h, LONG): -0.09R ± 0.15 vs beta-matched SPY after cost
+      replay 2021–26: -0.08R over 7,049 setups · live: -0.12R over 23 mature since 2026-09-24 (43% target / 52% stop / 4% timeout)
 
 `FIRST_DECIDED` is the New York date of the key's first journaled decision (`first_decided_at`), or
 `window_start` when the key has none: the count is of mature labelled candidates, sent or not, not of
@@ -231,7 +231,7 @@ Evidence recorded:
 Operate it in order: `off` until a snapshot exists; `preview` with a threshold, reading `would_withhold`
 for several sessions; then `enforce`. Each change is a config edit and the controlled restart.
 
-What `preview` at 0.0 will show. The replay prior for TREND_PULLBACK 4h LONG is near -0.05R, so once a
+What `preview` at 0.0 will show. The replay prior for TREND_PULLBACK 4h LONG is -0.078R (worth about 63 live rows), so once a
 key's live floor (`min_mature_cards`) is met the posterior sits just below zero unless the live record is
 positive enough to lift it, and most native cards will journal `would_withhold: true`. Under `preview`
 every card is still sent. That journaled contrast tests whether the replay prior describes live, gated

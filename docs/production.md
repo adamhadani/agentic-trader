@@ -471,15 +471,21 @@ carried across a whole chain of re-prices, so a twice-repriced card still cites 
 original issue time. A legacy card without `valid_until` expires on the New York
 date change instead.
 
-**Card wording and measured record (October 8).** A card's title reads `📋 SETUP: …` (it was
-`🚨 TRADE SIGNAL: …`) in both the Telegram and terminal cards. Directly under the target line a
-native card states the measured record of its own `(strategy, direction)` from the latest
-`card_stats` snapshot in this scope — the number of mature candidates since the key's first journaled
-decision (New York date), target/stop/timeout rates, mean R after cost and the implied EV at the card's
-own ratio — or says `insufficient evidence (N/MIN mature candidates)` (MIN is
-`card_policy.min_mature_cards`), `statistics stale (last computed DATE)` or `no statistics in this
-scope` (every dry scan, and a key over the floor without a finite mean R). The block always ends
-with the italic caveat "Not validated alpha. …". The scan reads the snapshot once; a failed read records `card_stats_error` in
+**Card wording and expected excess (October 8; v2 October 28).** A card's title reads `📋 SETUP: …`
+(it was `🚨 TRADE SIGNAL: …`) in both the Telegram and terminal cards. Directly under the target line
+a native card states the **expected excess** of its own `(strategy, timeframe, direction)` from the
+latest `card_stats` snapshot in this scope.
+- The expected excess is the posterior mean ± its standard error in `net_excess_r_v1`: R against a
+  beta-matched SPY control, after a per-name cost of at least 5 bp per side. The posterior shrinks the
+  time-matured live record toward a frozen 2021–26 replay prior.
+- A second line gives the replay prior (`replay 2021–26: …R over N setups`, or `no replay prior` for a
+  key the replay never saw), then the live record. When the live record is mature it shows mature
+  candidates (21 or more sessions old) since the key's first decision, with target/stop/timeout rates;
+  below the floor it reads `N/MIN mature, not yet decisive`.
+- A v1 snapshot from before the deploy, a dry scan, or no snapshot reads `no statistics in this
+  scope`; an old snapshot reads `statistics stale (last computed DATE)`.
+
+The block always ends with the italic caveat "Not validated alpha. …". The scan reads the snapshot once; a failed read records `card_stats_error` in
 the scan summary and the cards state no statistics. `Macro Check` is the deterministic lockout gate:
 a card that reached the LLM passed it, so it reads Cleared whatever the LLM wrote. Contract and
 limits: [card evidence](card-evidence.md#evidence-block).
@@ -691,20 +697,25 @@ missing signal rows are counted, never zeroed. All of it is descriptive, never a
 The report itself never ranks, gates or sizes a card; the one gate derived from the same labels is
 `card_policy` (below). The `regime_context` and `recurrence` blocks ([card evidence](card-evidence.md#regime-and-recurrence-context)) bucket mature rows by the journaled VIX regime and macro stress, by the SPY tape derived at each decision (one extra SPY daily request per run), and by each setup's recurrence in the window; the next universe scan after the 2026-10-14 deploy is the first event with a `regime` block.
 
-**Card policy (October 8).** `card_policy.mode` is the one gate derived from these outcomes, and it
-ships `off`. Operate it in three steps: leave `off` until a `card_stats` snapshot exists; set
-`preview` with `min_measured_ev` (mean R after cost, for example `0.0`) and read `would_withhold` in
-`cards outcomes` (summary block `card_policy`) and the `card_policy_would_withhold` log lines for a few
-sessions; only then set `enforce`. Under `enforce`, a native candidate whose `(strategy, direction)`
-has at least `min_mature_cards` (20) mature labels and a measured mean below the threshold is skipped
-before the LLM with the fixed outcome `card_policy_withheld` (runner-up reason `card policy: measured
-EV …R over N < …R`); it spends no card or LLM budget and the next rank is considered. Insufficient,
+**Card policy (October 8; v2 October 28).** `card_policy.mode` is the one gate derived from these
+outcomes. The code default is `off`. The shipped config is `preview` at `min_measured_ev: 0.0` since
+2026-10-28; the threshold is posterior expected excess R in `net_excess_r_v1`.
+- **Under preview:** read `would_withhold` in `cards outcomes` (summary block `card_policy`) and the
+  `card_policy_would_withhold` log lines. Expect most TREND_PULLBACK cards to journal
+  `would_withhold` once a key has 20 mature live rows, since the replay prior is about −0.08R. Cards
+  are still sent.
+- **Before `enforce`:** it is the operator's decision, and a daily-peeking enforce needs an
+  always-valid confidence sequence first ([card evidence](card-evidence.md#send-policy)).
+- **Under `enforce`:** a native candidate whose `(strategy, timeframe, direction)` has at least
+  `min_mature_cards` (20) mature labels and a posterior below the threshold is skipped before the
+  LLM. Its fixed outcome is `card_policy_withheld`, with runner-up reason `card policy: expected
+  excess …R over N < …R`. It spends no card or LLM budget, and the next rank is considered. Insufficient,
 stale, unavailable or partial evidence (a key with any bar-fetch failure, `n_fetch_failed`) never
 withholds, and a policy-locked card (versioned alpha or paper probe) is outside the policy: it shows
 its evidence and its `card_policy` block is null. Withheld candidates stay journaled (every
-full-universe scan) and keep being labelled, so a strategy can recover. Before `enforce`, count distinct
-setups per session: the same setup is journaled by repeated scans in a session and inflates
-`n_mature` and the floor. A mode change is a config edit plus the controlled restart. See
+full-universe scan) and keep being labelled, so a strategy can recover. Since v2 the record counts one
+row per setup and New York session (suggestion scans only). A key with an unreadable or unresolved
+row is partial and never withholds. A mode change is a config edit plus the controlled restart. See
 [card evidence](card-evidence.md#send-policy).
 
 **Book-aware sizing (October 9).** `book_sizing` in `config/config.yaml` shipped `mode: preview` on
