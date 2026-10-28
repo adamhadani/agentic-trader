@@ -95,7 +95,7 @@ session-counted holding deadline:
   new risk exactly like every other lifecycle uncertainty in this document;
   `/resume` does not waive it.
   A calendar read that raises is a failed evidence read, not a `REVIEW`
-  decision: it is retried each sweep and reviewed only after
+  decision: it is retried each reconciliation pass and reviewed only after
   `execution.lifetime_evidence_review_after_failures` (5) consecutive failed
   reconciliation passes of that signal. A `REVIEW` decision still halts immediately.
 - Every existing `elapsed_utc_v1`/`elapsed_utc_v2` policy, hash and position is
