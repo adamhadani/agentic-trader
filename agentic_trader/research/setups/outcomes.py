@@ -36,6 +36,13 @@ from agentic_trader.research.setups.labels import (
     label_bracket,
     regular_session_bars,
 )
+from agentic_trader.research.setups.net_excess import (
+    COST_FLOOR_BPS,
+    CostInputs,
+    cost_inputs,
+    name_cost_bps,
+    net_excess_r,
+)
 from agentic_trader.research.setups.study import session_block_bootstrap
 from agentic_trader.research.setups.tape import TAPE_BUCKETS, TAPE_HISTORY_DAYS, TapeState, tape_buckets, tape_state
 
@@ -105,6 +112,7 @@ _COLUMNS = (
     "trigger",
     "contract",
     "strategy",
+    "timeframe",
     "direction",
     "rank",
     "outcome",
@@ -157,6 +165,11 @@ _COLUMNS = (
     "beta_reason",
     "beta_market_r",
     "beta_excess_r",
+    "fill_price",
+    "risk_unit",
+    "name_cost_bps",
+    "cost_reason",
+    "net_excess_r",
     "hold_r",
     "timing_r",
     *_CF_COLUMNS,
@@ -289,7 +302,9 @@ def buy_and_hold_r(
     return sign * (float(horizon_bars["Close"].iloc[-1]) / open_price - 1.0) * float(entry) / risk_unit
 
 
-def _immature_row(entry: dict[str, Any], symbol: str, market_reason: str | None = None) -> dict[str, Any]:
+def _immature_row(
+    entry: dict[str, Any], symbol: str, market_reason: str | None = None, cost_reason: str | None = None
+) -> dict[str, Any]:
     return _row(
         entry,
         symbol,
@@ -298,6 +313,7 @@ def _immature_row(entry: dict[str, Any], symbol: str, market_reason: str | None 
         r_cost=None,
         holding_sessions=0,
         market_reason=market_reason,
+        cost_reason=cost_reason,
     )
 
 
@@ -387,6 +403,11 @@ def _row(
     beta: float | None = None,
     beta_reason: str | None = None,
     hold_value: float | None = None,
+    fill_price: float | None = None,
+    risk_unit: float | None = None,
+    name_cost: float = COST_FLOOR_BPS,
+    cost_reason: str | None = None,
+    net_excess: float | None = None,
 ) -> dict[str, Any]:
     shadow = entry.get("shadow") or {}
     raw_book = entry.get("book_sizing")
@@ -408,6 +429,7 @@ def _row(
         "trigger": entry.get("trigger"),
         "contract": symbol,
         "strategy": entry.get("strategy"),
+        "timeframe": entry.get("timeframe"),
         "direction": entry.get("direction"),
         "rank": entry.get("rank"),
         "outcome": outcome,
@@ -466,6 +488,11 @@ def _row(
         "beta_excess_r": (r_cost - beta_market_value)
         if (r_cost is not None and beta_market_value is not None)
         else None,
+        "fill_price": fill_price,
+        "risk_unit": risk_unit,
+        "name_cost_bps": name_cost,
+        "cost_reason": cost_reason,
+        "net_excess_r": net_excess,
         "hold_r": hold_value,
         "timing_r": (r_cost - hold_value) if (r_cost is not None and hold_value is not None) else None,
         **dict.fromkeys(_CF_COLUMNS),
@@ -486,18 +513,20 @@ def _label_one(
     market_reason: str | None,
     beta: float | None = None,
     beta_reason: str | None = None,
+    costs: CostInputs | None = None,
+    cost_reason: str | None = None,
 ) -> dict[str, Any]:
     direction = entry.get("direction")
     entry_price, stop_price, target_price = entry.get("entry"), entry.get("stop"), entry.get("target")
     if direction not in ("LONG", "SHORT") or entry_price is None or stop_price is None or target_price is None:
-        return _immature_row(entry, symbol, market_reason)
+        return _immature_row(entry, symbol, market_reason, cost_reason)
     try:
         levels = SetupLevels(
             direction=direction, entry=float(entry_price), stop=float(stop_price), target=float(target_price)
         )
     except ValueError:
         # A malformed geometry (e.g. zero risk) cannot be judged; not the labeler's own IMMATURE.
-        return _immature_row(entry, symbol, market_reason)
+        return _immature_row(entry, symbol, market_reason, cost_reason)
     outcome = label_bracket(
         levels, entry["decided_at"], hourly, max_hold_sessions=max_hold_sessions, cost_bps_per_side=cost_bps
     )
@@ -537,6 +566,25 @@ def _label_one(
         counterfactual[f"{prefix}hit"] = arm_outcome.hit.value
         counterfactual[f"{prefix}r_cost"] = arm_outcome.r_cost
         counterfactual[f"{prefix}market_r"] = arm_market
+    risk_unit = abs(levels.entry - levels.stop)
+    fill_price = outcome.entry_price
+    name_cost = (
+        name_cost_bps(fill_price, risk_unit, costs)
+        if (costs is not None and fill_price is not None)
+        else COST_FLOOR_BPS
+    )
+    net_excess = (
+        net_excess_r(
+            outcome.r,
+            fill_price,
+            risk_unit,
+            name_cost,
+            beta,
+            market_value,
+        )
+        if outcome.r_cost is not None
+        else None
+    )
     return _row(
         entry,
         symbol,
@@ -553,6 +601,11 @@ def _label_one(
         beta=beta,
         beta_reason=beta_reason,
         hold_value=hold_value,
+        fill_price=fill_price,
+        risk_unit=risk_unit,
+        name_cost=name_cost,
+        cost_reason=cost_reason,
+        net_excess=net_excess,
     )
 
 
@@ -632,6 +685,7 @@ def label_journaled(
     market_symbol: str | None = MARKET_PROXY_SYMBOL,
     tape_symbol: str | None = MARKET_PROXY_SYMBOL,
     with_beta: bool = True,
+    daily_bars: BarSource | None = None,
 ) -> pd.DataFrame:
     """One row per journaled ranked candidate, labelled with its realized bracket outcome.
 
@@ -653,7 +707,10 @@ def label_journaled(
     failed fetch records ``tape_reason`` on every row.
     The trailing beta (``with_beta``) adds one adjusted daily request per candidate symbol and one
     for the market proxy after the tape; a failed one records ``beta_reason`` on the rows it
-    covers. Without it the beta columns are all None.
+    covers. Without it the beta columns are all None. Those ``1d`` adjusted fetches use
+    ``daily_bars`` when given (the daily source is SIP in every caller), else ``bars``; the hourly and
+    tape fetches always use ``bars``. The same frames give each row's per-name cost inputs
+    (``net_excess.cost_inputs``), so ``net_excess_r`` needs no further request.
     """
     now = now or datetime.now(UTC)
     by_symbol = _candidate_entries(events)
@@ -663,12 +720,16 @@ def label_journaled(
         pacer = None
 
     def fetch(
-        symbol: str, start: datetime, timeframe: str = _BAR_TIMEFRAME, adjustment: str = "raw"
+        symbol: str,
+        start: datetime,
+        timeframe: str = _BAR_TIMEFRAME,
+        adjustment: str = "raw",
+        source: BarSource = bars,
     ) -> pd.DataFrame | str:
         if pacer is not None:
             pacer.acquire()
         try:
-            return bars.fetch_bars(symbol, timeframe, start, now, adjustment=adjustment)
+            return source.fetch_bars(symbol, timeframe, start, now, adjustment=adjustment)
         except Exception as exc:
             return f"{type(exc).__name__}: {exc}"
 
@@ -702,20 +763,21 @@ def label_journaled(
 
     # Adjusted daily bars for the trailing beta: one request per candidate symbol (from 200
     # calendar days before its earliest decision) and one for the market proxy.
+    daily_source = daily_bars if daily_bars is not None else bars
     beta_daily: dict[str, pd.DataFrame | str] = {}
     beta_market: pd.DataFrame | str | None = None
     if with_beta and market_symbol is not None and market_start is not None:
         # Rows of a symbol whose hourly fetch failed never use its beta, so skip those requests.
         # `starts` already widens the proxy's own window to the earliest decision of all.
         beta_daily = {
-            symbol: fetch(symbol, start - timedelta(days=BETA_HISTORY_DAYS), "1d", "all")
+            symbol: fetch(symbol, start - timedelta(days=BETA_HISTORY_DAYS), "1d", "all", daily_source)
             for symbol, start in starts.items()
             if not isinstance(fetched[symbol], str)
         }
         beta_market = (
             beta_daily[market_symbol]
             if market_symbol in beta_daily
-            else fetch(market_symbol, market_start - timedelta(days=BETA_HISTORY_DAYS), "1d", "all")
+            else fetch(market_symbol, market_start - timedelta(days=BETA_HISTORY_DAYS), "1d", "all", daily_source)
         )
 
     def beta_for(symbol: str, session: str) -> tuple[float | None, str | None]:
@@ -728,6 +790,15 @@ def label_journaled(
             return None, f"fetch_failed: {symbol_daily.split(':', 1)[0]}"
         return trailing_beta(symbol_daily, beta_market, date.fromisoformat(session))
 
+    def costs_for(symbol: str, session: str) -> tuple[CostInputs | None, str | None]:
+        if beta_market is None:
+            return None, None
+        symbol_daily = beta_daily[symbol]
+        if isinstance(symbol_daily, str):
+            return None, f"fetch_failed: {symbol_daily.split(':', 1)[0]}"
+        inputs = cost_inputs(symbol_daily, date.fromisoformat(session))
+        return inputs, inputs.reason
+
     rows: list[dict[str, Any]] = []
     for symbol, entries in by_symbol.items():
         hourly = fetched[symbol]
@@ -735,9 +806,23 @@ def label_journaled(
             rows.extend(_fetch_failed_row(entry, symbol, hourly, market_reason) for entry in entries)
             continue
         for entry in entries:
-            beta, beta_reason = beta_for(symbol, entry["decided_at"].astimezone(ET_TZ).date().isoformat())
+            session = entry["decided_at"].astimezone(ET_TZ).date().isoformat()
+            beta, beta_reason = beta_for(symbol, session)
+            costs, cost_reason = costs_for(symbol, session)
             rows.append(
-                _label_one(entry, symbol, hourly, max_hold_sessions, cost_bps, market, market_reason, beta, beta_reason)
+                _label_one(
+                    entry,
+                    symbol,
+                    hourly,
+                    max_hold_sessions,
+                    cost_bps,
+                    market,
+                    market_reason,
+                    beta,
+                    beta_reason,
+                    costs,
+                    cost_reason,
+                )
             )
 
     states: dict[str, TapeState] = {}
@@ -839,6 +924,9 @@ def _exposure(controlled: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any] 
         "mean_beta": _finite_mean(controlled, "beta"),
         "mean_beta_market_r": _finite_mean(controlled, "beta_market_r"),
         "mean_beta_excess_r": _finite_mean(controlled, "beta_excess_r"),
+        "n_net_excess": int(pd.to_numeric(controlled["net_excess_r"], errors="coerce").notna().sum()),
+        "mean_net_excess_r": _finite_mean(controlled, "net_excess_r"),
+        "mean_name_cost_bps": _finite_mean(controlled, "name_cost_bps"),
         "mean_excess_r_same_rows": _finite_mean(with_beta_excess, "excess_r"),
         "beta_reasons": {str(reason): int(count) for reason, count in beta_reasons.value_counts().items()},
         "mean_hold_r": _finite_mean(mature, "hold_r"),
@@ -1341,6 +1429,8 @@ def summarize(
                 "would_withhold": 0,
                 "withheld_mean_r_cost": None,
                 "would_withhold_mean_r_cost": None,
+                "would_withhold_n_net_excess": 0,
+                "would_withhold_mean_net_excess_r": None,
             },
             "book_sizing": _book_sizing_summary(frame, frame),
             "news_context": _news_summary(frame, frame),
@@ -1397,11 +1487,15 @@ def summarize(
         fetch_failed_reasons = frame.loc[is_fetch_failed, "reason"].value_counts().to_dict()
     withheld = frame["card_policy_withheld"].astype(bool)
     would = frame["would_withhold"].map(lambda value: value is True).astype(bool)
+    would_mature = mature.loc[would.loc[mature.index]]
     card_policy = {
         "withheld": int(withheld.sum()),
         "would_withhold": int(would.sum()),
         "withheld_mean_r_cost": _mean_r_cost(mature.loc[withheld.loc[mature.index]]),
-        "would_withhold_mean_r_cost": _mean_r_cost(mature.loc[would.loc[mature.index]]),
+        "would_withhold_mean_r_cost": _mean_r_cost(would_mature),
+        # The policy's own unit: the verdict is on the posterior net excess, so report it beside R.
+        "would_withhold_n_net_excess": int(pd.to_numeric(would_mature["net_excess_r"], errors="coerce").notna().sum()),
+        "would_withhold_mean_net_excess_r": _finite_mean(would_mature, "net_excess_r"),
     }
 
     # Scans and sent cards per calling path; pre-trigger events have none and report "unknown".

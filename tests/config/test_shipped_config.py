@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from agentic_trader.config import AppConfig, ExecutionConfig, LLMGateConfig, load_config
 from agentic_trader.execution.auto_entry import auto_entry_active
+from agentic_trader.research.setups.card_prior import load_prior
 
 
 PRODUCTION = {"COPILOT_ENV": "production", "COPILOT_ENV_FILE": ""}
@@ -169,3 +170,13 @@ def test_load_config_reads_lifetime_evidence_threshold(tmp_path):
     path.write_text(yaml.safe_dump(document))
 
     assert load_config(str(path), environ=PRODUCTION).execution.lifetime_evidence_review_after_failures == 3
+
+
+def test_shipped_prior_matches_config():
+    policy = load_config(str(SHIPPED), environ=PRODUCTION).card_policy
+
+    prior = load_prior(policy.prior_path, policy.prior_sha256)
+
+    assert prior.version == "card-stats-prior-v1"
+    assert prior.is_replay("TREND_PULLBACK", "4h", "LONG")
+    assert "prior_sha256" in policy.model_fields_set

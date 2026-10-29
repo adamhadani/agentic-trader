@@ -1,6 +1,7 @@
 """The daemon's once-daily card-statistics snapshot: due time, idempotence, scan windows, failure, shutdown."""
 
 import asyncio
+import hashlib
 import threading
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
@@ -15,9 +16,11 @@ from agentic_trader.diagnostics.readiness import HealthComponent
 from agentic_trader.execution.card_evidence import CardStatsRepository, lookup
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.market.session import ET_TZ
+from agentic_trader.research.setups import sources
 from agentic_trader.research.setups.card_stats_worker import CardStatsUnavailable, CardStatsWorker, in_scan_window
+from agentic_trader.research.setups.sources import build_daily_bar_source
 from tests.agent.test_scan_budget import budget_desk  # noqa: F401  (fixture)
-from tests.execution.card_stats_fixtures import make_snapshot
+from tests.execution.card_stats_fixtures import make_prior, make_snapshot
 from tests.research.setups.test_outcomes import AAPL_BARS, DECIDED_AT, SPY_BARS, FakeBarSource, _candidate, _event
 
 
@@ -25,8 +28,23 @@ DUE = datetime(2026, 3, 3, 13, 31, tzinfo=UTC)  # 08:31 New York (EST)
 NOT_DUE = datetime(2026, 3, 3, 13, 29, tzinfo=UTC)  # 08:29
 
 
-async def plant_scan(db, *, decided_at=DECIDED_AT, scan_id="scan-1", candidates=None):
-    event = _event(scan_id, decided_at, candidates or [_candidate(contract="AAPL", rank=1, outcome="sent")])
+MATURE_AT = datetime(2026, 1, 20, 15, 35, tzinfo=UTC)  # more than 21 sessions before DUE
+
+
+@pytest.fixture(autouse=True)
+def frozen_prior(app_config, tmp_path):
+    """Pin a hand-built prior file in the config, as the shipped config pins the committed one."""
+    raw = make_prior().model_dump_json().encode()
+    path = tmp_path / "prior.json"
+    path.write_bytes(raw)
+    app_config.card_policy.prior_path = path
+    app_config.card_policy.prior_sha256 = hashlib.sha256(raw).hexdigest()
+
+
+async def plant_scan(db, *, decided_at=DECIDED_AT, scan_id="scan-1", candidates=None, trigger="suggestion_scan"):
+    event = _event(
+        scan_id, decided_at, candidates or [_candidate(contract="AAPL", rank=1, outcome="sent")], trigger=trigger
+    )
     async with db.session_factory() as session, session.begin():
         await db.workflows.lock(session)
         await db.workflows.append(
@@ -38,10 +56,17 @@ async def plant_scan(db, *, decided_at=DECIDED_AT, scan_id="scan-1", candidates=
         )
 
 
-def worker_for(db, config, bars=None, **kwargs):
+def worker_for(db, config, bars=None, daily=None, **kwargs):
     bars = bars or FakeBarSource({"AAPL": AAPL_BARS, "SPY": SPY_BARS})
+    daily = daily or FakeBarSource({"AAPL": AAPL_BARS, "SPY": SPY_BARS})
     return CardStatsWorker(
-        db, CardStatsRepository(db.workflows), config, revision="test-rev", bar_source=lambda _config: bars, **kwargs
+        db,
+        CardStatsRepository(db.workflows),
+        config,
+        revision="test-rev",
+        bar_source=lambda _config: bars,
+        daily_bar_source=lambda _config, _now: daily,
+        **kwargs,
     ), bars
 
 
@@ -74,13 +99,15 @@ async def test_due_records_one_snapshot_per_new_york_date(temp_db, app_config):
     events = await temp_db.workflows.events(stream="card_stats")
     assert len(events) == 1 and events[0]["kind"] == EventKind.CARD_STATS_SNAPSHOT == "card_stats_snapshot"
     snapshot = await worker.repository.latest()
-    assert snapshot.snapshot_key == "card_stats/2026-03-03"
+    assert snapshot.snapshot_key == "card_stats/net_excess_r_v1/2026-03-03"
+    assert snapshot.unit == "net_excess_r_v1" and snapshot.prior_sha256 == app_config.card_policy.prior_sha256
     assert snapshot.window_start.isoformat() == "2025-12-04"  # 90 ET dates ending 2026-03-03
     assert (snapshot.feed, snapshot.code_revision) == (app_config.market_data.alpaca_feed, "test-rev")
     assert (snapshot.events_considered, snapshot.rows_labelled) == (1, 1)
-    assert snapshot.stats("BREAKOUT", "LONG").target_rate == 1.0
+    stats = snapshot.stats("BREAKOUT", "1h", "LONG")
+    assert (stats.n_young, stats.n_mature) == (1, 0)  # decided the day before: not a statistic yet
     assert await worker.run_once(DUE + timedelta(days=1)) == "recorded"
-    assert (await worker.repository.latest()).snapshot_key == "card_stats/2026-03-04"
+    assert (await worker.repository.latest()).snapshot_key == "card_stats/net_excess_r_v1/2026-03-04"
 
 
 async def test_a_due_time_inside_a_scan_window_waits_for_it_to_pass(temp_db, app_config):
@@ -114,6 +141,152 @@ async def test_the_daemon_labelling_run_makes_no_daily_tape_request(temp_db, app
     assert await worker.run_once(DUE) == "recorded"
     assert bars.calls
     assert not [call for call in bars.calls if call[1] == "1d"]
+
+
+async def test_worker_raises_without_prior(temp_db, app_config):
+    app_config.card_policy.prior_sha256 = None
+    await plant_scan(temp_db)
+    worker, bars = worker_for(temp_db, app_config)
+    with pytest.raises(CardStatsUnavailable) as raised:
+        await worker.run_once(DUE)
+    # The loader's fixed text (no path, no file content) names which check refused the prior.
+    assert str(raised.value) == "card statistics prior unavailable: prior digest is not configured"
+    assert bars.calls == [] and await worker.repository.latest() is None
+    assert not await worker.repository.exists(DUE.astimezone(ET_TZ).date())
+
+
+async def test_worker_raises_on_market_failure(temp_db, app_config):
+    """The SPY hourly read fails while AAPL's succeeds: every row carries the market reason."""
+    await plant_scan(temp_db)
+    worker, _ = worker_for(temp_db, app_config, bars=FakeBarSource({"AAPL": AAPL_BARS}, raise_for={"SPY"}))
+    with pytest.raises(CardStatsUnavailable) as raised:
+        await worker.run_once(DUE)
+    assert "RuntimeError" in str(raised.value) and "no data" not in str(raised.value)
+    assert await worker.repository.latest() is None
+
+
+async def test_worker_raises_on_daily_market_failure(temp_db, app_config):
+    await plant_scan(temp_db)
+    worker, _ = worker_for(temp_db, app_config, daily=FakeBarSource({"AAPL": AAPL_BARS}, raise_for={"SPY"}))
+    with pytest.raises(CardStatsUnavailable) as raised:
+        await worker.run_once(DUE)
+    assert str(raised.value) == "every daily bar fetch failed for 1 candidates: RuntimeError"
+    assert await worker.repository.latest() is None
+
+
+async def test_worker_raises_on_daily_market_failure_beside_an_hourly_failure(temp_db, app_config):
+    """AAPL reads hourly, MSFT does not, SPY's daily read fails: the daily rule judges the readable rows only."""
+    await plant_scan(
+        temp_db,
+        candidates=[
+            _candidate(contract="AAPL", rank=1, outcome="sent"),
+            _candidate(contract="MSFT", rank=2, outcome="sent"),
+        ],
+    )
+    worker, _ = worker_for(
+        temp_db,
+        app_config,
+        bars=FakeBarSource({"AAPL": AAPL_BARS, "SPY": SPY_BARS}, raise_for={"MSFT"}),
+        daily=FakeBarSource({"AAPL": AAPL_BARS}, raise_for={"SPY"}),
+    )
+    with pytest.raises(CardStatsUnavailable) as raised:
+        await worker.run_once(DUE)
+    assert str(raised.value) == "every daily bar fetch failed for 1 candidates: RuntimeError"
+    assert await worker.repository.latest() is None
+
+
+async def test_worker_uses_sip_daily_source(temp_db, app_config):
+    await plant_scan(temp_db)
+    daily = FakeBarSource({"AAPL": AAPL_BARS, "SPY": SPY_BARS})
+    worker, hourly = worker_for(temp_db, app_config, daily=daily)
+    assert await worker.run_once(DUE) == "recorded"
+    assert {call[1] for call in daily.calls} == {"1d"} and {call[0] for call in daily.calls} == {"AAPL", "SPY"}
+    assert all(call[4] == "all" for call in daily.calls)
+    assert not [call for call in hourly.calls if call[1] == "1d"]
+
+
+def test_worker_defaults_to_the_sip_daily_builder(temp_db, app_config):
+    worker = CardStatsWorker(temp_db, CardStatsRepository(temp_db.workflows), app_config, revision="r")
+    assert worker.daily_bar_source is build_daily_bar_source
+
+
+async def test_every_daily_read_ends_at_least_fifteen_minutes_before_the_run(temp_db, app_config, monkeypatch):
+    """The account refuses SIP history ending later than 15 minutes ago (HTTP 403): the default daily source,
+    built with the run's own ``now``, ends every read at ``now - SIP_HISTORY_DELAY``."""
+    daily, feeds = FakeBarSource({"AAPL": AAPL_BARS, "SPY": SPY_BARS}), []
+
+    def build(config, *, feed=None):
+        feeds.append(feed)
+        return daily
+
+    monkeypatch.setattr(sources, "build_bar_source", build)
+    await plant_scan(temp_db)
+    hourly = FakeBarSource({"AAPL": AAPL_BARS, "SPY": SPY_BARS})
+    worker = CardStatsWorker(
+        temp_db, CardStatsRepository(temp_db.workflows), app_config, revision="r", bar_source=lambda _config: hourly
+    )
+    assert await worker.run_once(DUE) == "recorded"
+    daily_reads = [call for call in daily.calls if call[1] == "1d"]
+    assert feeds == ["sip"] and {call[0] for call in daily_reads} == {"AAPL", "SPY"}
+    assert all(call[3] <= DUE - timedelta(minutes=15) for call in daily_reads)
+
+
+async def test_worker_recomputes_when_only_v1_key_exists(temp_db, app_config):
+    """A v1 ``card_stats/{date}`` event for today does not make the v2 key present."""
+    await plant_scan(temp_db)
+    async with temp_db.session_factory() as session, session.begin():
+        await temp_db.workflows.lock(session)
+        await temp_db.workflows.append(
+            session,
+            stream="card_stats",
+            kind=EventKind.CARD_STATS_SNAPSHOT,
+            payload=make_snapshot(computed_at=DUE).model_dump(mode="json"),
+            key="card_stats/2026-03-03",
+        )
+    worker, _ = worker_for(temp_db, app_config)
+    assert await worker.run_once(DUE) == "recorded"
+    assert await worker.repository.exists(DUE.astimezone(ET_TZ).date())
+
+
+async def test_a_mature_candidate_without_beta_history_counts_as_no_beta(temp_db, app_config):
+    await plant_scan(temp_db, decided_at=MATURE_AT)
+    worker, _ = worker_for(temp_db, app_config)
+    assert await worker.run_once(DUE) == "recorded"
+    snapshot = await worker.repository.latest()
+    stats = snapshot.stats("BREAKOUT", "1h", "LONG")
+    assert (stats.n_young, stats.n_mature, stats.n_no_beta) == (0, 0, 1)
+    assert snapshot.cohort_end == MATURE_AT.date()
+
+
+async def test_swing_and_index_candidates_are_outside_the_population(temp_db, app_config):
+    app_config.scan.broad_index_etfs = ["SPY"]
+    await plant_scan(temp_db, scan_id="swing", trigger="swing_scan")
+    await plant_scan(
+        temp_db, scan_id="idx", candidates=[_candidate(contract="SPY", rank=1, outcome="sent")], decided_at=MATURE_AT
+    )
+    worker, bars = worker_for(temp_db, app_config)
+    assert await worker.run_once(DUE) == "recorded"
+    snapshot = await worker.repository.latest()
+    assert snapshot.rows_labelled == 0 and snapshot.events_considered == 1 and bars.calls == []
+
+
+async def test_the_priors_excluded_symbols_are_outside_the_population(temp_db, app_config):
+    """BIL is excluded by the prior (never in its replay), so it is never carded live either, even when the
+    configured broad index list does not name it."""
+    app_config.scan.broad_index_etfs = ["QQQ"]
+    await plant_scan(
+        temp_db,
+        decided_at=MATURE_AT,
+        candidates=[
+            _candidate(contract="BIL", rank=1, outcome="sent"),
+            _candidate(contract="AAPL", rank=2, outcome="sent"),
+        ],
+    )
+    frames = {"AAPL": AAPL_BARS, "SPY": SPY_BARS, "BIL": AAPL_BARS}
+    worker, bars = worker_for(temp_db, app_config, bars=FakeBarSource(frames), daily=FakeBarSource(frames))
+    assert await worker.run_once(DUE) == "recorded"
+    snapshot = await worker.repository.latest()
+    assert snapshot.rows_labelled == 1 and "BIL" not in {call[0] for call in bars.calls}
 
 
 async def test_labelling_runs_off_the_event_loop(temp_db, app_config):
@@ -422,6 +595,6 @@ async def test_a_recorded_snapshot_reaches_the_next_cards_evidence(budget_desk, 
     assert evidence["snapshot_key"] == snapshot.snapshot_key
     assert evidence["status"] == "insufficient" and evidence["n_mature"] == 0  # the planted label is immature
     assert (
-        lookup(snapshot, "TREND_PULLBACK", "LONG", now=now, max_age=timedelta(days=4), min_mature=20).status
+        lookup(snapshot, "TREND_PULLBACK", "1h", "LONG", now=now, max_age=timedelta(days=4), min_mature=20).status
         == "insufficient"
     )

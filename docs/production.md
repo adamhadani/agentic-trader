@@ -471,15 +471,21 @@ carried across a whole chain of re-prices, so a twice-repriced card still cites 
 original issue time. A legacy card without `valid_until` expires on the New York
 date change instead.
 
-**Card wording and measured record (October 8).** A card's title reads `📋 SETUP: …` (it was
-`🚨 TRADE SIGNAL: …`) in both the Telegram and terminal cards. Directly under the target line a
-native card states the measured record of its own `(strategy, direction)` from the latest
-`card_stats` snapshot in this scope — the number of mature candidates since the key's first journaled
-decision (New York date), target/stop/timeout rates, mean R after cost and the implied EV at the card's
-own ratio — or says `insufficient evidence (N/MIN mature candidates)` (MIN is
-`card_policy.min_mature_cards`), `statistics stale (last computed DATE)` or `no statistics in this
-scope` (every dry scan, and a key over the floor without a finite mean R). The block always ends
-with the italic caveat "Not validated alpha. …". The scan reads the snapshot once; a failed read records `card_stats_error` in
+**Card wording and expected excess (October 8; v2 October 28).** A card's title reads `📋 SETUP: …`
+(it was `🚨 TRADE SIGNAL: …`) in both the Telegram and terminal cards. Directly under the target line
+a native card states the **expected excess** of its own `(strategy, timeframe, direction)` from the
+latest `card_stats` snapshot in this scope.
+- The expected excess is the posterior mean ± its standard error in `net_excess_r_v1`: R against a
+  beta-matched SPY control, after a per-name cost of at least 5 bp per side. The posterior shrinks the
+  time-matured live record toward a frozen 2021–26 replay prior.
+- A second line gives the replay prior (`replay 2021–26: …R over N setups`, or `no replay prior` for a
+  key the replay never saw), then the live record. When the live record is mature it shows mature
+  candidates (21 or more sessions old) since the key's first decision, with target/stop/timeout rates;
+  below the floor it reads `N/MIN mature, not yet decisive`.
+- A v1 snapshot from before the deploy, a dry scan, or no snapshot reads `no statistics in this
+  scope`; an old snapshot reads `statistics stale (last computed DATE)`.
+
+The block always ends with the italic caveat "Not validated alpha. …". The scan reads the snapshot once; a failed read records `card_stats_error` in
 the scan summary and the cards state no statistics. `Macro Check` is the deterministic lockout gate:
 a card that reached the LLM passed it, so it reads Cleared whatever the LLM wrote. Contract and
 limits: [card evidence](card-evidence.md#evidence-block).
@@ -691,20 +697,25 @@ missing signal rows are counted, never zeroed. All of it is descriptive, never a
 The report itself never ranks, gates or sizes a card; the one gate derived from the same labels is
 `card_policy` (below). The `regime_context` and `recurrence` blocks ([card evidence](card-evidence.md#regime-and-recurrence-context)) bucket mature rows by the journaled VIX regime and macro stress, by the SPY tape derived at each decision (one extra SPY daily request per run), and by each setup's recurrence in the window; the next universe scan after the 2026-10-14 deploy is the first event with a `regime` block.
 
-**Card policy (October 8).** `card_policy.mode` is the one gate derived from these outcomes, and it
-ships `off`. Operate it in three steps: leave `off` until a `card_stats` snapshot exists; set
-`preview` with `min_measured_ev` (mean R after cost, for example `0.0`) and read `would_withhold` in
-`cards outcomes` (summary block `card_policy`) and the `card_policy_would_withhold` log lines for a few
-sessions; only then set `enforce`. Under `enforce`, a native candidate whose `(strategy, direction)`
-has at least `min_mature_cards` (20) mature labels and a measured mean below the threshold is skipped
-before the LLM with the fixed outcome `card_policy_withheld` (runner-up reason `card policy: measured
-EV …R over N < …R`); it spends no card or LLM budget and the next rank is considered. Insufficient,
+**Card policy (October 8; v2 October 28).** `card_policy.mode` is the one gate derived from these
+outcomes. The code default is `off`. The shipped config is `preview` at `min_measured_ev: 0.0` since
+2026-10-28; the threshold is posterior expected excess R in `net_excess_r_v1`.
+- **Under preview:** read `would_withhold` in `cards outcomes` (summary block `card_policy`) and the
+  `card_policy_would_withhold` log lines. Expect most TREND_PULLBACK cards to journal
+  `would_withhold` once a key has 20 mature live rows, since the replay prior is about −0.08R. Cards
+  are still sent.
+- **Before `enforce`:** it is the operator's decision, and a daily-peeking enforce needs an
+  always-valid confidence sequence first ([card evidence](card-evidence.md#send-policy)).
+- **Under `enforce`:** a native candidate whose `(strategy, timeframe, direction)` has at least
+  `min_mature_cards` (20) mature labels and a posterior below the threshold is skipped before the
+  LLM. Its fixed outcome is `card_policy_withheld`, with runner-up reason `card policy: expected
+  excess …R over N < …R`. It spends no card or LLM budget, and the next rank is considered. Insufficient,
 stale, unavailable or partial evidence (a key with any bar-fetch failure, `n_fetch_failed`) never
 withholds, and a policy-locked card (versioned alpha or paper probe) is outside the policy: it shows
 its evidence and its `card_policy` block is null. Withheld candidates stay journaled (every
-full-universe scan) and keep being labelled, so a strategy can recover. Before `enforce`, count distinct
-setups per session: the same setup is journaled by repeated scans in a session and inflates
-`n_mature` and the floor. A mode change is a config edit plus the controlled restart. See
+full-universe scan) and keep being labelled, so a strategy can recover. Since v2 the record counts one
+row per setup and New York session (suggestion scans only). A key with an unreadable or unresolved
+row is partial and never withholds. A mode change is a config edit plus the controlled restart. See
 [card evidence](card-evidence.md#send-policy).
 
 **Book-aware sizing (October 9).** `book_sizing` in `config/config.yaml` shipped `mode: preview` on
@@ -725,19 +736,39 @@ blocks a card. After deploying, verify that the first scan's card provenance
 `cards outcomes` run has a `book_sizing` block. See
 [card evidence](card-evidence.md#book-aware-sizing).
 
-**Card statistics worker (October 8).** The daemon runs `card_stats` beside the research workers:
-once per New York date after `card_policy.stats_time_et` (08:30), outside the suggestion-scan
-windows and while no scan is running, it labels the last 90 days of journaled candidates and appends
-one `card_stats_snapshot` event (`copilot db events --stream card_stats`). `/readyz` includes
-`card_stats` with a four-day limit, so weekends and holidays stay ready. After a restart on a day
-without a snapshot the first poll labels before it reports `recorded`; it observes `labelling N scan
-events` first. A failed run (every bar fetch failed) writes nothing, turns `card_stats` not ready with
-`CardStatsUnavailable: every bar fetch failed for N candidates: TYPE` in its detail (exception type
-names only; any other error shows its type only; the log has the messages) and retries on the next
-poll. It stays not ready with that detail for the rest of the New York date, including the idle polls
-around the scan slots, until a poll finds or records today's snapshot; cards keep the previous
-snapshot until it is four days old and then say `statistics stale`. A shutdown during a labelling run records nothing, but
-process exit waits for the labelling thread's provider reads to finish. Details:
+**Card statistics worker (October 8; v2 since October 28).** The daemon runs `card_stats` beside the
+research workers: once per New York date after `card_policy.stats_time_et` (08:30), outside the
+suggestion-scan windows and while no scan is running, it reads the `scan_candidates_ranked` events of the
+last `card_policy.stats_window_days` New York dates (shipped 180) and labels the suggestion-scan population:
+scheduled `suggestion_scan` universe scans only, without broad index ETFs or the prior's excluded symbols
+(BIL, SHY), malformed candidates counted and dropped, and one row per contract, strategy, timeframe,
+direction and New York decision date (the earliest scan kept). Hourly bars come from the configured feed;
+beta and per-name cost come from SIP daily bars whose every read ends 16 minutes before the run, because
+the subscription refuses SIP history that ends now. It appends one `card_stats_snapshot` event under
+`card_stats/net_excess_r_v1/{et_date}` (`copilot db events --stream card_stats`). `/readyz` includes
+`card_stats` with a four-day limit, so weekends and holidays stay ready. After a restart on a day without a
+snapshot, the first poll observes `labelling N scan events` and then labels before it reports `recorded`.
+
+A failed run writes nothing and turns `card_stats` not ready. The detail is
+`CardStatsUnavailable: MESSAGE`, which carries fixed text and exception type names only (any other error
+shows its type only; the log has the messages):
+
+- `card statistics prior unavailable: REASON`: the frozen prior did not load, so no bar is read. REASON is
+  a fixed phrase (`prior digest is not configured`, `prior file not found`, `prior file unreadable`,
+  `prior digest mismatch`, `prior file invalid`, `prior version mismatch`, `prior unit mismatch`,
+  `prior constants differ from the code`). Check that the file at `card_policy.prior_path` exists in the
+  installed checkout and that `shasum -a 256` of it equals `card_policy.prior_sha256`.
+- `the market proxy hourly read failed: TYPE`: the SPY hourly read failed.
+- `every daily bar fetch failed for N candidates: TYPE`: every SIP daily read failed (SPY's, or every
+  symbol's) for the rows whose hourly read succeeded.
+- `every bar fetch failed for N candidates: TYPE`: every hourly read failed.
+
+The worker retries on the next poll. The component stays not ready with that detail for the rest of the
+New York date, including the idle polls around the scan slots, until a poll finds or records today's
+snapshot. Until then cards read the previous snapshot. On deploy day that is a v1 snapshot, which cards
+render as `no statistics in this scope`. After that, the previous v2 snapshot serves until it is four days
+old, and then cards say `statistics stale`. A shutdown during a labelling run records nothing, but process
+exit waits for the labelling thread's provider reads to finish. Details:
 [card evidence](card-evidence.md#card-statistics-snapshot).
 
 **Corporate-actions worker (October 11).** The daemon runs `corporate_actions` beside the research

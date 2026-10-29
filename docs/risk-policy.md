@@ -470,9 +470,9 @@ These decide or bound entries, but they are not entry-risk rules and stay where 
 - **Scan scheduling:** `is_session_active` decides when scans run, not whether a card may
   enter.
 - **The card policy:** `card_policy` ([card evidence](card-evidence.md#send-policy)). In `enforce`
-  mode it withholds a native card only on complete measured evidence (status `measured`, at least
-  `min_mature_cards` mature labels, no fetch failures in the key, mean R after cost below
-  `min_measured_ev`); insufficient, stale, unavailable or partial evidence never withholds, and a
+  mode it withholds a native card only on complete, time-matured evidence (status `measured`, at
+  least `min_mature_cards` mature labels, no fetch failure or unresolved label in the key, and a
+  posterior expected excess in `net_excess_r_v1` below `min_measured_ev`); insufficient, stale, unavailable or partial evidence never withholds, and a
   policy-locked card (versioned alpha or paper probe, whose liveness stays `probe_block_reason`) is
   outside it. It is a switch on measured outcomes, not a fail-closed rule,
   and it never reads or changes the book, admission, the FIFO or the broker.

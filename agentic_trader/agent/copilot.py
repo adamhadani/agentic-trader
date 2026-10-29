@@ -162,6 +162,7 @@ from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.research.alpha.strategy import execution_policy_from_dict, policy_trails, trailing_price
 from agentic_trader.research.pooled.entry import REPO_ROOT
 from agentic_trader.research.setups.card_stats import CardStatsSnapshot
+from agentic_trader.research.setups.net_excess import NET_EXCESS_UNIT
 from agentic_trader.research.setups.ranker import (
     cached_ranker,
     finite_or_none,
@@ -1525,7 +1526,7 @@ class TradingCopilot:
             )
             book_by_rank: list[BookSizingDecision | None] = [None] * len(ranked)
             # EVIDENCE: one snapshot read per scan; every native card states its own (strategy,
-            # direction) record. Catalog cards (PEAD drift, insider watch) carry none, so card_policy never
+            # timeframe, direction) record. Catalog cards (PEAD drift, insider watch) carry none, so card_policy never
             # judges them. A journal-only scan reads no snapshot and states no evidence, so the card policy
             # below has nothing to judge.
             card_policy = self.config.card_policy
@@ -1536,6 +1537,7 @@ class TradingCopilot:
                 else lookup(
                     snapshot,
                     candidate.strategy,
+                    candidate.timeframe,
                     candidate.direction,
                     now=decided_at,
                     max_age=timedelta(seconds=card_policy.stats_max_age_seconds),
@@ -2529,6 +2531,7 @@ class TradingCopilot:
                     "min_measured_ev": policy.min_measured_ev,
                     "min_mature_cards": policy.min_mature_cards,
                     "snapshot_key": snapshot_key,
+                    "unit": NET_EXCESS_UNIT,
                 },
                 "candidates": candidates,
             }

@@ -127,7 +127,7 @@ def _evidence_block(card_evidence: Any, strategy: str, eval_res: LLMTradeEvaluat
     evidence = parse_card_evidence(card_evidence, strategy=strategy, direction=eval_res.direction)
     if evidence is None:
         return ""
-    return "".join(f"{line}\n" for line in format_evidence_lines(evidence, eval_res.risk_reward_ratio, html=markup))
+    return "".join(f"{line}\n" for line in format_evidence_lines(evidence, html=markup))
 
 
 def _book_line(book_sizing: dict[str, Any] | None, *, markup: bool) -> str:

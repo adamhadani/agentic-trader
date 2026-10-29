@@ -16,9 +16,17 @@ from tests.execution.card_stats_fixtures import FakeCardStats, key_stats, make_s
 
 QUALITIES = {"AAA": 0.6, "BBB": 0.7, "CCC": 0.8, "DDD": 0.9, "EEE": 0.5}
 NEGATIVE = key_stats(
-    "TREND_PULLBACK", "LONG", target_rate=0.23, stop_rate=0.77, timeout_rate=0.0, mean_r_cost=-0.39, mean_timeout_r=None
+    "TREND_PULLBACK",
+    "LONG",
+    n_mature=30,
+    target_rate=0.23,
+    stop_rate=0.77,
+    timeout_rate=0.0,
+    mean_r_cost=-0.39,
+    mean_timeout_r=None,
+    posterior_mean=-0.39,
 )
-REASON = "card policy: measured EV -0.39R over 30 < +0.00R"
+REASON = "card policy: expected excess -0.39R over 30 < +0.00R"
 
 
 @pytest.fixture
@@ -32,7 +40,7 @@ def policy_desk(shadow_desk):  # noqa: F811
         )
     ]
     shadow_desk.card_stats = FakeCardStats(
-        make_snapshot(keys=[NEGATIVE, key_stats("SQUEEZE_BREAKOUT", "LONG", n_mature=5, mean_r_cost=0.1)])
+        make_snapshot(keys=[NEGATIVE, key_stats("SQUEEZE_BREAKOUT", "LONG", n_mature=5, posterior_mean=0.1)])
     )
     return shadow_desk
 
@@ -56,18 +64,21 @@ async def test_off_sends_and_journals_evidence_without_a_verdict(policy_desk, te
         "min_measured_ev": None,
         "min_mature_cards": 20,
         "snapshot_key": policy_desk.card_stats.snapshot.snapshot_key,
+        "unit": "net_excess_r_v1",
     }
     assert by_contract["DDD"]["card_policy"] == {
         "measured_ev": -0.39,
         "n_mature": 30,
         "would_withhold": None,
         "n_fetch_failed": 0,
+        "unit": "net_excess_r_v1",
     }
     assert by_contract["CCC"]["card_policy"] == {
         "measured_ev": None,
         "n_mature": None,
         "would_withhold": None,
         "n_fetch_failed": 0,
+        "unit": "net_excess_r_v1",
     }
 
 
@@ -83,6 +94,7 @@ async def test_preview_sends_and_journals_would_withhold(policy_desk, temp_db, a
         "n_mature": 30,
         "would_withhold": True,
         "n_fetch_failed": 0,
+        "unit": "net_excess_r_v1",
     }
     _, by_contract = await _ranked(temp_db)
     assert by_contract["DDD"]["outcome"] == "sent" and by_contract["DDD"]["card_policy"]["would_withhold"] is True
@@ -109,7 +121,13 @@ async def test_enforce_withholds_before_the_llm_and_falls_through(policy_desk, t
     ddd = by_contract["DDD"]
     assert ddd["outcome"] == RankedOutcome.CARD_POLICY_WITHHELD == "card_policy_withheld"
     assert ddd["signal_id"] is None and ddd["llm"] is None
-    assert ddd["card_policy"] == {"measured_ev": -0.39, "n_mature": 30, "would_withhold": True, "n_fetch_failed": 0}
+    assert ddd["card_policy"] == {
+        "measured_ev": -0.39,
+        "n_mature": 30,
+        "would_withhold": True,
+        "n_fetch_failed": 0,
+        "unit": "net_excess_r_v1",
+    }
     [signal] = await temp_db.get_recent_signals(limit=10)
     provenance = signal["decision_provenance"]
     assert provenance["card_policy"] == {
@@ -117,6 +135,7 @@ async def test_enforce_withholds_before_the_llm_and_falls_through(policy_desk, t
         "n_mature": None,
         "would_withhold": False,
         "n_fetch_failed": 0,
+        "unit": "net_excess_r_v1",
     }
     assert provenance["card_evidence"]["status"] == "insufficient"
 
@@ -144,12 +163,13 @@ async def test_enforce_never_withholds_without_complete_measured_evidence(policy
             "n_mature": 30,
             "would_withhold": False,
             "n_fetch_failed": 2,
+            "unit": "net_excess_r_v1",
         }
         [signal] = await temp_db.get_recent_signals(limit=10)
         assert signal["decision_provenance"]["card_evidence"]["n_fetch_failed"] == 2
 
 
-NULL_POLICY = {"measured_ev": None, "n_mature": None, "would_withhold": None, "n_fetch_failed": None}
+NULL_POLICY = {"measured_ev": None, "n_mature": None, "would_withhold": None, "n_fetch_failed": None, "unit": None}
 
 
 @pytest.mark.parametrize(
@@ -206,4 +226,6 @@ async def test_withheld_candidates_stay_journaled_and_keep_being_labelled(shadow
         "would_withhold": 5,
         "withheld_mean_r_cost": None,
         "would_withhold_mean_r_cost": None,
+        "would_withhold_n_net_excess": 0,
+        "would_withhold_mean_net_excess_r": None,
     }

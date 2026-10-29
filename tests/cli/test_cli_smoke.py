@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,6 +15,7 @@ from agentic_trader.config import ScanBudget, load_config
 from agentic_trader.diagnostics.doctor import ComponentHealth, DiagnosticReport
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.presentation.formatters import PanicReportView
+from agentic_trader.research.setups import sources
 from agentic_trader.storage.db import SignalDatabase
 
 
@@ -456,6 +457,73 @@ def test_cards_outcomes_prints_operator_block(runner: CliRunner):
     for key in ('"operator"', '"by_slot"', '"tap_latency"', '"kept_vs_vetoed"', '"tap_era"'):
         assert key in result.output
     assert '"status": "insufficient"' in result.output
+
+
+def test_cards_outcomes_daily_source_reads_sip_through_its_delayed_bound(runner: CliRunner):
+    """The beta and per-name cost reads are SIP: each ends at least 15 minutes before now (an end of now is a 403)."""
+    fixed_now = datetime(2026, 3, 3, 20, 0, tzinfo=UTC)
+    decided_at = datetime(2026, 3, 3, 15, 0, tzinfo=UTC)
+    candidate = {
+        "contract": "AAPL",
+        "strategy": "BREAKOUT",
+        "timeframe": "1h",
+        "direction": "LONG",
+        "entry": 100.0,
+        "stop": 99.0,
+        "target": 102.0,
+        "rank": 1,
+        "outcome": "sent",
+    }
+    event = {
+        "id": 1,
+        "stream": "scan/2026-03-03",
+        "kind": EventKind.SCAN_CANDIDATES_RANKED,
+        "payload": {
+            "scan_id": "daily-bound",
+            "decided_at": decided_at.isoformat(),
+            "scope": "universe",
+            "trigger": "suggestion_scan",
+            "candidates": [candidate],
+        },
+    }
+    hourly = pd.DataFrame(
+        {"Open": [100.5], "High": [100.8], "Low": [100.2], "Close": [100.6]},
+        index=pd.DatetimeIndex([pd.Timestamp("2026-03-03T15:00:00+00:00")], tz="UTC"),
+    )
+    daily, feeds = _FakeBarSource(pd.DataFrame()), []
+
+    def build(config, *, feed=None):
+        feeds.append(feed)
+        return daily
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+
+    with (
+        patch.object(cards_module, "datetime", _FrozenDateTime),
+        patch.object(cards_module, "scan_ranked_events", AsyncMock(return_value=[event])),
+        patch.object(cards_module, "build_bar_source", return_value=_FakeBarSource(hourly)),
+        patch.object(sources, "build_bar_source", build),
+    ):
+        result = runner.invoke(cli, ["cards", "outcomes", "--days", "1"])
+
+    assert result.exit_code == 0, result.output
+    daily_reads = [call for call in daily.calls if call[1] == "1d"]
+    assert feeds == ["sip"] and {call[0] for call in daily_reads} == {"AAPL", "SPY"}
+    assert all(call[3] <= fixed_now - timedelta(minutes=15) for call in daily_reads)
+
+
+def test_cards_outcomes_days_reach_the_card_statistics_window(runner: CliRunner):
+    """`--days` accepts up to 180 days, the shipped `card_policy.stats_window_days`, and no more."""
+    with (
+        patch.object(cards_module, "scan_ranked_events", AsyncMock(return_value=[])) as events,
+        patch.object(cards_module, "build_bar_source", return_value=_FakeBarSource(pd.DataFrame())),
+    ):
+        assert runner.invoke(cli, ["cards", "outcomes", "--days", "180"]).exit_code == 0
+        assert events.await_args.args[1] == 180
+        assert runner.invoke(cli, ["cards", "outcomes", "--days", "181"]).exit_code != 0
 
 
 def test_db_queue_default_kind_is_a_valid_choice(runner: CliRunner):

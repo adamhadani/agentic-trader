@@ -272,10 +272,12 @@ CardPolicyMode = Literal["off", "preview", "enforce"]
 class CardPolicyConfig(BaseModel):
     """Measured-evidence card policy, statistics worker and card validity (docs/card-evidence.md).
 
-    Ships off: the evidence block is always rendered, but nothing is withheld until the operator
-    sets ``preview`` (journal ``would_withhold``, still send) and then ``enforce``. It withholds
-    native cards only on complete measured evidence (partial, stale or missing evidence never
-    withholds; alpha, probe and drift cards are exempt) and is not a risk rule.
+    The code default is off; the shipped config runs ``preview`` at 0.0 (journal ``would_withhold``,
+    still send) and ``enforce`` is the operator's call. The evidence block is always rendered. It
+    withholds native cards only on complete, time-matured evidence whose posterior expected excess R
+    (``net_excess_r_v1``: a frozen replay prior shrunk toward the live record) is below
+    ``min_measured_ev`` (partial, stale or missing evidence never withholds; alpha, probe and drift
+    cards are exempt) and is not a risk rule.
     """
 
     model_config = {"extra": "forbid"}
@@ -288,6 +290,17 @@ class CardPolicyConfig(BaseModel):
     stats_poll_seconds: int = Field(default=300, ge=10, le=3600)
     stats_max_age_seconds: int = Field(default=345600, gt=0)
     validity: CardValidity = "session_close"
+    # The frozen replay prior (docs/card-stats-prior-2026-10-28.md): an immutable file pinned by SHA-256.
+    prior_path: Path = Field(default=Path("config/research/card-stats-prior-v1.json"), validate_default=True)
+    prior_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("prior_path", mode="after")
+    @classmethod
+    def _resolve_prior_path(cls, value: Path) -> Path:
+        """A relative path must mean the same file for the daemon, an operator CLI invocation and a test alike."""
+        if value.is_absolute():
+            return value
+        return (WORKSPACE_ROOT / value).resolve()
 
     @field_validator("mode", mode="before")
     @classmethod
