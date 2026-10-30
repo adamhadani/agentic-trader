@@ -59,7 +59,7 @@ Statuses follow the review's §2.5. The "Reads" column lists ledger ids from the
 | W5 | Native setups holdout 2026-03-02 → 2026-08-14 | spent | None | L25 |
 | W6 | Event decisions 2016-08-01 → 2026-07-31 (PEAD, exdiv, insider) | spent for these three hypotheses | Rehearsal only | L12–L14, L17 |
 | W7 | Spread lane discovery 2018-01-02 → 2023-12-29 | spent for pairs v1 and v2 on cohort v1 | None | L31–L32 |
-| W8 | Spread lane confirmation 2024-01-02 → 2026-07-31 | fresh (separate `spread/confirmation` key, unread) | None | None |
+| W8 | Spread lane confirmation 2024-01-02 → 2026-07-31 | reserve (decay check only) | None; the spread lane is closed | The `spread/confirmation` journal key is unconsumed and no spread study read these dates; other lanes read the same dates (L12–L20, L39; see W2) |
 | W9 | ETF, sector-panel and screened-equity windows (2020–2025) | development only | None | L33–L39, L18–L20 |
 | W10 | Sharadar era 2007-01 → 2016-07 (Form 4 from 2006) | fresh | One frozen manifest, two declared lanes | None |
 | W11 | Prospective from 2026-08-01 | fresh | Probe monitors; a fixed 2027-08 insider read | Monitors only (see below) |
@@ -189,7 +189,7 @@ route (a)). It needs its own row and α first.
    studies (L25–L27), the erratum (L28) and two prior derivations from the same frame (L29, L30). The count is
    consistent with the review, but the first three are the only independent studies.
 5. **The spread lane is absent from §2.5.** Its discovery window 2018-01-02 → 2023-12-29 was read twice
-   (L31, L32). Its confirmation key is separate from the pooled one and unread (W8).
+   (L31, L32). Its confirmation key is separate from the pooled one and unconsumed, but other lanes read the same dates, so the window is not fresh (W8).
 6. **PEAD's "recent" window differs between docs.** The study uses "recent" from 2023-01-01 (L12) and the
    base-rate doc from 2025-01-01 (L17). Both are as stated in their docs.
 
