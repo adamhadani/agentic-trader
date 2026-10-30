@@ -63,7 +63,7 @@ measurement items it does not mention.
 
 | # | Direction | Cost | Status |
 | --- | --- | --- | --- |
-| 1 | **Honest card stream.** `card_policy` decision at DP0 (11-06; enforce recommended), `card_stats` empirical-Bayes prior across keys, PEAD net-excess base rate by year on PEAD cards, the raw EPS/consensus pair in `pead_decision`, `gex.py` IV NaN instead of a fabricated 0.20 (contract 9), the window × read ledger | $0 | In progress on `feature/honest-stream` (started 2026-10-30) |
+| 1 | **Honest card stream.** `card_policy` decision at DP0 (11-06; enforce recommended), `card_stats` empirical-Bayes prior across keys, PEAD net-excess base rate by year on PEAD cards, the raw EPS/consensus pair in `pead_decision`, `gex.py` IV NaN instead of a fabricated 0.20 (contract 9), the window × read ledger | $0 | Built on `feature/honest-stream` (started 2026-10-30): EB prior, PEAD base-rate block and raw EPS pair, GEX NaN, [window × read ledger](research-window-ledger.md); awaiting merge, deploy and the DP0 decision |
 | 2 | **Sharadar 2007–2016 era, event lane.** `insider-oos-v1` (P2 primary, beta/ATR-matched controls, earnings-proximity and ex-crisis secondaries) and `pead-sue-v3` (consensus-free SUE, entry at the later of D+2 and `datekey` + 1). One frozen manifest, Holm over 2, delisting rule, placebo, rehearsal on 2016-08 → 2026-07 first | ≈ $499/yr (verify) | Waits on O1 (operator evaluating Sharadar) |
 | 3 | **IC machinery and `composite-ic-v1`.** `cs_rank`, `cs_zscore`, `group_neutralize`, `cs_regress_out`, `ts_beta`/`ts_cov`/`ts_skew`; cube v2 arrays with next-open forward and residual returns; rank IC with a session-block bootstrap; checks A-IC and C-IC; a zero-trial re-score of the 64 pairs. One equal-weight JKP-theme composite chosen by a mechanical rule, frozen before any IC, decided at h = 20 on the era. It becomes the yardstick for every new data source | $0 beyond Sharadar | The grammar and IC statistic need no purchase; cube v2 and the era read wait on O1 |
 | 4 | **Options-implied information.** Freeze `options_fields_v1`; spend one hour checking Alpaca's indicative IV ranks against ORATS before any capture worker | ≤ $49 | Deferred (week 7) |
@@ -87,7 +87,7 @@ measurement items it does not mention.
 
 | Decision | Due | Status |
 | --- | --- | --- |
-| O1 (Sharadar) | 11-03 | Operator researching it, 2026-10-30 |
+| O1 (Sharadar) | 11-03 | Operator researching it, 2026-10-30; terms verified (Bundle $69/month or $499/year, no retention after cancellation, personal-use licence, publication limit): [README](alpha-directions-2026-10-30/README.md#sharadar-terms-and-evidence-verified-2026-10-30) |
 | O2 (≈ $550 spend cap) | 11-03 | Open |
 | O3 (non-native sources ≤ 5 of 8 slots) | 11-03 | Open |
 | DP0 (`card_policy` enforce or preview) | Fri 11-06 | Open |

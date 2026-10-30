@@ -34,7 +34,7 @@ code changes; file and symbol names are the stable reference.
   clusters (+0.070R over matched controls). Both were measured on survivorship-biased cohorts. Paper
   trading cannot validate anything within the program: a 0.1R card effect takes about 28 months of
   cards to see.
-- **Direction 1, an honest card stream ($0, week 1).**
+- **Direction 1, an honest card stream ($0, week 1).** Status: built on `feature/honest-stream` (2026-10-30), awaiting merge and deploy; the `card_policy` decision stays due at DP0.
   - Decide `card_policy` at DP0.
   - Give `card_stats` an empirical-Bayes prior across keys.
   - Put a net-excess base rate on PEAD cards, and journal the raw EPS/consensus pair.
@@ -58,7 +58,7 @@ code changes; file and symbol names are the stable reference.
 
 | # | Decision | Recommendation | Status |
 | --- | --- | --- | --- |
-| O1 | Subscribe to the Sharadar Core US Equities Bundle (D8); day-1 diligence on price, retention after cancellation, research-use licence, `datekey` semantics, EVENTS item codes, delisting fields | Yes | Operator researching it (2026-10-30). Claude does not purchase |
+| O1 | Subscribe to the Sharadar Core US Equities Bundle (D8); day-1 diligence on price, retention after cancellation, research-use licence, `datekey` semantics, EVENTS item codes, delisting fields | Yes | Operator researching it (2026-10-30). Claude does not purchase. Plans, retention and licence terms are now verified (see [Sharadar terms](#sharadar-terms-and-evidence-verified-2026-10-30)); `datekey` semantics, EVENTS item codes and delisting fields remain day-1 checks |
 | O2 | Spend cap through 12-31: Sharadar plus at most $49 for an ORATS check | ≈ $550 | Open |
 | O3 | Book capacity: non-native sources (PEAD, insider watch, future probes) share at most 5 of the 8 desk slots | Approve the principle; numbers at DP2 | Open |
 | DP0 | `card_policy` on Fri 11-06: `enforce` at 0.0 (≈ 0.5 cards/session) or preview with no auto-entry of `would_withhold` cards (≈ 2.5) | Enforce | Due 2026-11-06 |
@@ -84,10 +84,35 @@ One multi-agent workflow of nine agents, with no failed agents:
 Figures marked "my arithmetic" are planning estimates. The power check named beside each one must
 confirm it before any read.
 
+## Sharadar terms and evidence (verified 2026-10-30)
+
+Checked against the vendor's public pages on 2026-10-30. This is a reading of the text, not legal advice.
+
+- **Plans** ([sharadar.com/subscribe](https://sharadar.com/subscribe)): the Bundle with full history is
+  $69 a month or $499 a year and covers all tables. The Prices plan with full history is $39 a month or
+  $299 a year and has no fundamentals, insiders or events, so the program needs the Bundle.
+- **Licence** ([sharadar.com/terms](https://sharadar.com/terms)): natural persons for personal use
+  only. Commercial users go through Nasdaq Data Link.
+- **No retention.** Section 10 requires deleting all copies of the data, including caches and
+  extracts, within 30 days of termination. Derived works that "do not contain and cannot reproduce"
+  the data may be kept. The report's "verify retention" item is therefore answered: there is none, and
+  the annual fee is ongoing infrastructure.
+- **Publication limit.** Section 8 bars publishing or disclosing conclusions about the data's "value,
+  usability or fitness" without Sharadar's prior written approval, and section 4 bars derivative data
+  that allows reverse engineering. **This repository is public.** Sharadar audit findings, data rows,
+  cubes and per-event frames stay out of Git, under `~/agentic-trader-research`. Whether strategy
+  verdicts on the era may be published is a question for Sharadar, and the operator is the one to ask.
+- **Independent evidence.** Public third-party write-ups are linked for the operator's review:
+  - <https://github.com/KaxaNuk/Data-Curator/issues/42>
+  - <https://github.com/nick-fournier/portfolio-lab/pull/102>
+  - <https://github.com/rtrimble13/fafnir/pull/195>
+  - <https://github.com/emanuel894/trading_agent/issues/44>
+
 ## Caveats
 
 - The strand reports (01–08), the book text extractions and the workflow script are archived locally,
   not in Git, at `~/agentic-trader-research/alpha-directions-20261030/`.
-- Sharadar's price, licence retention after cancellation and `datekey` semantics were not verified. No
-  vendor statement on them was found on 2026-10-30.
+- The report's Sharadar price, retention and licence items were unverified when it was written. The
+  check on 2026-10-30 settled them (previous section); [report.md](report.md) is unchanged.
+  `datekey` semantics are still unverified.
 - Probabilities are the editor's judgement after the critiques, not measured quantities.
