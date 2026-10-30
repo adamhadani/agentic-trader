@@ -73,7 +73,7 @@ uv run python scripts/card_stats_prior.py shrink config/research/card-stats-prio
   6bab4e8d76a53ca099f9e5c82cd249e6cee2b9d26c4fc7e1613bd1e8469e5432 config/research/card-stats-prior-v2.json
 ```
 
-v2 SHA-256 (`card_policy.prior_sha256`): `39056a50f30caa1bbf44d5beecb271eb7a381ac21d4e97b1907ca256b086d713`.
+v2 SHA-256 (`card_policy.prior_sha256`): `cbbf3538abe256252de5ed0d2fde96ffe54fb79fc4f09432b86782577e7e3689`.
 Cross-key mean `μ = -0.0076R`.
 
 | Key | `replay_mean` | `shrinkage` | `mean` |

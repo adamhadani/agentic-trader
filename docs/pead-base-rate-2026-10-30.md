@@ -13,7 +13,7 @@ promotion credit. The PEAD card shows its expected figure.
 | Study | `~/agentic-trader-research/apriori-pead-v2-20260926` (run 2026-09-26): `events.csv.gz` sha256 `23ce01f7…`, `labels.csv.gz` `239d8526…`, `protocol.json` `d5defdfd…` |
 | Bars | `apriori-pead-v1-cache` (hourly and daily per symbol, SPY daily): the file records the cache name, the sha256 of `bars/cache_range.json` (`d9d9b64e…`) and a digest over the sorted names (content hashes) of the hourly and daily `.npz` files used (`24961e72…`). SPY hourly from `setup-cache-2017` and `setup-cache-v1`, concatenated and de-duplicated: names digest `851e3c8a…`. The daily bars set beta and cost, which the reproduction check does not cover, so the digests pin them |
 | Window | decisions 2016-08-01 to 2026-07-31; recent window from 2025-01-01 |
-| Output | `config/research/pead-base-rate-v1.json`, sha256 `2e9c67905bd2593b0a3b4eec1d317b4c42dd7e17f4a71158cc218c277e5627a5` (generated from a dirty tree; regenerated from a clean commit before it is pinned) |
+| Output | `config/research/pead-base-rate-v1.json`, sha256 `b92308070957a0bc4f3cb917bfb2e57ab3d59f73b74e38245cf0431d69890551` |
 
 ```
 uv run python scripts/pead_base_rate.py ~/agentic-trader-research/apriori-pead-v2-20260926 \

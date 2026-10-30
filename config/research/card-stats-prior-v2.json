@@ -1,7 +1,7 @@
 {
   "beta_window_sessions": 120,
   "between_key_tau": 0.16432742109320947,
-  "code_revision": "research/prospective-equity-panel-iex-v1-20260918-69-g750a31d-dirty",
+  "code_revision": "research/prospective-equity-panel-iex-v1-20260918-77-g45541a8",
   "cost_bps_quantiles": {
     "max": 136.44386906753076,
     "p50": 6.185466676093411,

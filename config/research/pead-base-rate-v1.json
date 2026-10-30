@@ -123,7 +123,7 @@
       "year": 2026
     }
   ],
-  "code_revision": "research/prospective-equity-panel-iex-v1-20260918-71-g177d241-dirty",
+  "code_revision": "research/prospective-equity-panel-iex-v1-20260918-77-g45541a8",
   "cost_model": {
     "cost_cap_bps": 200.0,
     "cost_floor_bps": 5.0,
