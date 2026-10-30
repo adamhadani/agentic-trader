@@ -178,7 +178,7 @@ an empty, clear calendar. Missing VIX (after one fresh re-read) fails regime eva
 the scan is skipped, and a scheduled suggestion scan queues the New York date's one notice); a missing macro
 decision input is `UNKNOWN` stress at 0.5× with breakouts off, or at `EXTREME`'s limits when the present VIX or
 HY OAS already forces `EXTREME`. Daily-feed admission age remains a gap.
-GEX is an option-chain/model estimate with quality notes and a required real spot. Replay evidence: [LLM prompt evaluation, 2026-09-22](llm-prompt-eval-2026-09-22.md) (old prompt 0/10 approvals on the traced candidates, new prompt 10/10, lockout control 6/6 rejected).
+GEX is an option-chain/model estimate with quality notes and a required real spot; a contract missing implied volatility or expiry contributes no gamma exposure (counted in a quality note, never defaulted), and a chain where none has both is unavailable. Replay evidence: [LLM prompt evaluation, 2026-09-22](llm-prompt-eval-2026-09-22.md) (old prompt 0/10 approvals on the traced candidates, new prompt 10/10, lockout control 6/6 rejected).
 A separate deterministic gate right after the macro lockout (step 2b, `agent/earnings.py`) rejects equity
 candidates with an ahead earnings report inside `risk.earnings_blackout_days` (default 7); a failed/unparseable
 lookup fails open (never blocks) and surfaces as an "Unverified" card note instead. The LLM never sees or sets

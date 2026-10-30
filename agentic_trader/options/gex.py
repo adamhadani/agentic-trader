@@ -7,11 +7,8 @@ from typing import Any
 import pandas as pd
 
 from agentic_trader.constants import (
-    CALENDAR_DAYS_PER_YEAR,
     DEFAULT_GEX_REGIME_THRESHOLD,
-    DEFAULT_IMPLIED_VOLATILITY,
     DEFAULT_RISK_FREE_RATE,
-    DEFAULT_TIME_TO_EXPIRY_DAYS,
     GEX_MILLION_CONVERSION,
     OPTIONS_CONTRACT_MULTIPLIER,
 )
@@ -27,24 +24,24 @@ def normalize_option_chain(frame: pd.DataFrame, side: str) -> tuple[pd.DataFrame
         return frame, []
     result = frame.copy()
     notes: list[str] = []
-    defaults = {
-        "strike": 0.0,
-        "openInterest": 0.0,
-        "volume": 0.0,
-        "impliedVolatility": DEFAULT_IMPLIED_VOLATILITY,
-        "dte_years": DEFAULT_TIME_TO_EXPIRY_DAYS / CALENDAR_DAYS_PER_YEAR,
-    }
+    # Observed counts default to zero. Implied volatility and expiry are never invented: an invalid one stays
+    # NaN so the contract is excluded from gamma exposure while its open interest and volume still count.
+    defaults = {"strike": 0.0, "openInterest": 0.0, "volume": 0.0}
+    nullable = ("impliedVolatility", "dte_years")
     if "dte_years" not in result and "time_to_expiry" in result:
         result["dte_years"] = result["time_to_expiry"]
-    for column, default in defaults.items():
+    for column in (*defaults, *nullable):
         raw = result[column] if column in result else pd.Series(float("nan"), index=result.index)
         numeric = pd.to_numeric(raw, errors="coerce").replace([float("inf"), -float("inf")], float("nan"))
         invalid = numeric.isna() | (numeric < 0)
-        if column in ("strike", "impliedVolatility", "dte_years"):
+        if column == "strike" or column in nullable:
             invalid |= numeric == 0
+        if column in nullable:
+            result[column] = numeric.mask(invalid, float("nan"))
+            continue
         if invalid.any():
             notes.append(f"{side}: {int(invalid.sum())} missing/invalid {column} values")
-        result[column] = numeric.mask(invalid, default)
+        result[column] = numeric.mask(invalid, defaults[column])
     return result[result["strike"] > 0], notes
 
 
@@ -52,8 +49,8 @@ def black_scholes_gamma(
     spot: float,
     strike: float,
     time_to_expiry_years: float,
-    risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
-    implied_volatility: float = DEFAULT_IMPLIED_VOLATILITY,
+    risk_free_rate: float,
+    implied_volatility: float,
 ) -> float:
     """Calculates analytical Black-Scholes Gamma (second derivative of option price w.r.t spot).
 
@@ -99,8 +96,11 @@ class GEXCalculator:
         - 'strike': float
         - 'openInterest': int/float
         - 'volume': int/float (optional)
-        - 'impliedVolatility': float (optional, default 0.20)
-        - 'dte_years' or 'time_to_expiry': float (optional, default 14/365)
+        - 'impliedVolatility': float (a contract without it contributes no gamma exposure)
+        - 'dte_years' or 'time_to_expiry': float (a contract without it contributes no gamma exposure)
+
+        Neither input is ever substituted. Excluded contracts keep their open interest and volume, and a quality
+        note counts them. Raises ValueError when contracts exist but none has both inputs.
         """
         if not math.isfinite(underlying_price) or underlying_price <= 0:
             raise ValueError(f"Underlying price must be positive, got {underlying_price}")
@@ -108,6 +108,17 @@ class GEXCalculator:
         calls_df, call_notes = normalize_option_chain(calls_df, "calls")
         puts_df, put_notes = normalize_option_chain(puts_df, "puts")
         quality_notes = call_notes + put_notes
+        usable = 0
+        total = len(calls_df) + len(puts_df)
+        for side, chain in (("calls", calls_df), ("puts", puts_df)):
+            for column in ("impliedVolatility", "dte_years"):
+                missing = int(chain[column].isna().sum()) if not chain.empty else 0
+                if missing:
+                    quality_notes.append(f"{side}: {missing} contracts without {column} excluded from gamma exposure")
+            if not chain.empty:
+                usable += int((chain["impliedVolatility"].notna() & chain["dte_years"].notna()).sum())
+        if total and not usable:
+            raise ValueError("no option contract has both implied volatility and expiry")
         if quality_notes:
             logger.warning("Incomplete option chain for %s: %s", symbol, "; ".join(quality_notes))
         strike_data: dict[float, dict[str, Any]] = {}
@@ -117,13 +128,16 @@ class GEXCalculator:
             for _, row in chain.iterrows():
                 strike = float(row["strike"])
                 oi, volume = int(row["openInterest"]), int(row["volume"])
-                gamma = black_scholes_gamma(
-                    underlying_price,
-                    strike,
-                    float(row["dte_years"]),
-                    self.risk_free_rate,
-                    float(row["impliedVolatility"]),
-                )
+                if math.isnan(row["impliedVolatility"]) or math.isnan(row["dte_years"]):
+                    gamma = 0.0
+                else:
+                    gamma = black_scholes_gamma(
+                        underlying_price,
+                        strike,
+                        float(row["dte_years"]),
+                        self.risk_free_rate,
+                        float(row["impliedVolatility"]),
+                    )
                 exposure = (
                     sign
                     * gamma
