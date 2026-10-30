@@ -1,6 +1,6 @@
 # Alpha research roadmap
 
-**Active long-horizon plan — updated 2026-09-19.** This is the canonical alpha work
+**Active long-horizon plan — updated 2026-10-30.** This is the canonical alpha work
 queue. [Pipeline contracts](alpha-pipeline.md) describe current behavior; the
 [architecture review](architecture-review.md) retains broader operational priorities.
 The [original alpha review](alpha-stack-review.md) is historical defect evidence.
@@ -23,6 +23,78 @@ also recognize controlled positive cases and quantify its statistical power.
 - Keep active paper service and test configuration isolated. Develop in a worktree.
 - Each change starts with behavioral tests; retain RED → GREEN evidence, then review,
   relevant integrations, pre-commit/CI and a controlled deployment if code changes.
+
+## Alpha directions program (October 30)
+
+The [October 30 alpha-directions review](alpha-directions-2026-10-30/README.md) asked why the data →
+signal → alpha pipeline still produces no tradable source and where to look next. Its
+[report](alpha-directions-2026-10-30/report.md) sets an 8-week program for 2026-11-02 → 2026-12-24.
+For new alpha work this program governs. The October 21 queue below still governs operations and
+measurement items it does not mention.
+
+**Diagnosis.**
+- **Single price/volume signals are exhausted at our power.** The minimum detectable effect is
+  0.065–0.08R per trade, against a plausible 0.02–0.05R. The 64 pooled t-statistics have mean −0.06 and
+  sd 1.25, which is what chance alone produces.
+- **Only the two information events, judged against event-built controls, showed anything.** PEAD gave
+  P2 +0.055R (t ≈ 2.66); its by-year excess is weak since 2025. Insider clusters gave P2 +0.070R. Both
+  were measured on survivorship-biased cohorts.
+- **Nothing combines signals.**
+- **The native card generator has a negative prior.** TREND_PULLBACK 4h LONG is −0.078R over 7,049
+  replayed setups.
+- **Clean history is nearly spent.** Only the 2007–2016 era (with Form 4 from 2006) and the prospective
+  window since 2026-08-01 are unread.
+- **A statistical pass is not a card.** A long-only mid-cap pass can still lose to a beta-matched SPY.
+- **Paper trading cannot validate within the program.** A 0.1R card effect needs about 28 months of
+  cards.
+
+**Program rules** ([report §3](alpha-directions-2026-10-30/report.md#program-rules-apply-to-every-read)):
+- **R1, freeze and hash before reading.** A window × read ledger records each read, with α declared per
+  lane: one-sided 5%, Holm within a lane.
+- **R2, rehearse.** Before every one-shot read, reproduce a known result on an already-read window.
+- **R3, power.** State power at the *shrunk* effect, in card units too.
+- **R4, negative controls.** Pseudo-event placebos for event legs; permuted-name C-IC for IC reads.
+- **R5, two gates before auto-entry.** The statistical gate, plus an economic gate: the source's
+  `net_excess_r_v1` on its most recent window, shrunk, must be ≥ 0.
+- **R6, capped probes.** Every source enters as a capped, killable probe ($100, −4R) inside a declared
+  slot allocation.
+
+**Ordered directions:**
+
+| # | Direction | Cost | Status |
+| --- | --- | --- | --- |
+| 1 | **Honest card stream.** `card_policy` decision at DP0 (11-06; enforce recommended), `card_stats` empirical-Bayes prior across keys, PEAD net-excess base rate by year on PEAD cards, the raw EPS/consensus pair in `pead_decision`, `gex.py` IV NaN instead of a fabricated 0.20 (contract 9), the window × read ledger | $0 | In progress on `feature/honest-stream` (started 2026-10-30) |
+| 2 | **Sharadar 2007–2016 era, event lane.** `insider-oos-v1` (P2 primary, beta/ATR-matched controls, earnings-proximity and ex-crisis secondaries) and `pead-sue-v3` (consensus-free SUE, entry at the later of D+2 and `datekey` + 1). One frozen manifest, Holm over 2, delisting rule, placebo, rehearsal on 2016-08 → 2026-07 first | ≈ $499/yr (verify) | Waits on O1 (operator evaluating Sharadar) |
+| 3 | **IC machinery and `composite-ic-v1`.** `cs_rank`, `cs_zscore`, `group_neutralize`, `cs_regress_out`, `ts_beta`/`ts_cov`/`ts_skew`; cube v2 arrays with next-open forward and residual returns; rank IC with a session-block bootstrap; checks A-IC and C-IC; a zero-trial re-score of the 64 pairs. One equal-weight JKP-theme composite chosen by a mechanical rule, frozen before any IC, decided at h = 20 on the era. It becomes the yardstick for every new data source | $0 beyond Sharadar | The grammar and IC statistic need no purchase; cube v2 and the era read wait on O1 |
+| 4 | **Options-implied information.** Freeze `options_fields_v1`; spend one hour checking Alpaca's indicative IV ranks against ORATS before any capture worker | ≤ $49 | Deferred (week 7) |
+| — | **Cut:** residual no-news reversal, TSMOM on the ETF32, intraday SPY/QQQ noise band, `veto-v1` | — | Not to be run without a new review |
+
+**Also decided.**
+- **Do not reopen:**
+  - genetic or LLM formula search;
+  - new single-signal fixed sets on the bracket label;
+  - exit or bracket tuning;
+  - learned rankers on native setup features;
+  - backtests of historical headlines through LLM scores.
+- **Do not buy** vectorbt PRO, social, congress or estimate feeds, or real-time SIP.
+- **No GPU work** before the composite sets the IC bar.
+- **Judging data sources:** protocol DSE-v1 ([report §4](alpha-directions-2026-10-30/report.md#4-direct-answers-to-your-seven-thoughts),
+  thought 6). A new source must show incremental IC over the frozen composite, or excess over an
+  event-matched control plus the economic gate, on a window it has not consumed.
+- **Expectation:** about 1 in 4 that a source passes both gates by the January season (from about 01-13).
+
+**Operator decisions:**
+
+| Decision | Due | Status |
+| --- | --- | --- |
+| O1 (Sharadar) | 11-03 | Operator researching it, 2026-10-30 |
+| O2 (≈ $550 spend cap) | 11-03 | Open |
+| O3 (non-native sources ≤ 5 of 8 slots) | 11-03 | Open |
+| DP0 (`card_policy` enforce or preview) | Fri 11-06 | Open |
+| DP1–DP4 | 11-20, 12-04, 12-18, holiday week | — |
+
+The week-by-week plan is [report §6.2](alpha-directions-2026-10-30/report.md#62-week-by-week-plan-2026-11-02--2026-12-24).
+Record each decision and each direction's result here and in the review's README.
 
 ## Holistic review queue (October 21)
 
