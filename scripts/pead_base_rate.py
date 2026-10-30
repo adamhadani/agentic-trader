@@ -55,6 +55,15 @@ def _revision() -> str:
     return result.stdout.strip() or "unknown"
 
 
+def _names_digest(names: list[str]) -> str:
+    """SHA-256 over the sorted names of the cache files used; the file names are content hashes."""
+    return hashlib.sha256("\n".join(sorted(names)).encode()).hexdigest()
+
+
+def _cache_names(cache: Path, folders: list[str], prefix: str = "") -> list[str]:
+    return [f"{prefix}{folder}/{f.name}" for folder in folders for f in sorted((cache / folder).glob("*.npz"))]
+
+
 def _bars(cache: Path, symbol: str, timeframe: str) -> pd.DataFrame | None:
     files = sorted((cache / "bars" / f"{symbol}_{timeframe}").glob("*.npz"))
     return _concat([load_dataset(f) for f in files]) if files else None
@@ -73,6 +82,10 @@ def _spy_hourly(caches: list[Path]) -> pd.DataFrame:
             raise SystemExit("market hourly bars missing from a listed cache")
         frames.extend(load_dataset(f) for f in files)
     return _concat(frames)
+
+
+def parse_caches(argument: str) -> list[Path]:
+    return [Path(part).expanduser() for part in argument.split(",") if part]
 
 
 def read_events(path: Path) -> pd.DataFrame:
@@ -101,6 +114,7 @@ def build(study: Path, pead_cache: Path, spy_caches: list[Path]) -> PeadBaseRate
     rows = add_net_excess(rows, dailies, market_daily, _spy_hourly(spy_caches))
     stats = summarise(rows, RECENT_FROM)
     first, last = loaded.entry.window.decisions
+    range_path = pead_cache / "bars" / "cache_range.json"
     return PeadBaseRate(
         version=BASE_RATE_VERSION,
         unit=NET_EXCESS_UNIT,
@@ -109,9 +123,18 @@ def build(study: Path, pead_cache: Path, spy_caches: list[Path]) -> PeadBaseRate
             "events_sha256": _sha256(events_path),
             "labels_sha256": _sha256(labels_path),
             "protocol_sha256": _sha256(protocol_path),
-            "pead_cache": "apriori-pead-v1-cache/bars: hourly and daily npz per symbol, SPY daily",
-            "spy_hourly": "SPY_1h npz files of the listed caches, concatenated and de-duplicated: "
-            + ", ".join(cache.name for cache in spy_caches),
+            "pead_cache": pead_cache.name,
+            "pead_cache_range_sha256": _sha256(range_path) if range_path.exists() else "absent",
+            "pead_cache_files_sha256": _names_digest(
+                _cache_names(
+                    pead_cache / "bars",
+                    [*(f"{x}_1h" for x in symbols), *(f"{x}_1d" for x in sorted({*rows["symbol"], MARKET}))],
+                )
+            ),
+            "spy_hourly_caches": ", ".join(cache.name for cache in spy_caches),
+            "spy_hourly_files_sha256": _names_digest(
+                [n for cache in spy_caches for n in _cache_names(cache, [f"{MARKET}_1h"], f"{cache.name}/")]
+            ),
         },
         cost_model=cost_model_constants(),
         r_clip=R_CLIP,
@@ -134,6 +157,6 @@ if __name__ == "__main__":
     main(
         Path(sys.argv[1]),
         Path(sys.argv[2]),
-        [Path(part) for part in sys.argv[3].split(",") if part],
+        parse_caches(sys.argv[3]),
         Path(sys.argv[4]),
     )

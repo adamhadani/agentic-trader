@@ -11,19 +11,19 @@ promotion credit. The PEAD card (Task 3 of the honest-stream PR) shows its expec
 | --- | --- |
 | Frozen entry | `config/research/apriori/pead-v2.json`, sha256 `fc8a5b3ec14845a2a6ce730e2bc4159e7ee579bbb6b03164a01490e90d818627` (equals the study manifest's `sha256`; the script refuses otherwise) |
 | Study | `~/agentic-trader-research/apriori-pead-v2-20260926` (run 2026-09-26): `events.csv.gz` sha256 `23ce01f7…`, `labels.csv.gz` `239d8526…`, `protocol.json` `d5defdfd…` |
-| Bars | `~/agentic-trader-research/apriori-pead-v1-cache/bars` (hourly and daily per symbol, SPY daily); SPY hourly from `setup-cache-2017` and `setup-cache-v1`, concatenated and de-duplicated |
+| Bars | `apriori-pead-v1-cache` (hourly and daily per symbol, SPY daily): the file records the cache name, the sha256 of `bars/cache_range.json` (`d9d9b64e…`) and a digest over the sorted names (content hashes) of the hourly and daily `.npz` files used (`24961e72…`). SPY hourly from `setup-cache-2017` and `setup-cache-v1`, concatenated and de-duplicated: names digest `851e3c8a…`. The daily bars set beta and cost, which the reproduction check does not cover, so the digests pin them |
 | Window | decisions 2016-08-01 to 2026-07-31; recent window from 2025-01-01 |
-| Output | `config/research/pead-base-rate-v1.json`, sha256 `08c02fed9abb3264acf77aecd94364e5bf1d1318d1f08b3792a06434145e267a` (generated from a dirty tree; regenerated from a clean commit before it is pinned) |
+| Output | `config/research/pead-base-rate-v1.json`, sha256 `2e9c67905bd2593b0a3b4eec1d317b4c42dd7e17f4a71158cc218c277e5627a5` (generated from a dirty tree; regenerated from a clean commit before it is pinned) |
 
 ```
 uv run python scripts/pead_base_rate.py ~/agentic-trader-research/apriori-pead-v2-20260926 \
   ~/agentic-trader-research/apriori-pead-v1-cache \
-  ~/agentic-trader-research/setup-cache-2017,~/agentic-trader-research/setup-cache-v1 \
+  '~/agentic-trader-research/setup-cache-2017,~/agentic-trader-research/setup-cache-v1' \
   config/research/pead-base-rate-v1.json
 ```
 
-Offline: no provider, network, database or broker. Spell the two SPY cache paths out; the shell does not
-expand a `~` after the comma, and a missing listed cache now stops the script.
+Offline: no provider, network, database or broker. Quote the comma-separated SPY cache argument (the shell does not
+expand a `~` after the comma; the script does), and a listed cache without `SPY_1h` bars stops the script.
 
 **Rehearsal check.** The script re-labels every event's LONG row with the study's own `decision_price`,
 `levels_for` and `label_bracket` at the decisive 5 bp cost and refuses to write unless the 23,980 LONG rows
@@ -35,28 +35,28 @@ window). They are excluded, never filled, which leaves `n_all` 23,868 reporters 
 
 ## Results
 
-Leg means are the mean `net_excess_r` of leg events (surprise and reaction agree LONG). Control is every
-reporter in the same window. P2 is each leg event minus its own session's all-reporter mean, so it asks
+Leg means are the mean `net_excess_r` of leg events (surprise and reaction agree LONG). "All" is every
+reporter in the same window (the control). P2 is each leg event minus its own session's all-reporter mean, so it asks
 whether the leg beats the other reporters of the same day. Standard errors are session-clustered.
 
-| Year | Leg n | Leg mean | Control mean | P2 mean | P2 se |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 2016 | 112 | +0.091 | -0.087 | +0.221 | 0.165 |
-| 2017 | 334 | +0.017 | -0.082 | +0.084 | 0.075 |
-| 2018 | 338 | -0.019 | -0.015 | +0.043 | 0.049 |
-| 2019 | 394 | +0.010 | +0.041 | -0.037 | 0.055 |
-| 2020 | 385 | -0.235 | -0.149 | -0.053 | 0.058 |
-| 2021 | 526 | +0.023 | -0.066 | +0.101 | 0.060 |
-| 2022 | 494 | +0.104 | +0.075 | +0.033 | 0.047 |
-| 2023 | 597 | -0.159 | -0.161 | +0.016 | 0.041 |
-| 2024 | 642 | +0.056 | -0.051 | +0.069 | 0.055 |
-| 2025 | 550 | -0.014 | -0.007 | -0.029 | 0.052 |
-| 2026 | 340 | -0.098 | -0.119 | -0.010 | 0.074 |
+| Year | Leg n | Leg mean | se | All n | All mean | se | P2 mean | P2 se |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2016 | 112 | +0.091 | 0.164 | 565 | -0.087 | 0.108 | +0.221 | 0.165 |
+| 2017 | 334 | +0.017 | 0.094 | 1,712 | -0.082 | 0.043 | +0.084 | 0.075 |
+| 2018 | 338 | -0.019 | 0.068 | 1,841 | -0.015 | 0.043 | +0.043 | 0.049 |
+| 2019 | 394 | +0.010 | 0.070 | 1,906 | +0.041 | 0.041 | -0.037 | 0.055 |
+| 2020 | 385 | -0.235 | 0.071 | 2,170 | -0.149 | 0.049 | -0.053 | 0.058 |
+| 2021 | 526 | +0.023 | 0.069 | 2,550 | -0.066 | 0.047 | +0.101 | 0.060 |
+| 2022 | 494 | +0.104 | 0.059 | 2,566 | +0.075 | 0.036 | +0.033 | 0.047 |
+| 2023 | 597 | -0.159 | 0.049 | 2,809 | -0.161 | 0.038 | +0.016 | 0.041 |
+| 2024 | 642 | +0.056 | 0.070 | 2,893 | -0.051 | 0.043 | +0.069 | 0.055 |
+| 2025 | 550 | -0.014 | 0.064 | 3,012 | -0.007 | 0.044 | -0.029 | 0.052 |
+| 2026 | 340 | -0.098 | 0.091 | 1,844 | -0.119 | 0.062 | -0.010 | 0.074 |
 
-| Window | Leg n | Leg mean | se | Control mean | P2 mean | P2 se |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Overall 2016-2026 | 4,712 | -0.024 | 0.022 | -0.054 | +0.029 | 0.018 |
-| Recent 2025-01-01 to 2026-07-31 | 890 | -0.046 | 0.052 | -0.050 | -0.022 | 0.043 |
+| Window | Leg n | Leg mean | se | All n | All mean | se | P2 mean | P2 se |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Overall 2016-2026 | 4,712 | -0.024 | 0.022 | 23,868 | -0.054 | 0.014 | +0.029 | 0.018 |
+| Recent 2025-01-01 to 2026-07-31 | 890 | -0.046 | 0.052 | 4,856 | -0.050 | 0.036 | -0.022 | 0.043 |
 
 Expected excess (the figure on the card): between-quarter tau of the leg's `net_excess_r` is 0.137
 (`card_prior.between_quarter_tau`, floor and 20-row quarter minimum as the card prior), so

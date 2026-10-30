@@ -63,12 +63,14 @@ class BaseRateUnavailable(RuntimeError):
 
 
 class BaseRateCell(BaseModel, frozen=True, allow_inf_nan=False, extra="forbid"):
-    """Leg events of one window: ``mean`` of ``net_excess_r``, ``control_mean`` over all reporters, paired P2."""
+    """Leg events of one window: ``mean`` of ``net_excess_r``, ``control_*`` over all reporters, paired P2."""
 
     n: int = Field(ge=1)
     mean: float
     se_session: float = Field(ge=0)
+    control_n: int = Field(ge=1)
     control_mean: float
+    control_se_session: float = Field(ge=0)
     p2_mean: float
     p2_se: float = Field(ge=0)
 
@@ -265,12 +267,14 @@ def _se_session(values: pd.Series, sessions: pd.Series) -> float:
     return float(np.std(by_session.to_numpy(dtype=float), ddof=1) / math.sqrt(len(by_session)))
 
 
-def _cell(leg: pd.DataFrame, control_mean: float) -> BaseRateCell:
+def _cell(leg: pd.DataFrame, control: pd.DataFrame) -> BaseRateCell:
     return BaseRateCell(
         n=len(leg),
         mean=float(leg["net_excess_r"].mean()),
         se_session=_se_session(leg["net_excess_r"], leg["session"]),
-        control_mean=control_mean,
+        control_n=len(control),
+        control_mean=float(control["net_excess_r"].mean()),
+        control_se_session=_se_session(control["net_excess_r"], control["session"]),
         p2_mean=float(leg["beat"].mean()),
         p2_se=_se_session(leg["beat"], leg["session"]),
     )
@@ -303,19 +307,19 @@ def summarise(rows: pd.DataFrame, recent_from: date) -> dict[str, Any]:
     by_year = tuple(
         BaseRateYear(
             year=int(year),
-            **_cell(group, float(finite.loc[all_years == year, "net_excess_r"].mean())).model_dump(),
+            **_cell(group, finite[all_years == year]).model_dump(),
         )
         for year, group in leg.groupby(leg_years)
     )
     tau, _ = between_quarter_tau(leg["net_excess_r"], pd.Series(leg["session"]))
-    recent_cell = _cell(recent, float(finite.loc[finite["session"] >= recent_from, "net_excess_r"].mean()))
+    recent_cell = _cell(recent, finite[finite["session"] >= recent_from])
     shrinkage = tau**2 / (tau**2 + recent_cell.se_session**2)
     return {
         "n_leg": len(leg),
         "n_all": len(finite),
         "n_no_beta": n_no_beta,
         "n_no_market": n_no_market,
-        "overall": _cell(leg, float(finite["net_excess_r"].mean())),
+        "overall": _cell(leg, finite),
         "recent": recent_cell,
         "by_year": by_year,
         "tau": tau,

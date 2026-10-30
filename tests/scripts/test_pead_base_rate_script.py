@@ -117,3 +117,31 @@ def test_script_refuses_a_listed_spy_cache_without_bars(world, tmp_path):
     with pytest.raises(SystemExit, match="missing from a listed cache"):
         pead_base_rate.main(study, cache, [*spy, tmp_path / "typo"], tmp_path / "rate.json")
     assert not (tmp_path / "rate.json").exists()
+
+
+def test_recorded_source_identifies_the_caches_and_changes_with_their_contents(world, tmp_path, capsys):
+    study, cache, spy, _ = world
+
+    def source() -> dict[str, str]:
+        out = tmp_path / "rate.json"
+        out.unlink(missing_ok=True)
+        pead_base_rate.main(study, cache, spy, out)
+        return load_pead_base_rate(out, capsys.readouterr().out.strip()).source
+
+    before = source()
+    assert before["pead_cache"] == "pead-cache" and before["pead_cache_range_sha256"] == "absent"
+    assert before["spy_hourly_caches"] == "spy-a, spy-b"
+    (cache / "bars" / "cache_range.json").write_text('{"start": 1}')
+    ranged = source()
+    assert ranged["pead_cache_range_sha256"] != "absent"
+    save_dataset(hourly({FIRST: [100.0] * 7}), cache / "bars" / "UP_1h", "extra")  # a new file for a used symbol
+    grown = source()
+    assert grown["pead_cache_files_sha256"] != before["pead_cache_files_sha256"]
+    assert grown["spy_hourly_files_sha256"] == before["spy_hourly_files_sha256"]
+    save_dataset(hourly({FIRST: [400.0] * 7}), spy[0] / "SPY_1h", "extra")
+    assert source()["spy_hourly_files_sha256"] != before["spy_hourly_files_sha256"]
+
+
+def test_spy_cache_argument_expands_a_tilde_after_each_comma(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert pead_base_rate.parse_caches("~/a,~/b") == [tmp_path / "a", tmp_path / "b"]

@@ -216,6 +216,9 @@ def test_summarise_p2_is_same_session_paired():
     assert overall.control_mean == pytest.approx((1.0 + 0.0 - 1.0 + 0.5 + 0.1) / 5)
     assert overall.p2_mean == pytest.approx((1.0 + 0.2) / 2)
     assert recent.n == 1 and recent.mean == pytest.approx(0.5)
+    assert (overall.control_n, recent.control_n) == (5, 2)
+    assert overall.control_se_session == pytest.approx(np.std([0.0, 0.3], ddof=1) / math.sqrt(2))
+    assert recent.control_se_session == 0.0  # one session
     assert recent.control_mean == pytest.approx(0.3)  # every reporter since recent_from, leg or not
     assert recent.p2_mean == pytest.approx(0.2) and recent.p2_se == 0.0
     assert [y.year for y in stats["by_year"]] == [2021, 2025]
@@ -242,7 +245,16 @@ def test_expected_is_shrunk_toward_zero():
 
 
 def cell(n: int = 10, mean: float = 0.05) -> dict:
-    return {"n": n, "mean": mean, "se_session": 0.04, "control_mean": 0.01, "p2_mean": 0.02, "p2_se": 0.03}
+    return {
+        "n": n,
+        "mean": mean,
+        "se_session": 0.04,
+        "control_n": 3 * n,
+        "control_mean": 0.01,
+        "control_se_session": 0.02,
+        "p2_mean": 0.02,
+        "p2_se": 0.03,
+    }
 
 
 def payload(**overrides) -> dict:
