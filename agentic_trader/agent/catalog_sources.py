@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from agentic_trader.config import AppConfig
+    from agentic_trader.research.apriori.pead_base_rate import PeadBaseRate
     from agentic_trader.screeners.base import ScreenerCandidate
     from agentic_trader.storage.workflow import WorkflowStore
 
@@ -137,6 +138,10 @@ class CatalogCardSource[P: CatalogPreparation](Protocol):
         """The card payload's facts under ``notification_key``; None sends none."""
         ...
 
+    def card_provenance(self, candidate: ScreenerCandidate, preparation: P) -> dict:
+        """Extra decision-provenance keys the card carries beside ``provenance_key``; ``{}`` for none."""
+        ...
+
     async def journal(self, workflows: WorkflowStore, session: AsyncSession, decision: CatalogDecision[P]) -> None:
         """Append the decision (and any notice) inside the caller's locked transaction."""
         ...
@@ -165,6 +170,26 @@ class CatalogRun:
         return cls(source, open_positions, open_positions >= source.max_open_positions(config))
 
 
+def pead_base_rate_block(rate: PeadBaseRate | None, sha256: str | None) -> dict:
+    """The PEAD card's measured base rate as a card document; evidence only, never a gate."""
+    if rate is None:
+        return {"status": "unavailable"}
+    return {
+        "status": "measured",
+        "sha256": sha256,
+        "expected_mean": round(rate.expected_mean, 4),
+        "expected_se": round(rate.expected_se, 4),
+        "window_start": rate.window_start.isoformat(),
+        "window_end": rate.window_end.isoformat(),
+        "recent_from": rate.recent_from.isoformat(),
+        "overall_mean": round(rate.overall.mean, 4),
+        "n_leg": rate.n_leg,
+        "recent_mean": round(rate.recent.mean, 4),
+        "n_recent": rate.recent.n,
+        "recent_p2_mean": round(rate.recent.p2_mean, 4),
+    }
+
+
 class PeadDriftSource:
     """The PEAD long leg's drift cards (catalog paper probe), over ``EarningsDriftService``.
 
@@ -186,9 +211,17 @@ class PeadDriftSource:
     budget_spent_reason = "drift budget spent"
     position_cap_reason = DRIFT_POSITION_CAP_REACHED
 
-    def __init__(self, service: EarningsDriftService | None = None, *, service_error: str | None = None):
+    def __init__(
+        self,
+        service: EarningsDriftService | None = None,
+        *,
+        service_error: str | None = None,
+        base_rate: dict | None = None,
+    ):
         self.service = service
         self.service_error = service_error
+        # The card's base-rate block (``pead_base_rate_block``); None leaves the stored card as it was before the block.
+        self.base_rate = base_rate
 
     def max_cards_per_session(self, config: AppConfig) -> int:
         return config.apriori.max_drift_cards_per_session
@@ -257,7 +290,10 @@ class PeadDriftSource:
     def card_facts(self, candidate: ScreenerCandidate, preparation: DriftPreparation) -> dict | None:
         if self.service is None or candidate.catalog_event is None:
             return None
-        return drift_card_facts(candidate.catalog_event, preparation, self.service.holding_sessions)
+        return drift_card_facts(candidate.catalog_event, preparation, self.service.holding_sessions, self.base_rate)
+
+    def card_provenance(self, candidate: ScreenerCandidate, preparation: DriftPreparation) -> dict:
+        return {"pead_base_rate": self.base_rate} if self.base_rate is not None else {}
 
     async def journal(
         self, workflows: WorkflowStore, session: AsyncSession, decision: CatalogDecision[DriftPreparation]

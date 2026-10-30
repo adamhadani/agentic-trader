@@ -251,13 +251,14 @@ def catalog_candidate(
     )
 
 
-def drift_card_facts(event: dict, prep: DriftPreparation, holding_sessions: int) -> dict:
+def drift_card_facts(event: dict, prep: DriftPreparation, holding_sessions: int, base_rate: dict | None = None) -> dict:
     return {
         "surprise_pct": event["surprise_pct"],
         "z": event["z"],
         "report_date": event["report_date"],
         "holding_sessions": holding_sessions,
         "time_exit_at": prep.time_exit_at,
+        **({"base_rate": base_rate} if base_rate is not None else {}),
     }
 
 

@@ -46,7 +46,11 @@ from agentic_trader.constants import (
     RuntimeEnvironment,
     SignalStatus,
 )
-from agentic_trader.execution.card_evidence import format_evidence_lines, parse_card_evidence
+from agentic_trader.execution.card_evidence import (
+    format_evidence_lines,
+    format_pead_base_rate_lines,
+    parse_card_evidence,
+)
 from agentic_trader.execution.freshness import ExecutionReply
 from agentic_trader.execution.lifetimes import RestingCancelResult, parse_signal_id
 from agentic_trader.market.session import ET_TZ
@@ -455,8 +459,11 @@ def format_alert_card(
             f"📈 <b>PEAD</b> — EPS beat {drift['surprise_pct']:+.1f}%, reaction {drift['z']:+.1f}σ vs SPY "
             f"(report {html.escape(str(drift['report_date']))})\n"
             f"⏱️ {drift['holding_sessions']}-session hold · time exit {exit_text} "
-            "unless the stop or target fills first\n\n"
+            "unless the stop or target fills first\n"
         )
+        if isinstance(drift.get("base_rate"), dict):
+            drift_block += "\n".join(format_pead_base_rate_lines(drift["base_rate"], html=True)) + "\n"
+        drift_block += "\n"
 
     evidence_block = (
         _evidence_block(card_evidence, strategy, eval_res, markup=True)

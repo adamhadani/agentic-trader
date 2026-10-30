@@ -23,7 +23,13 @@ from agentic_trader.agent.calendar import (
     UnionTier1Calendar,
     macro_calendar_readiness,
 )
-from agentic_trader.agent.catalog_sources import CatalogCardSource, CatalogDecision, CatalogRun, PeadDriftSource
+from agentic_trader.agent.catalog_sources import (
+    CatalogCardSource,
+    CatalogDecision,
+    CatalogRun,
+    PeadDriftSource,
+    pead_base_rate_block,
+)
 from agentic_trader.agent.copilot_graph import ask_copilot, create_copilot_graph
 from agentic_trader.agent.earnings import (
     EarningsCalendarProtocol,
@@ -160,6 +166,7 @@ from agentic_trader.research.alpha.evidence import load_forward_evidence
 from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG, is_paper_scope
 from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.research.alpha.strategy import execution_policy_from_dict, policy_trails, trailing_price
+from agentic_trader.research.apriori.pead_base_rate import BaseRateUnavailable, load_pead_base_rate
 from agentic_trader.research.pooled.entry import REPO_ROOT
 from agentic_trader.research.setups.card_stats import CardStatsSnapshot
 from agentic_trader.research.setups.net_excess import NET_EXCESS_UNIT
@@ -440,7 +447,7 @@ class TradingCopilot:
         )
         # The PEAD catalog probe's drift source for the 10:35 suggestion scan. Construction
         # reads the frozen entry file only; every provider read happens inside a scan.
-        self.pead_source = PeadDriftSource(earnings_drift)
+        self.pead_source = PeadDriftSource(earnings_drift, base_rate=self._pead_base_rate_block(config))
         # Every catalog card source the scheduled suggestion scan decides, in carding order.
         self.catalog_sources: list[CatalogCardSource[Any]] = [self.pead_source]
         if earnings_drift is None and config.apriori.enabled:
@@ -763,6 +770,19 @@ class TradingCopilot:
         so it never counts, even if its provenance were ever tagged dynamic.
         """
         return bool(row.get("dynamic", False)) and row.get("strategy") not in self._catalog_strategy_ids()
+
+    @staticmethod
+    def _pead_base_rate_block(config: AppConfig) -> dict:
+        """The PEAD card's base-rate block, loaded once; any failure is a warning and an ``unavailable`` block."""
+        rate = None
+        try:
+            rate = load_pead_base_rate(config.apriori.pead_base_rate_path, config.apriori.pead_base_rate_sha256)
+        except BaseRateUnavailable as exc:
+            logger.warning(
+                "PEAD base rate unavailable; the card renders without it",
+                extra={"event": "pead_base_rate_unavailable", "reason": type(exc).__name__},
+            )
+        return pead_base_rate_block(rate, config.apriori.pead_base_rate_sha256 if rate is not None else None)
 
     @staticmethod
     def _dynamic_tag(contract: str, dynamic_sources: Mapping[str, str]) -> dict[str, Any]:
@@ -1867,7 +1887,10 @@ class TradingCopilot:
                             # A catalog card is never tagged dynamic; catalog admission requires
                             # its same-session event naming the contract.
                             **(
-                                {catalog.source.provenance_key: candidate.catalog_event}
+                                {
+                                    catalog.source.provenance_key: candidate.catalog_event,
+                                    **catalog.source.card_provenance(candidate, catalog.preparation),
+                                }
                                 if catalog is not None
                                 else self._dynamic_tag(candidate.contract, dynamic_sources)
                             ),

@@ -4,6 +4,7 @@ Guards the 2026-10-13 regression class: ``load_config`` once silently ignored a 
 (``corporate_actions:``), so a shipped setting never took effect.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from pydantic import ValidationError
 
 from agentic_trader.config import AppConfig, ExecutionConfig, LLMGateConfig, load_config
 from agentic_trader.execution.auto_entry import auto_entry_active
+from agentic_trader.research.apriori.pead_base_rate import load_pead_base_rate
 from agentic_trader.research.setups.card_prior import load_prior
 
 
@@ -180,3 +182,13 @@ def test_shipped_prior_matches_config():
     assert prior.version == "card-stats-prior-v2"
     assert prior.is_replay("TREND_PULLBACK", "4h", "LONG")
     assert "prior_sha256" in policy.model_fields_set
+
+
+def test_shipped_pead_base_rate_matches_config():
+    apriori = load_config(str(SHIPPED), environ=PRODUCTION).apriori
+
+    assert apriori.pead_base_rate_path.is_absolute()
+    assert apriori.pead_base_rate_path.as_posix().endswith("config/research/pead-base-rate-v1.json")
+    assert re.fullmatch(r"[0-9a-f]{64}", apriori.pead_base_rate_sha256)
+    rate = load_pead_base_rate(apriori.pead_base_rate_path, apriori.pead_base_rate_sha256)
+    assert rate.version == "pead-base-rate-v1"

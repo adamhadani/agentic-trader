@@ -879,6 +879,9 @@ class InsiderWatchSource:
             probe=False,
         )
 
+    def card_provenance(self, candidate: ScreenerCandidate, preparation: WatchPreparation) -> dict:
+        return {}
+
     def card_facts(self, candidate: ScreenerCandidate, preparation: WatchPreparation) -> dict | None:
         event = candidate.catalog_event
         if event is None or self.contract is None:

@@ -506,6 +506,13 @@ card_policy:
   prior_path: "config/research/card-stats-prior-v2.json"  # frozen replay prior (docs/card-stats-prior-2026-10-28.md)
   prior_sha256: "39056a50f30caa1bbf44d5beecb271eb7a381ac21d4e97b1907ca256b086d713"
 
+# Catalog paper probes (docs/apriori-alphas.md). The PEAD card's measured base rate is a frozen file pinned by
+# SHA-256 (docs/pead-base-rate-2026-10-30.md); a missing or mismatched file renders "unavailable" and never
+# stops a scan.
+apriori:
+  pead_base_rate_path: "config/research/pead-base-rate-v1.json"
+  pead_base_rate_sha256: "2e9c67905bd2593b0a3b4eec1d317b4c42dd7e17f4a71158cc218c277e5627a5"
+
 # Book-aware sizing (docs/card-evidence.md "Book-aware sizing").
 # Quote "off": YAML reads a bare off as false (the loader maps false back to "off").
 book_sizing:

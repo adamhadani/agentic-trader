@@ -11,6 +11,7 @@ from agentic_trader.execution.card_evidence import (
     CardEvidence,
     CardStatsRepository,
     format_evidence_lines,
+    format_pead_base_rate_lines,
     lookup,
     parse_card_evidence,
 )
@@ -307,3 +308,28 @@ async def test_a_non_finite_key_statistic_is_no_evidence(temp_db, value):
     snapshot = await CardStatsRepository(temp_db.workflows).latest()
     assert snapshot is None
     assert _lookup(snapshot).status == "unavailable"
+
+
+def test_format_pead_base_rate_lines_exact_text():
+    from tests.notifier.test_drift_card import BASE_RATE  # noqa: PLC0415
+
+    plain = format_pead_base_rate_lines(BASE_RATE, html=False)
+    assert plain == [
+        "\u2022 Expected excess (PEAD v2, LONG): +0.01R \u00b1 0.05 vs beta-matched SPY after cost",
+        (
+            "  replay 2016\u201326: +0.07R over 12,345 events \u00b7 2025\u201326: +0.03R over 678 (shrunk toward 0) "
+            "\u00b7 beat vs all reporters 2025\u201326: -0.02R"
+        ),
+        (
+            "Not validated alpha. PEAD v2 events replayed on SIP bars in the native card unit; "
+            "EPS and consensus as served today, not point-in-time."
+        ),
+    ]
+    html = format_pead_base_rate_lines(BASE_RATE, html=True)
+    assert html[0].startswith("\u2022 <b>Expected excess</b> (PEAD v2, LONG)")
+    assert html[1] == plain[1]
+    assert html[2] == f"<i>{plain[2]}</i>"
+    assert format_pead_base_rate_lines({"status": "unavailable"}, html=True) == [
+        "\u2022 <b>PEAD base rate:</b> unavailable"
+    ]
+    assert format_pead_base_rate_lines({"status": "unavailable"}, html=False) == ["\u2022 PEAD base rate: unavailable"]

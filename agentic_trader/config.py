@@ -205,6 +205,17 @@ class AprioriConfig(BaseModel):
     # The frozen study entered at 10:35 prices: a decision scan that reaches its drift
     # decision more than this long after its slot journals the decision skipped instead.
     max_drift_lateness_seconds: int = Field(default=900, gt=0)
+    # The PEAD card's measured base rate (docs/pead-base-rate-2026-10-30.md): an immutable file pinned by SHA-256.
+    pead_base_rate_path: Path = Field(default=Path("config/research/pead-base-rate-v1.json"), validate_default=True)
+    pead_base_rate_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("pead_base_rate_path", mode="after")
+    @classmethod
+    def _resolve_pead_base_rate_path(cls, value: Path) -> Path:
+        """A relative path must mean the same file for the daemon, an operator CLI invocation and a test alike."""
+        if value.is_absolute():
+            return value
+        return (WORKSPACE_ROOT / value).resolve()
 
 
 class ScanBudget(StrEnum):
@@ -1246,6 +1257,7 @@ def load_config(
         card_policy=CardPolicyConfig(**(cfg_dict.get("card_policy") or {})),
         book_sizing=BookSizingConfig(**(cfg_dict.get("book_sizing") or {})),
         corporate_actions=CorporateActionsConfig(**(cfg_dict.get("corporate_actions") or {})),
+        apriori=AprioriConfig(**(cfg_dict.get("apriori") or {})),
         news=NewsConfig(**(cfg_dict.get("news") or {})),
         llm_gate=LLMGateConfig(**(cfg_dict.get("llm_gate") or {})),
         insider_watch=InsiderWatchConfig(**(cfg_dict.get("insider_watch") or {})),
