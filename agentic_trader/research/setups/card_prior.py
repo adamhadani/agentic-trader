@@ -45,6 +45,7 @@ __all__ = [
     "CardStatsPrior",
     "PriorEntry",
     "PriorUnavailable",
+    "between_quarter_tau",
     "cost_model_constants",
     "estimate_prior",
     "load_prior",
@@ -186,7 +187,7 @@ def _quarter_key(sessions: pd.Series) -> pd.Series:
     return dates.dt.year * 10 + (dates.dt.month - 1) // 3
 
 
-def _tau(values: pd.Series, sessions: pd.Series) -> tuple[float, int]:
+def between_quarter_tau(values: pd.Series, sessions: pd.Series) -> tuple[float, int]:
     """``(tau, n_quarters)`` by the method of moments over quarters with enough rows."""
     frame = pd.DataFrame({"x": values.to_numpy(dtype=float), "q": _quarter_key(sessions).to_numpy()})
     grouped = frame.groupby("q")["x"].agg(["mean", "var", "count"])
@@ -212,14 +213,14 @@ def estimate_prior(rows: pd.DataFrame) -> tuple[tuple[PriorEntry, ...], float, f
     finite = rows[np.isfinite(pd.to_numeric(rows["net_excess_r"], errors="coerce"))]
     if finite.empty:
         raise ValueError("no finite net_excess_r rows for the pooled prior")
-    pooled_tau, pooled_quarters = _tau(finite["net_excess_r"], finite["session"])
+    pooled_tau, pooled_quarters = between_quarter_tau(finite["net_excess_r"], finite["session"])
     if pooled_quarters < 2:
         raise ValueError(
             f"the pooled prior has {pooled_quarters} quarter(s) with {PRIOR_MIN_ROWS_PER_QUARTER}+ rows; it needs 2"
         )
     entries: list[PriorEntry] = []
     for (strategy, timeframe, direction), group in finite.groupby(_KEY_COLUMNS, sort=True):
-        key_tau, n_quarters = _tau(group["net_excess_r"], group["session"])
+        key_tau, n_quarters = between_quarter_tau(group["net_excess_r"], group["session"])
         by_session = group.groupby("session")["net_excess_r"].mean()
         n_sessions = len(by_session)
         se_session = _sd(by_session) / math.sqrt(n_sessions) if n_sessions > 1 else 0.0
