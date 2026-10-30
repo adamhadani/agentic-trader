@@ -278,29 +278,34 @@ def format_pead_base_rate_lines(block: dict[str, Any], *, html: bool) -> list[st
     def bold(text: str) -> str:
         return f"<b>{text}</b>" if html else text
 
+    unavailable = [f"\u2022 {bold('PEAD base rate:')} unavailable"]
     if block.get("status") != "measured":
-        return [f"\u2022 {bold('PEAD base rate:')} unavailable"]
-    window_start = date.fromisoformat(block["window_start"])
-    window_end = date.fromisoformat(block["window_end"])
-    recent_from = date.fromisoformat(block["recent_from"])
-    years = _years(window_start, window_end)
-    recent_years = _years(recent_from, window_end)
-    caveat = (
-        "Not validated alpha. PEAD v2 events replayed on SIP bars in the native card unit; "
-        "EPS and consensus as served today, not point-in-time."
-    )
-    return [
-        (
-            f"\u2022 {bold('Expected excess')} (PEAD v2, LONG): {block['expected_mean']:+.2f}R \u00b1 "
-            f"{block['expected_se']:.2f} vs beta-matched SPY after cost"
-        ),
-        (
-            f"  replay {years}: {block['overall_mean']:+.2f}R over {block['n_leg']:,} events \u00b7 "
-            f"{recent_years}: {block['recent_mean']:+.2f}R over {block['n_recent']:,} (shrunk toward 0) \u00b7 "
-            f"beat vs all reporters {recent_years}: {block['recent_p2_mean']:+.2f}R"
-        ),
-        f"<i>{caveat}</i>" if html else caveat,
-    ]
+        return unavailable
+    try:
+        window_start = date.fromisoformat(block["window_start"])
+        window_end = date.fromisoformat(block["window_end"])
+        recent_from = date.fromisoformat(block["recent_from"])
+        years = _years(window_start, window_end)
+        recent_years = _years(recent_from, window_end)
+        caveat = (
+            "Not validated alpha. PEAD v2 events replayed on SIP bars in the native card unit; "
+            "EPS and consensus as served today, not point-in-time."
+        )
+        return [
+            (
+                f"\u2022 {bold('Expected excess')} (PEAD v2, LONG; {recent_years} shrunk toward 0): "
+                f"{block['expected_mean']:+.2f}R \u00b1 {block['expected_se']:.2f} "
+                f"(se of the {recent_years} mean) vs beta-matched SPY after cost"
+            ),
+            (
+                f"  replay {years}: {block['overall_mean']:+.2f}R over {block['n_leg']:,} events \u00b7 "
+                f"{recent_years}: {block['recent_mean']:+.2f}R over {block['n_recent']:,} \u00b7 "
+                f"beat vs all reporters {recent_years}: {block['recent_p2_mean']:+.2f}R"
+            ),
+            f"<i>{caveat}</i>" if html else caveat,
+        ]
+    except KeyError, ValueError, TypeError:
+        return unavailable
 
 
 class CardStatsRepository:

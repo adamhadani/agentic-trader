@@ -780,7 +780,7 @@ class TradingCopilot:
         except BaseRateUnavailable as exc:
             logger.warning(
                 "PEAD base rate unavailable; the card renders without it",
-                extra={"event": "pead_base_rate_unavailable", "reason": type(exc).__name__},
+                extra={"event": "pead_base_rate_unavailable", "reason": str(exc)},
             )
         return pead_base_rate_block(rate, config.apriori.pead_base_rate_sha256 if rate is not None else None)
 

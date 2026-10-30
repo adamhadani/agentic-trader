@@ -27,11 +27,16 @@ Top-level `card_policy:` (`CardPolicyConfig`; unknown keys fail the load):
 
 Validation requires `stats_max_age_seconds` to exceed `stats_poll_seconds`.
 
-The code default is `off`. `config/config.yaml` ships `mode: "preview"`, `min_measured_ev: 0.0`,
-`stats_window_days: 180`, the prior path and its pinned digest since 2026-10-28. Under `preview` cards are
-still sent and `would_withhold` is journaled. `enforce` stays the operator's switch: no validator refuses
-it, but a policy that is read every day should wait for an always-valid confidence sequence over the
-posterior (spec section 5), because daily peeking at a fixed threshold inflates false withholds.
+The code default is `off`. `config/config.yaml` ships `mode: "enforce"`, `min_measured_ev: 0.0`,
+`stats_window_days: 180`, the prior path and its pinned digest. It ran `preview` from 2026-10-28 and
+ships `enforce` by operator decision on 2026-10-30. That decision was made without the always-valid
+confidence sequence over the posterior that the v2 spec asked for (section 5), which is not built. A
+policy read every day at a fixed threshold inflates false withholds. A wrongly withheld key keeps its
+labels (withheld candidates stay journaled and labelled), so it can recover. Moving the pinned prior
+from v1 to v2 also changed the effect: the posterior mean moves with the prior mean, so for
+SQUEEZE_BREAKOUT 4h the posterior goes negative at a live mean below -0.155R at n=20 (v1: -0.276R) and
+below -0.062R at n=50 (v1: -0.110R), and `enforce` withholds that key sooner. The other two keys shift
+by about 0.001R at n=20.
 
 Quote `"off"` in YAML. YAML 1.1 reads a bare `off` as `false`; the loader maps `false` back to `"off"`
 and rejects `on`/`true`.
@@ -100,7 +105,7 @@ and valid, no unknown key, `sd`, `tau`, `pooled_sd` and `pooled_tau` positive, `
 non-negative), `version`, `unit` and the cost, clip and beta constants, and REASON is one fixed phrase per
 check (`prior digest is not configured`, `prior file not found`, `prior file unreadable`,
 `prior digest mismatch`, `prior file invalid`, `prior version mismatch`, `prior unit mismatch`,
-`prior constants differ from the code`): never a path or file content. So do an SPY hourly read that failed
+`prior constants differ from the code`, `prior shrinkage inconsistent`): never a path or file content. So do an SPY hourly read that failed
 for every row, and every row's beta read failing (the SPY daily read or every symbol's). Nothing is written and the
 previous snapshot stays authoritative until it ages out. A single symbol's failed daily read only makes its rows
 `n_fetch_failed`; its cost never falls back to the floor silently.
@@ -255,13 +260,14 @@ Evidence recorded:
 Operate it in order: `off` until a snapshot exists; `preview` with a threshold, reading `would_withhold`
 for several sessions; then `enforce`. Each change is a config edit and the controlled restart.
 
-What `preview` at 0.0 will show. The replay prior for TREND_PULLBACK 4h LONG is -0.078R (worth about 63 live rows), so once a
-key's live floor (`min_mature_cards`) is met the posterior sits just below zero unless the live record is
-positive enough to lift it, and most native cards will journal `would_withhold: true`. Under `preview`
-every card is still sent. That journaled contrast tests whether the replay prior describes live, gated
-cards; it is not a verdict on the strategies. `enforce` is a later operator decision, and with a prior this
-close to the threshold it would withhold most native cards: read the preview first. Do not enforce on a
-daily-peeking basis without the always-valid confidence sequence (spec section 5).
+What `enforce` at 0.0 does. The replay prior for TREND_PULLBACK 4h LONG is -0.077R in v2 (about 63 live
+rows), so once a key's live floor (`min_mature_cards`) is met the posterior sits below zero unless the
+live record lifts it, and most native cards are withheld. On 2026-10-30 that key had 19 of 20 mature
+labels. The squeeze keys send until each reaches its own floor. Preview evaluated zero cards between
+2026-10-28 and the decision (trading was halted through 10-29 and there were no setups on 10-30), so
+there is no preview contrast to read. The review's estimate is about 0.5 cards per session. Going back
+is a config edit (`mode: "preview"`) and the controlled restart. There is no confidence sequence behind
+the daily reads (spec section 5); see above.
 
 ## Broad-index exclusion
 

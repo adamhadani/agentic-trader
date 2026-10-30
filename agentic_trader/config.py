@@ -283,8 +283,8 @@ CardPolicyMode = Literal["off", "preview", "enforce"]
 class CardPolicyConfig(BaseModel):
     """Measured-evidence card policy, statistics worker and card validity (docs/card-evidence.md).
 
-    The code default is off; the shipped config runs ``preview`` at 0.0 (journal ``would_withhold``,
-    still send) and ``enforce`` is the operator's call. The evidence block is always rendered. It
+    The code default is off; the shipped config runs ``enforce`` at 0.0 (operator decision 2026-10-30,
+    after ``preview`` from 2026-10-28, which journals ``would_withhold`` and still sends). The evidence block is always rendered. It
     withholds native cards only on complete, time-matured evidence whose posterior expected excess R
     (``net_excess_r_v1``: a frozen replay prior shrunk toward the live record) is below
     ``min_measured_ev`` (partial, stale or missing evidence never withholds; alpha, probe and drift

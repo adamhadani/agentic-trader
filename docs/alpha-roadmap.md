@@ -43,7 +43,7 @@ measurement items it does not mention.
 - **The native card generator has a negative prior.** TREND_PULLBACK 4h LONG is −0.078R over 7,049
   replayed setups.
 - **Clean history is nearly spent.** Only the 2007–2016 era (with Form 4 from 2006) and the prospective
-  window since 2026-08-01 are unread.
+  window since 2026-08-15 are unread.
 - **A statistical pass is not a card.** A long-only mid-cap pass can still lose to a beta-matched SPY.
 - **Paper trading cannot validate within the program.** A 0.1R card effect needs about 28 months of
   cards.
@@ -63,9 +63,9 @@ measurement items it does not mention.
 
 | # | Direction | Cost | Status |
 | --- | --- | --- | --- |
-| 1 | **Honest card stream.** `card_policy` decision at DP0 (11-06; enforce recommended), `card_stats` empirical-Bayes prior across keys, PEAD net-excess base rate by year on PEAD cards, the raw EPS/consensus pair in `pead_decision`, `gex.py` IV NaN instead of a fabricated 0.20 (contract 9), the window × read ledger | $0 | Built on `feature/honest-stream` (started 2026-10-30): EB prior, PEAD base-rate block and raw EPS pair, GEX NaN, [window × read ledger](research-window-ledger.md); awaiting merge, deploy and the DP0 decision |
-| 2 | **Sharadar 2007–2016 era, event lane.** `insider-oos-v1` (P2 primary, beta/ATR-matched controls, earnings-proximity and ex-crisis secondaries) and `pead-sue-v3` (consensus-free SUE, entry at the later of D+2 and `datekey` + 1). One frozen manifest, Holm over 2, delisting rule, placebo, rehearsal on 2016-08 → 2026-07 first | ≈ $499/yr (verify) | Waits on O1 (operator evaluating Sharadar) |
-| 3 | **IC machinery and `composite-ic-v1`.** `cs_rank`, `cs_zscore`, `group_neutralize`, `cs_regress_out`, `ts_beta`/`ts_cov`/`ts_skew`; cube v2 arrays with next-open forward and residual returns; rank IC with a session-block bootstrap; checks A-IC and C-IC; a zero-trial re-score of the 64 pairs. One equal-weight JKP-theme composite chosen by a mechanical rule, frozen before any IC, decided at h = 20 on the era. It becomes the yardstick for every new data source | $0 beyond Sharadar | The grammar and IC statistic need no purchase; cube v2 and the era read wait on O1 |
+| 1 | **Honest card stream.** `card_policy` decided 2026-10-30 (`enforce` at 0.0, shipped with this PR), `card_stats` empirical-Bayes prior across keys, PEAD net-excess base rate by year on PEAD cards, the raw EPS/consensus pair in `pead_decision`, `gex.py` IV NaN instead of a fabricated 0.20 (contract 9), the window × read ledger | $0 | Built on `feature/honest-stream` (started 2026-10-30): EB prior, PEAD base-rate block and raw EPS pair, GEX NaN, [window × read ledger](research-window-ledger.md); awaiting merge and deploy; `card_policy` ships `enforce` by operator decision 2026-10-30 |
+| 2 | **Sharadar 2007–2016 era, event lane.** `insider-oos-v1` (P2 primary, beta/ATR-matched controls, earnings-proximity and ex-crisis secondaries) and `pead-sue-v3` (consensus-free SUE, entry at the later of D+2 and `datekey` + 1). One frozen manifest, Holm over 2, delisting rule, placebo, rehearsal on 2016-08 → 2026-07 first | ≈ $499/yr (verify) | Parked: O1 (Sharadar) deferred by the operator 2026-10-30, no date |
+| 3 | **IC machinery and `composite-ic-v1`.** `cs_rank`, `cs_zscore`, `group_neutralize`, `cs_regress_out`, `ts_beta`/`ts_cov`/`ts_skew`; cube v2 arrays with next-open forward and residual returns; rank IC with a session-block bootstrap; checks A-IC and C-IC; a zero-trial re-score of the 64 pairs. One equal-weight JKP-theme composite chosen by a mechanical rule, frozen before any IC, decided at h = 20 on the era. It becomes the yardstick for every new data source | $0 beyond Sharadar | The machinery is $0, but there is no clean confirmation window without the era (O1 deferred), so what it finds stays a hypothesis |
 | 4 | **Options-implied information.** Freeze `options_fields_v1`; spend one hour checking Alpaca's indicative IV ranks against ORATS before any capture worker | ≤ $49 | Deferred (week 7) |
 | — | **Cut:** residual no-news reversal, TSMOM on the ETF32, intraday SPY/QQQ noise band, `veto-v1` | — | Not to be run without a new review |
 
@@ -87,10 +87,10 @@ measurement items it does not mention.
 
 | Decision | Due | Status |
 | --- | --- | --- |
-| O1 (Sharadar) | 11-03 | Operator researching it, 2026-10-30; terms verified (Bundle $69/month or $499/year, no retention after cancellation, personal-use licence, publication limit): [README](alpha-directions-2026-10-30/README.md#sharadar-terms-and-evidence-verified-2026-10-30) |
-| O2 (≈ $550 spend cap) | 11-03 | Open |
-| O3 (non-native sources ≤ 5 of 8 slots) | 11-03 | Open |
-| DP0 (`card_policy` enforce or preview) | Fri 11-06 | Open |
+| O1 (Sharadar) | — | Deferred by the operator 2026-10-30, no date; direction 2 is parked. Terms verified (Bundle $69/month or $499/year, no retention after cancellation, personal-use licence, publication limit): [README](alpha-directions-2026-10-30/README.md#sharadar-terms-and-evidence-verified-2026-10-30) |
+| O2 (≈ $550 spend cap) | — | On hold with O1 |
+| O3 (non-native sources ≤ 5 of 8 slots) | — | Approved 2026-10-30 (the principle; native keeps at least 3). The config change ships with the first path-to-cards spec, so PEAD and insider watch can still fill all 8 slots until then |
+| DP0 (`card_policy`) | — | Decided 2026-10-30: `enforce` at 0.0, shipped with the honest-stream PR, ahead of the date and with no preview evaluations |
 | DP1–DP4 | 11-20, 12-04, 12-18, holiday week | — |
 
 The week-by-week plan is [report §6.2](alpha-directions-2026-10-30/report.md#62-week-by-week-plan-2026-11-02--2026-12-24).
@@ -108,7 +108,7 @@ competing orderings in this file with one queue:
   journal); merge and deploy are recorded in the review README. The PEAD probe renewal (D1) is done.
 - **Phase 1.** Honest measurement, and a paper book that actually fills. Item 1.2 (card statistics v2:
   the `net_excess_r_v1` unit, time-matured cohorts, a frozen replay prior shrunk toward the live record,
-  `card_policy` on the posterior in `preview` at 0.0 since 2026-10-28) is done; see
+  `card_policy` on the posterior: `preview` at 0.0 from 2026-10-28, `enforce` at 0.0 by operator decision 2026-10-30) is done; see
   [card evidence](card-evidence.md) and the [prior](card-stats-prior-2026-10-28.md).
 - **Phase 2.** New evidence on session-correct bars against a beta-matched yardstick.
 - **Phase 3.** Architecture and longer-horizon work.

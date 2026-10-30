@@ -34,8 +34,8 @@ code changes; file and symbol names are the stable reference.
   clusters (+0.070R over matched controls). Both were measured on survivorship-biased cohorts. Paper
   trading cannot validate anything within the program: a 0.1R card effect takes about 28 months of
   cards to see.
-- **Direction 1, an honest card stream ($0, week 1).** Status: built on `feature/honest-stream` (2026-10-30), awaiting merge and deploy; the `card_policy` decision stays due at DP0.
-  - Decide `card_policy` at DP0.
+- **Direction 1, an honest card stream ($0, week 1).** Status: built on `feature/honest-stream` (2026-10-30), awaiting merge and deploy; `card_policy` is decided (`enforce` at 0.0, operator, 2026-10-30).
+  - `card_policy` ships `enforce` at 0.0 (decided 2026-10-30).
   - Give `card_stats` an empirical-Bayes prior across keys.
   - Put a net-excess base rate on PEAD cards, and journal the raw EPS/consensus pair.
   - Replace the fabricated `gex.py` IV default.
@@ -52,16 +52,16 @@ code changes; file and symbol names are the stable reference.
 - **No** vectorbt PRO, no GPU work in this program, no social/congress/estimate feeds.
 - **Expectation:** about 1 in 4 that a source passes both the statistical and the economic gate in
   time for the January earnings season. The most likely outcome is a sparse but honest stream and
-  decisive verdicts on both near-misses.
+  decisive verdicts on both near-misses. The 1-in-4 assumed Sharadar, which the operator deferred.
 
 ## Operator decisions
 
 | # | Decision | Recommendation | Status |
 | --- | --- | --- | --- |
-| O1 | Subscribe to the Sharadar Core US Equities Bundle (D8); day-1 diligence on price, retention after cancellation, research-use licence, `datekey` semantics, EVENTS item codes, delisting fields | Yes | Operator researching it (2026-10-30). Claude does not purchase. Plans, retention and licence terms are now verified (see [Sharadar terms](#sharadar-terms-and-evidence-verified-2026-10-30)); `datekey` semantics, EVENTS item codes and delisting fields remain day-1 checks |
-| O2 | Spend cap through 12-31: Sharadar plus at most $49 for an ORATS check | ≈ $550 | Open |
-| O3 | Book capacity: non-native sources (PEAD, insider watch, future probes) share at most 5 of the 8 desk slots | Approve the principle; numbers at DP2 | Open |
-| DP0 | `card_policy` on Fri 11-06: `enforce` at 0.0 (≈ 0.5 cards/session) or preview with no auto-entry of `would_withhold` cards (≈ 2.5) | Enforce | Due 2026-11-06 |
+| O1 | Subscribe to the Sharadar Core US Equities Bundle (D8); day-1 diligence on price, retention after cancellation, research-use licence, `datekey` semantics, EVENTS item codes, delisting fields | Yes | Deferred by the operator 2026-10-30, no date; direction 2 is parked. Claude does not purchase. Plans, retention and licence terms are now verified (see [Sharadar terms](#sharadar-terms-and-evidence-verified-2026-10-30)); `datekey` semantics, EVENTS item codes and delisting fields remain day-1 checks |
+| O2 | Spend cap through 12-31: Sharadar plus at most $49 for an ORATS check | ≈ $550 | On hold with O1 |
+| O3 | Book capacity: non-native sources (PEAD, insider watch, future probes) share at most 5 of the 8 desk slots | Approve the principle; numbers at DP2 | Approved 2026-10-30 (the principle; native keeps at least 3). The config change ships with the first path-to-cards spec, so PEAD and insider watch can still fill all 8 slots until then |
+| DP0 | `card_policy`: `enforce` at 0.0 (≈ 0.5 cards/session) or preview | Enforce | Decided 2026-10-30: `enforce` at 0.0, shipped with the honest-stream PR, ahead of the date and with no preview evaluations |
 | — | Start the $0 work (direction 1) while Sharadar is evaluated | — | Approved 2026-10-30: "take on highest priority work that doesn't require paid subscriptions yet" |
 
 Later decision points DP1–DP4 (11-20, 12-04, 12-18, holiday week) are in [report.md](report.md) §6.1.

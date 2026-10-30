@@ -105,8 +105,9 @@ BASE_RATE = {
     "recent_p2_mean": -0.0154,
 }
 BASE_RATE_LINES = (
-    "• <b>Expected excess</b> (PEAD v2, LONG): +0.01R ± 0.05 vs beta-matched SPY after cost\n"
-    "  replay 2016–26: +0.07R over 12,345 events · 2025–26: +0.03R over 678 (shrunk toward 0) · "
+    "• <b>Expected excess</b> (PEAD v2, LONG; 2025–26 shrunk toward 0): +0.01R ± 0.05 "
+    "(se of the 2025–26 mean) vs beta-matched SPY after cost\n"
+    "  replay 2016–26: +0.07R over 12,345 events · 2025–26: +0.03R over 678 · "
     "beat vs all reporters 2025–26: -0.02R\n"
     "<i>Not validated alpha. PEAD v2 events replayed on SIP bars in the native card unit; "
     "EPS and consensus as served today, not point-in-time.</i>\n"

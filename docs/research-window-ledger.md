@@ -62,7 +62,7 @@ Statuses follow the review's §2.5. The "Reads" column lists ledger ids from the
 | W8 | Spread lane confirmation 2024-01-02 → 2026-07-31 | reserve (decay check only) | None; the spread lane is closed | The `spread/confirmation` journal key is unconsumed and no spread study read these dates; other lanes read the same dates (L12–L20, L39; see W2) |
 | W9 | ETF, sector-panel and screened-equity windows (2020–2025) | development only | None | L33–L39, L18–L20 |
 | W10 | Sharadar era 2007-01 → 2016-07 (Form 4 from 2006) | fresh | One frozen manifest, two declared lanes | None |
-| W11 | Prospective from 2026-08-01 | fresh | Probe monitors; a fixed 2027-08 insider read | Monitors only (see below) |
+| W11 | Prospective from 2026-08-15 (2026-08-01 → 08-14 overlaps the native holdout, L25) | fresh | Probe monitors; a fixed 2027-08 insider read | Monitors only (see below) |
 
 ## Reads
 
@@ -157,7 +157,8 @@ L18–L20 (above) are also ETF and equity-panel reads.
 
 ### Prospective from 2026-08-01
 
-No study has read outcomes here. These run as monitors.
+No study has read outcomes from 2026-08-15 on. The native-setup holdout (L25, W5) ran through 2026-08-14,
+so 2026-08-01 → 2026-08-14 is not fresh for a native-setup read. The rest run as monitors.
 
 | Monitor | What it records | Doc | Start date |
 | --- | --- | --- | --- |
@@ -167,7 +168,9 @@ No study has read outcomes here. These run as monitors.
 | Insider watch cards and PEAD probe | Live cards, described in `cards outcomes` | [watch cards](apriori-alphas.md#watch-cards) | Not stated in the doc |
 
 A fixed insider read from 2026-08-01 is planned for 2027-08 ([insider result](apriori-insider-2026-10-23.md),
-route (a)). It needs its own row and α first.
+route (a)). It keeps its declared start of 2026-08-01, so its row must record the two overlapping weeks
+(2026-08-01 → 2026-08-14, read by L25): a different cohort and hypothesis, but rule 3 applies. It needs
+its own row and α first.
 
 ## Discrepancies with the review's §2.5
 
@@ -192,6 +195,8 @@ route (a)). It needs its own row and α first.
    (L31, L32). Its confirmation key is separate from the pooled one and unconsumed, but other lanes read the same dates, so the window is not fresh (W8).
 6. **PEAD's "recent" window differs between docs.** The study uses "recent" from 2023-01-01 (L12) and the
    base-rate doc from 2025-01-01 (L17). Both are as stated in their docs.
+7. **The prospective window is not fresh from 2026-08-01.** The review treats it as unread from 2026-08-01.
+   The native holdout (W5, L25) ran through 2026-08-14, so the unread window starts 2026-08-15 (W11).
 
 ## Not yet catalogued
 

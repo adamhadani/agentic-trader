@@ -64,7 +64,7 @@ has read, so a new study cannot tell which windows are still fresh (program rule
   date, result doc) and its status (fresh, spent, development only).
 
 **Non-goals**
-- No `card_policy` mode change. Enforce versus preview is operator decision DP0 on 2026-11-06. This PR
+- *Superseded 2026-10-30: the operator chose enforce and it ships with this PR.* No `card_policy` mode change. Enforce versus preview is operator decision DP0 on 2026-11-06. This PR
   must not need a code change for either choice. Enforce is already a config edit; the
   preview-without-auto-entry option is not built *(my call: the report recommends enforce)*.
 - No change to which cards are sent, ranked, sized, auto-entered or admitted. The PEAD block is
@@ -157,7 +157,7 @@ card headline falls from about +0.13R to about +0.07R.
 
 **Per event** (direction LONG, every event, leg or not, because P2 needs all reporters):
 1. Re-label with the study's own `decision_price`, `levels_for` and `label_bracket` at the decisive
-   15 bp cost, keeping `entry_price`, `stop`, `entry_time` and `exit_time`.
+   5 bp cost (the entry's `decision_cost_bps`), keeping `entry_price`, `stop`, `entry_time` and `exit_time`.
 2. **Rehearsal check (R2).** Assert that the re-labelled `r` and `hit` reproduce the study's
    `labels.csv.gz` for every (symbol, session, LONG) row, with `r` within 1e-9 and identical counts. If
    anything differs, the script refuses to write.
@@ -172,7 +172,7 @@ card headline falls from about +0.13R to about +0.07R.
 - **Overall and by year,** for the leg (`is_leg`) and for all reporters: `n`, mean `net_excess_r`, and
   the session-clustered se.
 - **P2 by year:** the mean over leg events of `net_excess_r` minus the same-session all-reporter mean,
-  as v2's paired test does, with its session-clustered se.
+  a within-session difference, unlike v2's pooled P2 (a difference of means), with its session-clustered se.
 - **Recent window:** sessions from 2025-01-01 to the study's last decision (2026-07-31), the most
   recent measured window (R5).
 - **τ:** the method-of-moments between-quarter sd of the leg's `net_excess_r`, using `card_prior._tau`

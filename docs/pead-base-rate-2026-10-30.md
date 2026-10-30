@@ -3,7 +3,7 @@
 Research only. `config/research/pead-base-rate-v1.json` recomputes the PEAD v2 study's LONG events in the
 desk's card unit, `net_excess_r_v1` (bracket R after a per-name cost, minus the trailing 120-session beta
 times the market's R over the same hold). It is descriptive, decides nothing, and earns no probe, shadow or
-promotion credit. The PEAD card (Task 3 of the honest-stream PR) shows its expected figure.
+promotion credit. The PEAD card shows its expected figure.
 
 ## Provenance
 
@@ -61,16 +61,24 @@ whether the leg beats the other reporters of the same day. Standard errors are s
 Expected excess (the figure on the card): between-quarter tau of the leg's `net_excess_r` is 0.137
 (`card_prior.between_quarter_tau`, floor and 20-row quarter minimum as the card prior), so
 `B = tau^2 / (tau^2 + se_recent^2) = 0.872`, and the expected excess is `B x recent mean = -0.040R`, se
-`sqrt(B) x se_recent = 0.049R`. The shrinkage toward zero is mild because the recent standard error is small
-beside the quarter-to-quarter spread.
+`sqrt(B) x se_recent = 0.049R`. The `±` is the se of the shrunk 2025-26 mean. It is not comparable with a native card's `±`, which at
+n=0 is sqrt(tau^2 + se^2): 0.175 for TREND_PULLBACK 4h and 0.215 for SQUEEZE_BREAKOUT 4h; the same formula
+gives 0.146 for PEAD. The 2025-26 quarter means ran from -0.27R to +0.20R. The shrinkage toward zero is
+mild only under the per-quarter tau: tau is per quarter and the window spans seven quarters, and
+tau/sqrt(7) would give B = 0.49 and -0.023R +/- 0.037. The card uses the per-quarter tau, as the spec
+states, and the R5 outcome (below zero, within noise) is the same either way.
 
 ## Reading
 
-In the card unit the PEAD v2 long leg has lost money on average: -0.024R overall and -0.046R since 2025,
-against the study's P2 of +0.055R over all reporters in raw R. Most of that gap is the market: the control (all
-reporters) is -0.054R overall, so a long position in a reporter drifted below its beta-matched SPY after
-cost. The leg beat that control by +0.029R (1.6 se), the study's P2 sign, but the recent window's
-paired difference is -0.022R +/- 0.043R, indistinguishable from zero and of the wrong sign.
+In the card unit the PEAD v2 long leg has lost money on average: -0.024R overall and -0.046R since 2025.
+The study figure comparable with that leg mean is P1, +0.149R at 5 bp. Most of the gap between them is the
+market, and that is true of P1: the mean of beta times market R is 0.165R and `cost_r` is 0.027R.
+
+The study's P2, +0.055R, is also at 5 bp (not raw R) and is a pooled difference of means (0.1489 - 0.0939),
+not a within-session beat. This file's P2 is a within-session difference: the leg beat the all-reporter
+control in the same session by +0.029R +/- 0.018 overall (1.6 se) and by -0.022R +/- 0.043 in the recent
+window. On the study's pooled estimand the recent figure is +0.004R, and 2026 is +0.021R where the
+within-session figure is -0.010R. So the recent sign depends on the estimand, and both are within noise.
 
 ## Caveats
 

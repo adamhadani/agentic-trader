@@ -218,7 +218,7 @@ is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
   and the 2025-on cell, and the paired beat over all reporters), from the digest-pinned
   `config/research/pead-base-rate-v1.json` (`apriori.pead_base_rate_path`, `apriori.pead_base_rate_sha256`;
   [result](pead-base-rate-2026-10-30.md)). It is loaded once at copilot construction; a missing, unpinned or
-  mismatched file logs `pead_base_rate_unavailable` (type name only) and the card says "PEAD base rate:
+  mismatched file logs `pead_base_rate_unavailable` (with its fixed reason: digest mismatch, file not found and so on) and the card says "PEAD base rate:
   unavailable". The card stores the block under `drift.base_rate` and the decision provenance under
   `pead_base_rate`. It is evidence only: it never gates, ranks, sizes, auto-enters or blocks a card, and a
   card stored before it renders as it did.
