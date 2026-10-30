@@ -33,7 +33,7 @@ from agentic_trader.research.setups.net_excess import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
 
@@ -50,13 +50,16 @@ __all__ = [
     "load_prior",
     "posterior",
     "prior_rows",
+    "shrink_across_keys",
 ]
 
-PRIOR_VERSION = "card-stats-prior-v1"
+PRIOR_VERSION = "card-stats-prior-v2"
 PRIOR_MIN_ROWS_PER_QUARTER = 20
 PRIOR_MIN_QUARTERS = 8
 # A controller ruling: a moment estimate of 0 must not make the prior immovable.
 PRIOR_TAU_FLOOR = 0.05
+# The shrunk mean must reproduce from the stored raw mean, cross-key mean and shrinkage to this tolerance.
+SHRINKAGE_TOLERANCE = 1e-12
 
 _KEY_COLUMNS = ["strategy", "timeframe", "direction"]
 
@@ -74,6 +77,8 @@ class PriorEntry(BaseModel, frozen=True, allow_inf_nan=False):
     n_rows: int = Field(ge=0)
     n_sessions: int = Field(ge=0)
     mean: float
+    replay_mean: float
+    shrinkage: float = Field(ge=0, le=1)
     sd: float = Field(gt=0)
     se_session: float = Field(ge=0)
     tau: float = Field(gt=0)
@@ -94,6 +99,8 @@ class CardStatsPrior(BaseModel, frozen=True, allow_inf_nan=False, extra="forbid"
     pooled_sd: float = Field(gt=0)
     pooled_tau: float = Field(gt=0)
     pooled_n_rows: int
+    cross_key_mean: float
+    between_key_tau: float = Field(gt=0)
     keys: tuple[PriorEntry, ...]
     cost_bps_quantiles: dict[str, float]
     n_no_beta: int
@@ -114,6 +121,8 @@ class CardStatsPrior(BaseModel, frozen=True, allow_inf_nan=False, extra="forbid"
             n_rows=0,
             n_sessions=0,
             mean=0.0,
+            replay_mean=0.0,
+            shrinkage=1.0,
             sd=self.pooled_sd,
             se_session=0.0,
             tau=self.pooled_tau,
@@ -155,6 +164,12 @@ def load_prior(path: Path, sha256: str | None) -> CardStatsPrior:
         raise PriorUnavailable("prior file invalid") from None
     if prior.version != PRIOR_VERSION:
         raise PriorUnavailable("prior version mismatch")
+    if any(
+        abs(k.mean - (prior.cross_key_mean + k.shrinkage * (k.replay_mean - prior.cross_key_mean)))
+        > SHRINKAGE_TOLERANCE
+        for k in prior.keys
+    ):
+        raise PriorUnavailable("prior shrinkage inconsistent")
     if prior.unit != NET_EXCESS_UNIT:
         raise PriorUnavailable("prior unit mismatch")
     if (
@@ -217,6 +232,8 @@ def estimate_prior(rows: pd.DataFrame) -> tuple[tuple[PriorEntry, ...], float, f
                 n_rows=len(group),
                 n_sessions=n_sessions,
                 mean=float(group["net_excess_r"].mean()),
+                replay_mean=float(group["net_excess_r"].mean()),
+                shrinkage=1.0,
                 sd=_sd(group["net_excess_r"]),
                 se_session=se_session,
                 tau=key_tau if enough else pooled_tau,
@@ -224,6 +241,23 @@ def estimate_prior(rows: pd.DataFrame) -> tuple[tuple[PriorEntry, ...], float, f
             )
         )
     return tuple(entries), _sd(finite["net_excess_r"]), pooled_tau, len(finite)
+
+
+def shrink_across_keys(entries: Sequence[PriorEntry], between_key_tau: float) -> tuple[tuple[PriorEntry, ...], float]:
+    """Empirical-Bayes shrink of each key's ``replay_mean`` toward the cross-key mean: ``(entries, mu)``.
+
+    ``A = between_key_tau**2`` is the between-key variance; ``mu`` weights each key by
+    ``1/(A + se_session**2)``; key ``k`` keeps ``B_k = A/(A + se_k**2)`` of its distance from ``mu``.
+    Only ``mean`` and ``shrinkage`` change, so the posterior weight ``k`` is untouched.
+    """
+    a = between_key_tau**2
+    weights = [1.0 / (a + e.se_session**2) for e in entries]
+    mu = sum(w * e.replay_mean for w, e in zip(weights, entries, strict=True)) / sum(weights)
+    shrunk: list[PriorEntry] = []
+    for e in entries:
+        b = a / (a + e.se_session**2)
+        shrunk.append(e.model_copy(update={"mean": mu + b * (e.replay_mean - mu), "shrinkage": b}))
+    return tuple(shrunk), mu
 
 
 def prior_rows(

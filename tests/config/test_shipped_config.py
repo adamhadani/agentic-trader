@@ -177,6 +177,6 @@ def test_shipped_prior_matches_config():
 
     prior = load_prior(policy.prior_path, policy.prior_sha256)
 
-    assert prior.version == "card-stats-prior-v1"
+    assert prior.version == "card-stats-prior-v2"
     assert prior.is_replay("TREND_PULLBACK", "4h", "LONG")
     assert "prior_sha256" in policy.model_fields_set

@@ -38,6 +38,9 @@ __all__ = [
 ]
 
 EvidenceStatus = Literal["measured", "insufficient", "stale", "unavailable"]
+# A shrunk prior mean this close to the raw replay mean is not worth a "(shrunk from ...)" note.
+SHRUNK_FROM_MIN_DIFF = 0.005
+
 CAVEAT = (
     "Not validated alpha. Expected excess is measured on journaled candidates' deterministic brackets; "
     "mature = 21+ sessions old; per-name cost \u2265 5 bp/side."
@@ -71,6 +74,7 @@ class CardEvidence(BaseModel, frozen=True):
     posterior_mean: float | None = None
     posterior_se: float | None = None
     prior_mean: float | None = None
+    prior_replay_mean: float | None = None
     prior_n_rows: int = 0
     prior_source: str | None = None
     prior_window_start: date | None = None
@@ -132,6 +136,7 @@ def lookup(
             "posterior_mean": stats.posterior_mean,
             "posterior_se": stats.posterior_se,
             "prior_mean": stats.prior_mean,
+            "prior_replay_mean": stats.prior_replay_mean,
             "prior_n_rows": stats.prior_n_rows,
             "prior_source": stats.prior_source,
         }
@@ -227,13 +232,17 @@ def format_evidence_lines(evidence: CardEvidence, *, html: bool) -> list[str]:
     if evidence.unit is not None and headline is not None and evidence.status in ("measured", "insufficient"):
         if evidence.prior_source == "skeptical" or evidence.prior_mean is None:
             prior_part = "no replay prior (shrunk toward 0)"
-        elif evidence.prior_window_start is not None and evidence.prior_window_end is not None:
-            prior_part = (
-                f"replay {_years(evidence.prior_window_start, evidence.prior_window_end)}: "
-                f"{evidence.prior_mean:+.2f}R over {evidence.prior_n_rows:,} setups"
-            )
         else:
-            prior_part = f"replay: {evidence.prior_mean:+.2f}R over {evidence.prior_n_rows:,} setups"
+            shrunk = (
+                f" (shrunk from {evidence.prior_replay_mean:+.2f}R)"
+                if evidence.prior_replay_mean is not None
+                and abs(evidence.prior_replay_mean - evidence.prior_mean) >= SHRUNK_FROM_MIN_DIFF
+                else ""
+            )
+            label = "replay"
+            if evidence.prior_window_start is not None and evidence.prior_window_end is not None:
+                label += f" {_years(evidence.prior_window_start, evidence.prior_window_end)}"
+            prior_part = f"{label}: {evidence.prior_mean:+.2f}R{shrunk} over {evidence.prior_n_rows:,} setups"
         live_part = None
         if evidence.status == "measured" and evidence.live_mean is not None and n_mature >= evidence.min_mature:
             live_part = (

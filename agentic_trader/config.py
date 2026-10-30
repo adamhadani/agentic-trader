@@ -291,7 +291,7 @@ class CardPolicyConfig(BaseModel):
     stats_max_age_seconds: int = Field(default=345600, gt=0)
     validity: CardValidity = "session_close"
     # The frozen replay prior (docs/card-stats-prior-2026-10-28.md): an immutable file pinned by SHA-256.
-    prior_path: Path = Field(default=Path("config/research/card-stats-prior-v1.json"), validate_default=True)
+    prior_path: Path = Field(default=Path("config/research/card-stats-prior-v2.json"), validate_default=True)
     prior_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @field_validator("prior_path", mode="after")

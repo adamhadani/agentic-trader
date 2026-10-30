@@ -578,3 +578,11 @@ def test_label_journaled_and_card_stats_see_the_same_rows_on_mixed_events():
         _compute(mixed, events_considered=len(MIXED))["keys"] == _compute(only, events_considered=len(nonempty))["keys"]
     )
     assert _compute(mixed, events_considered=len(MIXED))["events_considered"] == 5
+
+
+def test_key_stats_carry_prior_replay_mean():
+    prior = make_prior((prior_entry(mean=-0.03, replay_mean=0.11, shrinkage=0.5),))
+    payload = _compute(pd.DataFrame(columns=list(outcomes_module._COLUMNS)), prior=prior)
+    row = _by_key(payload)[KEY]
+    assert (row["prior_mean"], row["prior_replay_mean"]) == (-0.03, 0.11)
+    assert _by_key(payload)[(AGGREGATE, AGGREGATE, AGGREGATE)].get("prior_replay_mean") is None

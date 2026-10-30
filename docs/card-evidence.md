@@ -22,7 +22,7 @@ Top-level `card_policy:` (`CardPolicyConfig`; unknown keys fail the load):
 | `stats_poll_seconds` | `300` | Worker poll interval |
 | `stats_max_age_seconds` | `345600` | Evidence older than this is `stale` on cards and in `card_stats` readiness (four days covers weekends and holidays) |
 | `validity` | `"session_close"` | Card validity; see [Card validity](#card-validity) |
-| `prior_path` | `config/research/card-stats-prior-v1.json` | The frozen replay prior ([provenance](card-stats-prior-2026-10-28.md)); a relative path resolves from the workspace root |
+| `prior_path` | `config/research/card-stats-prior-v2.json` | The frozen replay prior ([provenance](card-stats-prior-2026-10-28.md)); a relative path resolves from the workspace root |
 | `prior_sha256` | `null` | SHA-256 of the prior file; the worker refuses a missing or mismatched digest |
 
 Validation requires `stats_max_age_seconds` to exceed `stats_poll_seconds`.
@@ -87,6 +87,12 @@ Payload (`CardStatsSnapshot`):
   `skeptical` otherwise: zero mean at the pooled spread and tau; `prior_se` is `sqrt(tau² + se_session²)`,
   `prior_weight` the pseudo-count `k`); `mean_name_cost_bps` is the mean per-name cost. Every number is finite or
   null; rows without a strategy, timeframe or direction count only in the aggregate.
+
+The prior (`card-stats-prior-v2`, [derivation](card-stats-prior-2026-10-28.md#v2-2026-10-30)) shrinks each
+key's raw replay mean toward the cross-key mean by empirical Bayes (`replay_mean`, `shrinkage`, `mean`); the
+posterior weight is unchanged. The card's prior line shows `(shrunk from +0.13R)` after the prior mean when
+the raw replay mean (`prior_replay_mean`) differs from it by 0.005R or more; evidence stored before v2 has no
+`prior_replay_mean` and renders as before.
 
 Failures: a prior that cannot be loaded raises `CardStatsUnavailable("card statistics prior unavailable: REASON")`.
 `load_prior` checks, in order, the configured digest, the file, its SHA-256, the model (every field present

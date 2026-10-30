@@ -39,3 +39,34 @@ live row**: live cards only move the posterior `(n*xbar + k*mean)/(n + k)`, `k =
 
 Per-side cost over all rows: p50 6.19 bp, p90 11.68 bp, p99 21.26 bp, max
 136.44 bp. Rows without beta (`n_no_beta`): 0.
+
+## v2 (2026-10-30)
+
+v1 used each key's raw replay mean as the prior mean. With three keys of very different sample sizes the
+smallest (SQUEEZE_BREAKOUT 4h, 114 setups, +0.13R) carried the largest unshrunk prior mean. v2 keeps every
+v1 moment and changes only the mean: an empirical-Bayes shrink of each key's `replay_mean` toward the
+cross-key mean. With `A = between_key_tau²` (the pooled between-quarter tau, 0.1643):
+
+- `w_k = 1/(A + se_session_k²)` and `μ = Σ w_k·replay_mean_k / Σ w_k` (`cross_key_mean`);
+- `B_k = A/(A + se_session_k²)` (`shrinkage`) and `mean_k = μ + B_k·(replay_mean_k − μ)`.
+
+`sd`, `se_session`, `tau`, `n_rows`, `n_sessions` and `tau_source` are copied, so the posterior and its weight
+`k` are unchanged. A key the replay never saw keeps the skeptical zero-mean entry. `load_prior` refuses a file
+whose `mean` does not reproduce from `replay_mean`, `cross_key_mean` and `shrinkage` (`prior shrinkage
+inconsistent`). The card prints `(shrunk from +0.13R)` when the two means differ by 0.005R or more.
+
+Regenerate (reads v1 as digest-checked plain JSON; no frame, cache or network):
+
+```
+uv run python scripts/card_stats_prior.py shrink config/research/card-stats-prior-v1.json \
+  6bab4e8d76a53ca099f9e5c82cd249e6cee2b9d26c4fc7e1613bd1e8469e5432 config/research/card-stats-prior-v2.json
+```
+
+v2 SHA-256 (`card_policy.prior_sha256`): `39056a50f30caa1bbf44d5beecb271eb7a381ac21d4e97b1907ca256b086d713`.
+Cross-key mean `μ = -0.0076R`.
+
+| Key | `replay_mean` | `shrinkage` | `mean` |
+| --- | --- | --- | --- |
+| SQUEEZE_BREAKOUT 1h LONG | -0.0210 | 0.919 | -0.0199 |
+| SQUEEZE_BREAKOUT 4h LONG | +0.1315 | 0.586 | +0.0739 |
+| TREND_PULLBACK 4h LONG | -0.0784 | 0.977 | -0.0768 |
