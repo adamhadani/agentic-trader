@@ -15,18 +15,19 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time
+from datetime import date
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from agentic_trader.market.session import ET_TZ
+from agentic_trader.research.alpha.data import load_dataset
 from agentic_trader.research.apriori.pead_events import by_session
+from agentic_trader.research.ic.protocol import WINDOW_END_LIMIT
+from agentic_trader.research.ic.sectors import UNKNOWN
 from agentic_trader.research.pooled.runner import CubeBuild
 from agentic_trader.research.pooled.scoring import ScoreBook
-from agentic_trader.research.setups.runner import _fetch_cached
 
 
 __all__ = [
@@ -43,7 +44,6 @@ __all__ = [
 BENCHMARK = "SPY"
 BETA_EXPRESSION = "ts_beta(returns, mkt_ret, 60)"
 HORIZONS = (1, 5, 20, 60)
-UNKNOWN_GROUP = "unknown"
 
 
 @dataclass(frozen=True, eq=False)
@@ -164,6 +164,8 @@ def build_ic_arrays(
 ) -> ICArrays:
     cube = built.cube
     start, window_end = window
+    if window_end > WINDOW_END_LIMIT:
+        raise ValueError(f"window ends {window_end.isoformat()}, after the {WINDOW_END_LIMIT.isoformat()} limit")
     view = cube.window(start, window_end)
     symbols = tuple(cube.symbols)
     groups = np.asarray(groups, dtype=str)
@@ -187,7 +189,7 @@ def build_ic_arrays(
 
     opens = _opens(bars, symbols, trading_days)
     spy_opens = _opens({BENCHMARK: spy_bars}, (BENCHMARK,), trading_days)
-    eligible = np.asarray(view.eligible, dtype=bool) & (groups != UNKNOWN_GROUP)[None, :]
+    eligible = np.asarray(view.eligible, dtype=bool) & (groups != UNKNOWN)[None, :]
     returns: dict[int, np.ndarray] = {}
     residuals: dict[int, np.ndarray] = {}
     spy_returns: dict[int, np.ndarray] = {}
@@ -217,31 +219,28 @@ def build_ic_arrays(
     )
 
 
-async def load_spy(built: CubeBuild, cache_dir: Path, clients: Any) -> pd.DataFrame:
-    """SPY's cached daily bars, only if the cube was built from them.
+def load_spy(built: CubeBuild, cache_dir: Path) -> pd.DataFrame:
+    """SPY's cached daily bars, only if they are exactly the file the cube was built from. Never a provider.
 
-    Refuses unless a ``SPY|1d|all|`` file is among the cube's bar files (as the pooled event benchmark does).
-    ``cache_dir`` is the pooled cache root; the file is read from its ``bars`` folder. A cache hit ignores the
-    range, which spans the build's trading calendar; ``clients`` supplies ``.bars`` and ``.pace``.
+    The cube's ``bar_file_list`` names the ``SPY|1d|all|<file>`` entry; ``cache_dir`` is the pooled cache
+    root and its ``bars/SPY_1d`` folder must hold that file first by name (as ``_verify_bar_files`` checks).
     """
-    listed = built.cube.coverage.get("bar_file_list") or ()
-    if not any(entry.startswith(f"{BENCHMARK}|1d|all|") for entry in listed):
+    listed = [
+        entry for entry in built.cube.coverage.get("bar_file_list") or () if entry.startswith(f"{BENCHMARK}|1d|all|")
+    ]
+    if not listed:
         raise ValueError(
             f"{BENCHMARK} is not among the bar files the cube was built from; build the cube with it as a static "
             "reference name"
         )
-    first, last = built.trading_days[0], built.trading_days[-1]
-    frame = await _fetch_cached(
-        BENCHMARK,
-        "1d",
-        clients.bars,
-        cache_dir / "bars",
-        datetime.combine(first, time.min, tzinfo=UTC),
-        datetime.combine(last, time.max, tzinfo=UTC),
-        "all",
-        clients.pace,
-        chunk=datetime.combine(last, time.max, tzinfo=UTC) - datetime.combine(first, time.min, tzinfo=UTC),
-    )
+    if len(listed) > 1:
+        raise ValueError(f"the cube lists {len(listed)} {BENCHMARK} bar files")
+    name = listed[0].split("|", 3)[3]
+    folder = cache_dir / "bars" / f"{BENCHMARK}_1d"
+    current = min((path.name for path in folder.glob("*.npz")), default=None)
+    if current != name:
+        raise ValueError(f"the cached {BENCHMARK} bars are {current!r}, not the {name!r} the cube was built from")
+    frame = load_dataset(folder / name)
     if frame.empty:
         raise ValueError(f"{BENCHMARK} has no cached bars")
     return frame

@@ -1,5 +1,5 @@
-import asyncio
-from datetime import timedelta
+import inspect
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -90,7 +90,7 @@ def test_entry_delay_starts_from_the_next_open(ic_world):
     assert np.isfinite(arrays.returns[20][-22]).all()
 
 
-def test_residual_is_zero_for_a_name_that_is_spy_with_beta_one(ic_world):
+def test_a_name_that_is_spy_has_beta_one_and_a_zero_raw_residual(ic_world):
     adjusted = dict(ic_world.build.adjusted)
     adjusted["S0"] = ic_world.spy.copy()
     arrays = _arrays(ic_world.with_bars(adjusted))
@@ -147,7 +147,7 @@ def test_residual_sector_mean_ignores_ineligible_names():
 
 def test_nan_beta_gives_nan_residual(ic_world):
     arrays = _arrays(ic_world)
-    # the window opens 20 sessions into the bars: 60 returns are not yet available
+    # the window opens 40 sessions into the bars (20 into the cube): 60 returns are not yet available
     assert np.isnan(arrays.beta_60[0]).all()
     assert np.isfinite(arrays.returns[20][0]).all()
     assert np.isnan(arrays.residuals[20][0]).all()
@@ -199,16 +199,17 @@ def test_unknown_sector_is_not_eligible(ic_world):
     assert arrays.eligible[:, :7].all()
 
 
-def test_poisoned_prices_after_window_end_change_nothing(ic_world):
-    base = _arrays(ic_world)
+@pytest.mark.parametrize("entry_delay", [0, 1])
+def test_poisoned_prices_after_window_end_change_nothing(ic_world, entry_delay):
+    base = _arrays(ic_world, entry_delay=entry_delay)
     end = ic_world.window[1]
     adjusted = {name: frame.copy() for name, frame in ic_world.build.adjusted.items()}
     spy = ic_world.spy.copy()
     for frame in (*adjusted.values(), spy):
         late = np.asarray(pd.DatetimeIndex(frame.index).tz_convert(ET_TZ).date) > end
         assert late.any()
-        frame.loc[late, ["Open", "High", "Low", "Close"]] = 1e12
-    poisoned = _arrays(ic_world.with_bars(adjusted, spy))
+        frame.loc[late, ["Open", "High", "Low", "Close", "Volume"]] = 1e12
+    poisoned = _arrays(ic_world.with_bars(adjusted, spy), entry_delay=entry_delay)
     for horizon in (1, 5, 20, 60):
         np.testing.assert_array_equal(poisoned.returns[horizon], base.returns[horizon])
         np.testing.assert_array_equal(poisoned.residuals[horizon], base.residuals[horizon])
@@ -216,27 +217,56 @@ def test_poisoned_prices_after_window_end_change_nothing(ic_world):
     np.testing.assert_array_equal(poisoned.beta_60, base.beta_60)
     np.testing.assert_array_equal(poisoned.log_adv, base.log_adv)
     np.testing.assert_array_equal(poisoned.eligible, base.eligible)
-    expression = "roc(delay(close, 21), 42)"
-    np.testing.assert_array_equal(poisoned.book.panel(expression), base.book.panel(expression))
-    # nothing past the end survives truncation
+    # the book's whole calendar, past the window end included
+    for expression in ("roc(delay(close, 21), 42)", "ts_resid_std(returns, mkt_ret, 252)", "ts_mean(volume, 20)"):
+        np.testing.assert_array_equal(poisoned.book.panel(expression), base.book.panel(expression))
     kept = truncate_bars(adjusted, end)
     assert all(frame.index.max() < pd.Timestamp(end + timedelta(days=1), tz="UTC") for frame in kept.values())
 
 
-class _Clients:
-    bars = None  # a cache hit never touches the provider
-    pace = None
+def test_a_symbol_bar_with_no_spy_bar_gives_nan_mkt_ret_there_and_at_the_next_bar(ic_world):
+    spy = _drop(ic_world.spy, TRADING_DAYS[200])
+    mkt = market_frames({"S1": ic_world.build.adjusted["S1"]}, spy)["S1"]["mkt_ret"]
+    assert np.isnan(mkt[pd.Timestamp(TRADING_DAYS[200])])
+    assert np.isnan(mkt[pd.Timestamp(TRADING_DAYS[201])])
+    assert np.isfinite(mkt[pd.Timestamp(TRADING_DAYS[199])])
+    assert np.isfinite(mkt[pd.Timestamp(TRADING_DAYS[202])])
+
+
+def test_a_window_ending_after_the_limit_is_refused(ic_world):
+    with pytest.raises(ValueError, match="limit"):
+        build_ic_arrays(ic_world.build, ic_world.spy, ic_world.groups, (WINDOW[0], date(2024, 1, 2)))
+
+
+def _cache_spy(root, spy):
+    save_dataset(spy, root / "bars" / "SPY_1d", frame_digest(spy))
+    return min(p.name for p in (root / "bars" / "SPY_1d").glob("*.npz"))
 
 
 def test_load_spy_refuses_a_cube_not_built_with_spy(tmp_path):
     world = make_world(bar_files=("AAA|1d|all|x.npz", "SPYX|1d|all|y.npz"))
     with pytest.raises(ValueError, match="SPY is not among the bar files"):
-        asyncio.run(load_spy(world.build, tmp_path, _Clients()))
+        load_spy(world.build, tmp_path)
 
 
-def test_load_spy_reads_the_cached_file_without_a_provider(tmp_path, ic_world):
-    plain = ic_world.spy.copy()
-    save_dataset(plain, tmp_path / "bars" / "SPY_1d", frame_digest(plain))
-    got = asyncio.run(load_spy(ic_world.build, tmp_path, _Clients()))
-    assert len(got) == len(plain)
-    np.testing.assert_allclose(got["Close"].to_numpy(), plain["Close"].to_numpy())
+def test_load_spy_loads_the_listed_file(tmp_path, ic_world):
+    name = _cache_spy(tmp_path, ic_world.spy)
+    world = make_world(bar_files=(f"SPY|1d|all|{name}",))
+    got = load_spy(world.build, tmp_path)
+    assert len(got) == len(ic_world.spy)
+    np.testing.assert_allclose(got["Close"].to_numpy(), ic_world.spy["Close"].to_numpy())
+
+
+def test_load_spy_refuses_a_different_file_on_disk(tmp_path, ic_world):
+    _cache_spy(tmp_path, ic_world.spy)
+    world = make_world(bar_files=("SPY|1d|all|not-the-cached-file.npz",))
+    with pytest.raises(ValueError, match="not the 'not-the-cached-file.npz'"):
+        load_spy(world.build, tmp_path)
+
+
+def test_load_spy_refuses_a_wrong_cache_root_and_touches_no_provider(tmp_path, ic_world):
+    name = _cache_spy(tmp_path / "real", ic_world.spy)
+    world = make_world(bar_files=(f"SPY|1d|all|{name}",))
+    with pytest.raises(ValueError, match="None"):
+        load_spy(world.build, tmp_path / "elsewhere")  # the function has no provider argument to touch
+    assert "clients" not in inspect.signature(load_spy).parameters

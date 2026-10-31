@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -65,3 +66,14 @@ def test_window_must_end_on_or_before_2023_12_29(tmp_path):
 def test_an_uncompilable_expression_is_refused(tmp_path):
     with pytest.raises(ValidationError):
         load_composite(_variant(tmp_path, lambda d: d["themes"][0]["members"][0].update(expression="nope(close)")))
+
+
+def test_the_pinned_files_hash_to_the_shipped_digests():
+    protocol = load_composite(PATH).protocol
+    root = PATH.parents[3]
+    for relative, digest in (
+        (protocol.sectors.path, protocol.sectors.sha256),
+        (protocol.decisive.protocol, protocol.decisive.sha256),
+        (protocol.secondary.protocol, protocol.secondary.sha256),
+    ):
+        assert hashlib.sha256((root / relative).read_bytes()).hexdigest() == digest, relative
