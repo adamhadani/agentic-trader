@@ -14,12 +14,19 @@ from pathlib import Path
 import click
 import httpx
 
-from agentic_trader.cli.commands.alpha import _apriori_clients, _pooled_build, _pooled_protocol, research_environment
+from agentic_trader.cli.commands.alpha import (
+    _apriori_clients,
+    _pooled_build,
+    _pooled_field_sources,
+    _pooled_protocol,
+    research_environment,
+)
 from agentic_trader.cli.utils import coro
 from agentic_trader.research.ic.arrays import load_spy
 from agentic_trader.research.ic.checks import execute_checks
 from agentic_trader.research.ic.gate import execute_gate
 from agentic_trader.research.ic.protocol import load_composite
+from agentic_trader.research.ic.rescore import LoadedRescore, RescoreBatch, execute_rescore, load_rescore
 from agentic_trader.research.ic.sectors import UNKNOWN, acquire_sectors, load_ff12, load_sectors
 from agentic_trader.research.insider_filings import _TIMEOUT_SECONDS, REQUESTS_PER_SECOND
 from agentic_trader.research.pooled.cohort import load_cohort
@@ -30,6 +37,8 @@ from agentic_trader.research.short_volume import write_private
 _COMPOSITE_HELP = "The frozen composite file"
 _CACHE_HELP = "The pooled cache directory the cubes were built in; nothing is fetched into it"
 _OUTPUT_HELP = "New private directory; no overwrite"
+_RESCORE_HELP = "The frozen re-score file"
+_RESEARCH_ROOT_HELP = "The directory holding the campaign directories and their pinned inputs"
 
 
 def _progress(message: str) -> None:
@@ -63,8 +72,10 @@ async def _verified_pins(composite: Path):
 def _cube_builder(clients, pooled, cache: Path):
     """An async build of a pooled protocol's cached cube and the SPY bars it lists; no bar is fetched."""
     loaded, cohort = pooled
-    inner = _pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache, require_cached=True)
+    return _with_spy(_pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache, require_cached=True), cache)
 
+
+def _with_spy(inner, cache: Path):
     async def build():
         built = await inner()
         return built, await asyncio.to_thread(load_spy, built, cache)
@@ -72,9 +83,74 @@ def _cube_builder(clients, pooled, cache: Path):
     return build
 
 
+def _batch_builder(clients, batch: RescoreBatch, pooled, research_root: Path, cache: Path):
+    """A batch's cached cube and SPY, with the hourly frames or the extra fields its protocol scores from."""
+    loaded, cohort = pooled
+
+    def under_root(relative: str | None) -> Path | None:
+        return None if relative is None else research_root / relative
+
+    inputs = batch.inputs
+    events, short, _insider = _pooled_field_sources(
+        loaded.protocol,
+        under_root(inputs.earnings_pages),
+        under_root(inputs.corporate_actions),
+        under_root(inputs.short_volume),
+        None,
+    )
+    inner = _pooled_build(
+        clients,
+        cohort,
+        loaded.protocol.cube_spec(),
+        cache,
+        require_cached=True,
+        load_hourly=batch.score == "hourly",
+        events=events,
+        short=short,
+    )
+    return _with_spy(inner, cache)
+
+
+def _rescore_builders(clients, loaded: LoadedRescore, pooled: dict, research_root: Path, cache: Path) -> dict:
+    return {
+        batch.id: _batch_builder(clients, batch, pooled[batch.id], research_root, cache)
+        for batch in loaded.protocol.batches
+    }
+
+
+async def _verified_rescore_pins(path: Path):
+    """The re-score file, its sector map and each batch's protocol, each checked against its digest."""
+    try:
+        loaded = await asyncio.to_thread(load_rescore, path)
+        rescore = loaded.protocol
+        sectors = await asyncio.to_thread(load_sectors, REPO_ROOT / rescore.sectors_path, rescore.sectors_sha256)
+        pooled = {batch.id: await _pooled_protocol(REPO_ROOT / batch.protocol) for batch in rescore.batches}
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(f"{type(exc).__name__}: {exc}") from exc
+    for batch in rescore.batches:
+        digest = pooled[batch.id][0].sha256
+        if digest != batch.protocol_sha256:
+            raise click.ClickException(
+                f"Batch {batch.id}: the protocol is {digest}, not the pinned {batch.protocol_sha256}"
+            )
+    return loaded, sectors, pooled
+
+
 def _echo(result: dict, completed: str) -> None:
     """The result's summary on stdout. ``reason`` is fixed text or a type name; a fault's message went to ``_progress``."""
-    keys = ("status", "decision", "reason", "composite_sha256", "sectors_sha256", "cube_sha256")
+    keys = (
+        "status",
+        "decision",
+        "reason",
+        "composite_sha256",
+        "rescore_sha256",
+        "sectors_sha256",
+        "cube_sha256",
+        "batches_carrying",
+        "batches_not_reproduced",
+        "batches_failed",
+        "summary",
+    )
     summary = {key: result[key] for key in keys if key in result}
     if "secondary" in result:
         summary["secondary_status"] = result["secondary"]["status"]
@@ -203,6 +279,44 @@ async def gate_cmd(composite: Path, checks_dir: Path, cache: Path, output: Path)
             checks_dir=checks_dir,
             build=_cube_builder(clients, decisive, cache),
             build_secondary=_cube_builder(clients, secondary, cache),
+            sectors=sectors,
+            environment=environment,
+            progress=_progress,
+        )
+    _echo(result, "completed")
+
+
+@ic_group.command("rescore")
+@click.option(
+    "--rescore",
+    "rescore_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help=_RESCORE_HELP,
+)
+@click.option(
+    "--research-root",
+    required=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help=_RESEARCH_ROOT_HELP,
+)
+@click.option("--cache", required=True, type=click.Path(path_type=Path), help=_CACHE_HELP)
+@click.option("--output", required=True, type=click.Path(path_type=Path), help=_OUTPUT_HELP)
+@coro
+async def rescore_cmd(rescore_path: Path, research_root: Path, cache: Path, output: Path):
+    """The zero-trial re-score of the tested pairs; research only, authorizes nothing.
+
+    A batch that did not reproduce exits non-zero. A complete run with no batch carrying is a normal result, exit 0.
+    """
+    _refuse_existing(output)
+    loaded, sectors, pooled = await _verified_rescore_pins(rescore_path)
+    environment = await asyncio.to_thread(research_environment)
+    with _apriori_clients() as clients:
+        result = await execute_rescore(
+            loaded,
+            output,
+            research_root=research_root,
+            builders=_rescore_builders(clients, loaded, pooled, research_root, cache),
             sectors=sectors,
             environment=environment,
             progress=_progress,

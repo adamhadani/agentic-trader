@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from functools import lru_cache
 from pathlib import Path
 
@@ -84,7 +84,9 @@ def make_cube(
     ineligible: tuple[int, ...] = (),
     names: tuple[str, ...] = NAMES,
     days: tuple[date, ...] = TRADING_DAYS,
+    labels_seed: int | None = None,
 ) -> LabelCube:
+    """``labels_seed`` fills the bracket labels and tie-breaks with noise, for a rehearsal's edge to read."""
     sessions = days[CUBE_START:]
     rng = np.random.default_rng(11)
     shape = (len(sessions), len(names))
@@ -102,6 +104,10 @@ def make_cube(
         "tiebreak": np.zeros(shape, np.uint64),
         "dollar_volume": dollar_volume,
     }
+    if labels_seed is not None:
+        labels = np.random.default_rng(labels_seed)
+        r = labels.normal(0.05, 1.0, shape)
+        arrays.update(r_gross=r + 0.01, r_cost=r, tiebreak=labels.integers(0, 2**62, shape).astype(np.uint64))
     return LabelCube(
         spec_identity="spec",
         cohort_sha256="c" * 64,
@@ -120,9 +126,10 @@ def make_world(
     groups: np.ndarray = GROUPS,
     days: tuple[date, ...] = TRADING_DAYS,
     window: tuple[date, date] = WINDOW,
+    labels_seed: int | None = None,
 ) -> World:
     adjusted = {name: bars(100 + j, days) for j, name in enumerate(names)}
-    cube = make_cube(bar_files=bar_files, ineligible=ineligible, names=names, days=days)
+    cube = make_cube(bar_files=bar_files, ineligible=ineligible, names=names, days=days, labels_seed=labels_seed)
     build = CubeBuild(cube=cube, trading_days=days, adjusted=adjusted, bar_failures={}, static_used=())
     return World(build, bars(7, days), groups, window)
 
@@ -134,11 +141,69 @@ SECTORS = ("a", "b", "c", "d")
 
 
 @lru_cache(maxsize=4)
-def long_world(prefix: str = "S", per_sector: int = 12) -> World:
+def long_world(prefix: str = "S", per_sector: int = 12, labels_seed: int | None = None) -> World:
     """Shared between tests, which never mutate a world: ``poisoned_world`` and ``with_bars`` return new ones."""
     names = tuple(f"{prefix}{j}" for j in range(per_sector * len(SECTORS)))
     groups = np.repeat(np.array(SECTORS), per_sector)
-    return make_world(names=names, groups=groups, days=LONG_DAYS, window=LONG_WINDOW)
+    return make_world(names=names, groups=groups, days=LONG_DAYS, window=LONG_WINDOW, labels_seed=labels_seed)
+
+
+HOURLY_DAYS = weekdays(date(2016, 1, 4), 340)
+
+
+def _first_hour_frames(seed: int, days: tuple[date, ...]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """One name's daily and regular hourly bars: its ``open -> 10:00`` move on a day is noise that stays in the price."""
+    rng = np.random.default_rng(seed)
+    n = len(days)
+    move = rng.normal(0.0, 0.02, n)
+    rest = rng.normal(0.0, 0.002, n)
+    opens = 50.0 * np.exp(np.concatenate(([0.0], np.cumsum(move + rest)[:-1])))
+    first = opens * np.exp(move)
+    closes = first * np.exp(rest)
+    volume = rng.lognormal(13.0, 0.4, n)
+    daily = pd.DataFrame(
+        {
+            "Open": opens,
+            "High": np.maximum(opens, closes) * 1.001,
+            "Low": np.minimum(opens, closes) * 0.999,
+            "Close": closes,
+            "Volume": volume,
+        },
+        index=_index(days),
+    )
+    stamps, rows = [], []
+    for k, day in enumerate(days):
+        for hour in range(9, 16):
+            stamps.append(pd.Timestamp(datetime.combine(day, time(hour, 0), tzinfo=ET_TZ)).tz_convert("UTC"))
+            start, end = (opens[k], first[k]) if hour == 9 else (first[k], closes[k] if hour == 15 else first[k])
+            rows.append(
+                {
+                    "Open": start,
+                    "High": max(start, end) * 1.001,
+                    "Low": min(start, end) * 0.999,
+                    "Close": end,
+                    "Volume": volume[k] / 7.0,
+                }
+            )
+    return daily, pd.DataFrame(rows, index=pd.DatetimeIndex(stamps))
+
+
+@lru_cache(maxsize=1)
+def first_hour_world(per_sector: int = 12) -> World:
+    """Each name's first-hour move on ``D`` is independent noise: in the return from ``D``'s open, gone from ``D+1``'s."""
+    names = tuple(f"H{j}" for j in range(per_sector * len(SECTORS)))
+    groups = np.repeat(np.array(SECTORS), per_sector)
+    frames = {name: _first_hour_frames(200 + j, HOURLY_DAYS) for j, name in enumerate(names)}
+    cube = make_cube(names=names, days=HOURLY_DAYS, labels_seed=9)
+    build = CubeBuild(
+        cube=cube,
+        trading_days=HOURLY_DAYS,
+        adjusted={name: pair[0] for name, pair in frames.items()},
+        bar_failures={},
+        static_used=(),
+        hourly={name: pair[1] for name, pair in frames.items()},
+    )
+    return World(build, bars(7, HOURLY_DAYS), groups, (HOURLY_DAYS[100], HOURLY_DAYS[300]))
 
 
 def poisoned(frame: pd.DataFrame, first_day: date, factor: float = 1000.0) -> pd.DataFrame:
