@@ -76,9 +76,9 @@ async def sectors_cmd(cohorts: tuple[Path, ...], ff12: Path, output: Path):
     except (ValueError, httpx.HTTPError) as exc:
         raise click.ClickException(type(exc).__name__) from exc
     document["cohort_sha256s"] = [item.sha256 for item in loaded]
-    document["command"] = [part for part in sys.argv if part != user_agent]
+    document["command"] = ["copilot", *sys.argv[1:]]  # no local path: this file is committed
     output.parent.mkdir(parents=True, exist_ok=True)
-    write_private(output, json.dumps(document, indent=1, sort_keys=True).encode())
+    write_private(output, json.dumps(document, indent=1, sort_keys=True).encode() + b"\n")
     table = document["symbols"]
     counts = Counter(entry["group"] for entry in table.values())
     for group, count in sorted(counts.items()):

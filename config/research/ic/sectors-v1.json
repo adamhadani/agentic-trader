@@ -1,0 +1,7078 @@
+{
+ "as_of": "2026-10-31",
+ "cohort_sha256s": [
+  "c2c7941014932075110b33a7b853db7899f7b8fa43d5433d38b2e92bab1407df",
+  "8c0d807aa47b19d391b3967c97e35715caf974faa9ed4418075d794766fbe8d1"
+ ],
+ "command": [
+  "copilot",
+  "alpha",
+  "ic",
+  "sectors",
+  "--cohort",
+  "config/research/pooled/cohort-v2.json",
+  "--cohort",
+  "config/research/pooled/cohort-v3.json",
+  "--ff12",
+  "config/research/ic/ff12-sic-v1.json",
+  "--output",
+  "config/research/ic/sectors-v1.json"
+ ],
+ "failures": {
+  "WBD": "no_ticker"
+ },
+ "ff12_sha256": "4fac501b2baffd0792188f514e0b93fe41bd195f6c09c66b288e23befe83bcb5",
+ "symbols": {
+  "A": {
+   "cik": 1090872,
+   "group": "BusEq",
+   "sic": 3826
+  },
+  "AA": {
+   "cik": 1675149,
+   "group": "Manuf",
+   "sic": 3334
+  },
+  "AAL": {
+   "cik": 6201,
+   "group": "Other",
+   "sic": 4512
+  },
+  "AAOI": {
+   "cik": 1158114,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "AAON": {
+   "cik": 824142,
+   "group": "Manuf",
+   "sic": 3585
+  },
+  "AAP": {
+   "cik": 1158449,
+   "group": "Shops",
+   "sic": 5531
+  },
+  "AAPL": {
+   "cik": 320193,
+   "group": "BusEq",
+   "sic": 3571
+  },
+  "ABBV": {
+   "cik": 1551152,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "ABG": {
+   "cik": 1144980,
+   "group": "Shops",
+   "sic": 5500
+  },
+  "ABNB": {
+   "cik": 1559720,
+   "group": "Other",
+   "sic": 7340
+  },
+  "ABR": {
+   "cik": 1253986,
+   "group": "Money",
+   "sic": 6798
+  },
+  "ABT": {
+   "cik": 1800,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "ACAD": {
+   "cik": 1070494,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "ACHC": {
+   "cik": 1520697,
+   "group": "Hlth",
+   "sic": 8093
+  },
+  "ACI": {
+   "cik": 1646972,
+   "group": "Shops",
+   "sic": 5411
+  },
+  "ACLS": {
+   "cik": 1113232,
+   "group": "Manuf",
+   "sic": 3559
+  },
+  "ACM": {
+   "cik": 868857,
+   "group": "Other",
+   "sic": 8711
+  },
+  "ACN": {
+   "cik": 1467373,
+   "group": "Other",
+   "sic": 7389
+  },
+  "ADBE": {
+   "cik": 796343,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "ADC": {
+   "cik": 917251,
+   "group": "Money",
+   "sic": 6798
+  },
+  "ADI": {
+   "cik": 6281,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "ADM": {
+   "cik": 7084,
+   "group": "NoDur",
+   "sic": 2070
+  },
+  "ADNT": {
+   "cik": 1670541,
+   "group": "Durbl",
+   "sic": 3714
+  },
+  "ADP": {
+   "cik": 8670,
+   "group": "BusEq",
+   "sic": 7374
+  },
+  "ADSK": {
+   "cik": 769397,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "AEE": {
+   "cik": 1002910,
+   "group": "Utils",
+   "sic": 4931
+  },
+  "AEHR": {
+   "cik": 1040470,
+   "group": "BusEq",
+   "sic": 3825
+  },
+  "AEIS": {
+   "cik": 927003,
+   "group": "BusEq",
+   "sic": 3679
+  },
+  "AEM": {
+   "cik": 2809,
+   "group": "Other",
+   "sic": 1040
+  },
+  "AEO": {
+   "cik": 919012,
+   "group": "Shops",
+   "sic": 5651
+  },
+  "AEP": {
+   "cik": 4904,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "AER": {
+   "cik": 1378789,
+   "group": "Other",
+   "sic": 7359
+  },
+  "AES": {
+   "cik": 874761,
+   "group": "Other",
+   "sic": 4991
+  },
+  "AFG": {
+   "cik": 1042046,
+   "group": "Money",
+   "sic": 6331
+  },
+  "AFL": {
+   "cik": 4977,
+   "group": "Money",
+   "sic": 6321
+  },
+  "AFRM": {
+   "cik": 1820953,
+   "group": "Money",
+   "sic": 6141
+  },
+  "AGCO": {
+   "cik": 880266,
+   "group": "Manuf",
+   "sic": 3523
+  },
+  "AGI": {
+   "cik": 1178819,
+   "group": "Other",
+   "sic": 1040
+  },
+  "AGL": {
+   "cik": 1831097,
+   "group": "Hlth",
+   "sic": 8090
+  },
+  "AI": {
+   "cik": 1577526,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "AIG": {
+   "cik": 5272,
+   "group": "Money",
+   "sic": 6331
+  },
+  "AIT": {
+   "cik": 109563,
+   "group": "Shops",
+   "sic": 5080
+  },
+  "AIZ": {
+   "cik": 1267238,
+   "group": "Money",
+   "sic": 6399
+  },
+  "AJG": {
+   "cik": 354190,
+   "group": "Money",
+   "sic": 6411
+  },
+  "AKAM": {
+   "cik": 1086222,
+   "group": "Other",
+   "sic": 7389
+  },
+  "ALB": {
+   "cik": 915913,
+   "group": "Chems",
+   "sic": 2821
+  },
+  "ALC": {
+   "cik": 1167379,
+   "group": "Hlth",
+   "sic": 3851
+  },
+  "ALGM": {
+   "cik": 866291,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "ALGN": {
+   "cik": 1097149,
+   "group": "Hlth",
+   "sic": 3842
+  },
+  "ALGT": {
+   "cik": 1362468,
+   "group": "Other",
+   "sic": 4512
+  },
+  "ALK": {
+   "cik": 766421,
+   "group": "Other",
+   "sic": 4512
+  },
+  "ALKS": {
+   "cik": 1520262,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "ALL": {
+   "cik": 899051,
+   "group": "Money",
+   "sic": 6331
+  },
+  "ALLE": {
+   "cik": 1579241,
+   "group": "Other",
+   "sic": 7381
+  },
+  "ALLY": {
+   "cik": 40729,
+   "group": "Money",
+   "sic": 6022
+  },
+  "ALNY": {
+   "cik": 1178670,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "ALSN": {
+   "cik": 1411207,
+   "group": "Durbl",
+   "sic": 3714
+  },
+  "ALV": {
+   "cik": 1034670,
+   "group": "Durbl",
+   "sic": 3714
+  },
+  "AM": {
+   "cik": 1623925,
+   "group": "Utils",
+   "sic": 4922
+  },
+  "AMAT": {
+   "cik": 6951,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "AMBA": {
+   "cik": 1280263,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "AMD": {
+   "cik": 2488,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "AME": {
+   "cik": 1037868,
+   "group": "BusEq",
+   "sic": 3823
+  },
+  "AMG": {
+   "cik": 1004434,
+   "group": "Money",
+   "sic": 6282
+  },
+  "AMGN": {
+   "cik": 318154,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "AMH": {
+   "cik": 1562401,
+   "group": "Money",
+   "sic": 6798
+  },
+  "AMKR": {
+   "cik": 1047127,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "AMLX": {
+   "cik": 1658551,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "AMN": {
+   "cik": 1142750,
+   "group": "Other",
+   "sic": 7363
+  },
+  "AMP": {
+   "cik": 820027,
+   "group": "Money",
+   "sic": 6282
+  },
+  "AMPH": {
+   "cik": 1297184,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "AMR": {
+   "cik": 1704715,
+   "group": "Enrgy",
+   "sic": 1221
+  },
+  "AMT": {
+   "cik": 1053507,
+   "group": "Money",
+   "sic": 6798
+  },
+  "AMX": {
+   "cik": 1129137,
+   "group": "Telcm",
+   "sic": 4813
+  },
+  "AMZN": {
+   "cik": 1018724,
+   "group": "Shops",
+   "sic": 5961
+  },
+  "AN": {
+   "cik": 350698,
+   "group": "Shops",
+   "sic": 5500
+  },
+  "ANET": {
+   "cik": 1596532,
+   "group": "BusEq",
+   "sic": 3576
+  },
+  "ANF": {
+   "cik": 1018840,
+   "group": "Shops",
+   "sic": 5651
+  },
+  "AON": {
+   "cik": 315293,
+   "group": "Money",
+   "sic": 6411
+  },
+  "AOS": {
+   "cik": 91142,
+   "group": "Durbl",
+   "sic": 3630
+  },
+  "APA": {
+   "cik": 1841666,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "APAM": {
+   "cik": 1517302,
+   "group": "Money",
+   "sic": 6282
+  },
+  "APD": {
+   "cik": 2969,
+   "group": "Chems",
+   "sic": 2810
+  },
+  "APG": {
+   "cik": 1796209,
+   "group": "Other",
+   "sic": 7340
+  },
+  "APH": {
+   "cik": 820313,
+   "group": "BusEq",
+   "sic": 3678
+  },
+  "APLE": {
+   "cik": 1418121,
+   "group": "Money",
+   "sic": 6798
+  },
+  "APO": {
+   "cik": 1858681,
+   "group": "Money",
+   "sic": 6282
+  },
+  "APP": {
+   "cik": 1751008,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "APPF": {
+   "cik": 1433195,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "APTV": {
+   "cik": 1521332,
+   "group": "Durbl",
+   "sic": 3714
+  },
+  "AR": {
+   "cik": 1433270,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "ARCB": {
+   "cik": 894405,
+   "group": "Other",
+   "sic": 4213
+  },
+  "ARE": {
+   "cik": 1035443,
+   "group": "Money",
+   "sic": 6798
+  },
+  "ARES": {
+   "cik": 1176948,
+   "group": "Money",
+   "sic": 6282
+  },
+  "ARGX": {
+   "cik": 1697862,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "ARM": {
+   "cik": 1973239,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "ARMK": {
+   "cik": 1584509,
+   "group": "Shops",
+   "sic": 5812
+  },
+  "ARR": {
+   "cik": 1428205,
+   "group": "Money",
+   "sic": 6798
+  },
+  "ARRY": {
+   "cik": 1820721,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "ARW": {
+   "cik": 7536,
+   "group": "Shops",
+   "sic": 5065
+  },
+  "ARWR": {
+   "cik": 879407,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "ASAN": {
+   "cik": 1477720,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "ASB": {
+   "cik": 7789,
+   "group": "Money",
+   "sic": 6022
+  },
+  "ASH": {
+   "cik": 1674862,
+   "group": "Shops",
+   "sic": 5160
+  },
+  "ASML": {
+   "cik": 937966,
+   "group": "Manuf",
+   "sic": 3559
+  },
+  "ASND": {
+   "cik": 1612042,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "ASO": {
+   "cik": 1817358,
+   "group": "Shops",
+   "sic": 5940
+  },
+  "ATEC": {
+   "cik": 1350653,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "ATI": {
+   "cik": 1018963,
+   "group": "Manuf",
+   "sic": 3317
+  },
+  "ATKR": {
+   "cik": 1666138,
+   "group": "BusEq",
+   "sic": 3690
+  },
+  "ATO": {
+   "cik": 731802,
+   "group": "Utils",
+   "sic": 4924
+  },
+  "ATR": {
+   "cik": 896622,
+   "group": "Manuf",
+   "sic": 3089
+  },
+  "AU": {
+   "cik": 1973832,
+   "group": "Other",
+   "sic": 1040
+  },
+  "AUB": {
+   "cik": 883948,
+   "group": "Money",
+   "sic": 6022
+  },
+  "AUGO": {
+   "cik": 1468642,
+   "group": "Other",
+   "sic": 1000
+  },
+  "AVA": {
+   "cik": 104918,
+   "group": "Utils",
+   "sic": 4931
+  },
+  "AVAV": {
+   "cik": 1368622,
+   "group": "Manuf",
+   "sic": 3721
+  },
+  "AVGO": {
+   "cik": 1730168,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "AVT": {
+   "cik": 8858,
+   "group": "Shops",
+   "sic": 5065
+  },
+  "AVTR": {
+   "cik": 1722482,
+   "group": "BusEq",
+   "sic": 3826
+  },
+  "AVY": {
+   "cik": 8818,
+   "group": "Manuf",
+   "sic": 2670
+  },
+  "AWI": {
+   "cik": 7431,
+   "group": "Manuf",
+   "sic": 3089
+  },
+  "AWK": {
+   "cik": 1410636,
+   "group": "Utils",
+   "sic": 4941
+  },
+  "AX": {
+   "cik": 1299709,
+   "group": "Money",
+   "sic": 6035
+  },
+  "AXON": {
+   "cik": 1069183,
+   "group": "Manuf",
+   "sic": 3480
+  },
+  "AXP": {
+   "cik": 4962,
+   "group": "Money",
+   "sic": 6199
+  },
+  "AXS": {
+   "cik": 1214816,
+   "group": "Money",
+   "sic": 6331
+  },
+  "AXSM": {
+   "cik": 1579428,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "AXTA": {
+   "cik": 1616862,
+   "group": "Chems",
+   "sic": 2851
+  },
+  "AYI": {
+   "cik": 1144215,
+   "group": "Durbl",
+   "sic": 3640
+  },
+  "AZN": {
+   "cik": 901832,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "AZO": {
+   "cik": 866787,
+   "group": "Shops",
+   "sic": 5531
+  },
+  "AZTA": {
+   "cik": 933974,
+   "group": "Manuf",
+   "sic": 3559
+  },
+  "B": {
+   "cik": 756894,
+   "group": "Other",
+   "sic": 1040
+  },
+  "BA": {
+   "cik": 12927,
+   "group": "Manuf",
+   "sic": 3721
+  },
+  "BABA": {
+   "cik": 1577552,
+   "group": "Other",
+   "sic": 7389
+  },
+  "BAC": {
+   "cik": 70858,
+   "group": "Money",
+   "sic": 6021
+  },
+  "BAH": {
+   "cik": 1443646,
+   "group": "Other",
+   "sic": 8742
+  },
+  "BALL": {
+   "cik": 9389,
+   "group": "Manuf",
+   "sic": 3411
+  },
+  "BAM": {
+   "cik": 1937926,
+   "group": "Money",
+   "sic": 6282
+  },
+  "BANC": {
+   "cik": 1169770,
+   "group": "Money",
+   "sic": 6021
+  },
+  "BAP": {
+   "cik": 1001290,
+   "group": "Money",
+   "sic": 6029
+  },
+  "BAX": {
+   "cik": 10456,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "BBIO": {
+   "cik": 1743881,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "BBWI": {
+   "cik": 701985,
+   "group": "Shops",
+   "sic": 5990
+  },
+  "BBY": {
+   "cik": 764478,
+   "group": "Shops",
+   "sic": 5731
+  },
+  "BC": {
+   "cik": 14930,
+   "group": "Manuf",
+   "sic": 3510
+  },
+  "BCC": {
+   "cik": 1328581,
+   "group": "Shops",
+   "sic": 5030
+  },
+  "BCE": {
+   "cik": 718940,
+   "group": "Telcm",
+   "sic": 4813
+  },
+  "BDC": {
+   "cik": 913142,
+   "group": "Manuf",
+   "sic": 3357
+  },
+  "BDX": {
+   "cik": 10795,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "BE": {
+   "cik": 1664703,
+   "group": "Manuf",
+   "sic": 3620
+  },
+  "BEAM": {
+   "cik": 1745999,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "BEKE": {
+   "cik": 1809587,
+   "group": "Money",
+   "sic": 6531
+  },
+  "BEN": {
+   "cik": 38777,
+   "group": "Money",
+   "sic": 6282
+  },
+  "BEPC": {
+   "cik": 1791863,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "BFAM": {
+   "cik": 1437578,
+   "group": "Other",
+   "sic": 8351
+  },
+  "BFH": {
+   "cik": 1101215,
+   "group": "Money",
+   "sic": 6141
+  },
+  "BG": {
+   "cik": 1996862,
+   "group": "NoDur",
+   "sic": 2070
+  },
+  "BHP": {
+   "cik": 811809,
+   "group": "Other",
+   "sic": 1000
+  },
+  "BHVN": {
+   "cik": 1935979,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "BIDU": {
+   "cik": 1329099,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "BIIB": {
+   "cik": 875045,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "BILI": {
+   "cik": 1723690,
+   "group": "BusEq",
+   "sic": 7374
+  },
+  "BILL": {
+   "cik": 1786352,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "BIO": {
+   "cik": 12208,
+   "group": "BusEq",
+   "sic": 3826
+  },
+  "BIP": {
+   "cik": 1406234,
+   "group": "Other",
+   "sic": 4400
+  },
+  "BIPC": {
+   "cik": 1788348,
+   "group": "Utils",
+   "sic": 4923
+  },
+  "BIRK": {
+   "cik": 1977102,
+   "group": "NoDur",
+   "sic": 3140
+  },
+  "BJ": {
+   "cik": 1531152,
+   "group": "Shops",
+   "sic": 5331
+  },
+  "BKH": {
+   "cik": 1130464,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "BKNG": {
+   "cik": 1075531,
+   "group": "Other",
+   "sic": 4700
+  },
+  "BKR": {
+   "cik": 1701605,
+   "group": "Manuf",
+   "sic": 3533
+  },
+  "BKU": {
+   "cik": 1504008,
+   "group": "Money",
+   "sic": 6035
+  },
+  "BL": {
+   "cik": 1666134,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "BLDR": {
+   "cik": 1316835,
+   "group": "Shops",
+   "sic": 5211
+  },
+  "BLK": {
+   "cik": 2012383,
+   "group": "Money",
+   "sic": 6211
+  },
+  "BLMN": {
+   "cik": 1546417,
+   "group": "Shops",
+   "sic": 5812
+  },
+  "BMBL": {
+   "cik": 1830043,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "BMI": {
+   "cik": 9092,
+   "group": "BusEq",
+   "sic": 3824
+  },
+  "BMO": {
+   "cik": 927971,
+   "group": "Money",
+   "sic": 6029
+  },
+  "BMRN": {
+   "cik": 1048477,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "BMY": {
+   "cik": 14272,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "BN": {
+   "cik": 1001085,
+   "group": "Money",
+   "sic": 6512
+  },
+  "BNS": {
+   "cik": 9631,
+   "group": "Money",
+   "sic": 6022
+  },
+  "BNTX": {
+   "cik": 1776985,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "BNY": {
+   "cik": 1390777,
+   "group": "Money",
+   "sic": 6022
+  },
+  "BOH": {
+   "cik": 46195,
+   "group": "Money",
+   "sic": 6022
+  },
+  "BOOT": {
+   "cik": 1610250,
+   "group": "Shops",
+   "sic": 5661
+  },
+  "BOX": {
+   "cik": 1372612,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "BP": {
+   "cik": 313807,
+   "group": "Enrgy",
+   "sic": 2911
+  },
+  "BPOP": {
+   "cik": 763901,
+   "group": "Money",
+   "sic": 6022
+  },
+  "BR": {
+   "cik": 1383312,
+   "group": "Other",
+   "sic": 7389
+  },
+  "BRBR": {
+   "cik": 1772016,
+   "group": "NoDur",
+   "sic": 2000
+  },
+  "BRKR": {
+   "cik": 1109354,
+   "group": "BusEq",
+   "sic": 3826
+  },
+  "BRO": {
+   "cik": 79282,
+   "group": "Money",
+   "sic": 6411
+  },
+  "BROS": {
+   "cik": 1866581,
+   "group": "Shops",
+   "sic": 5810
+  },
+  "BRSL": {
+   "cik": 1619762,
+   "group": "Other",
+   "sic": 7990
+  },
+  "BRX": {
+   "cik": 1581068,
+   "group": "Money",
+   "sic": 6798
+  },
+  "BRZE": {
+   "cik": 1676238,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "BSX": {
+   "cik": 885725,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "BSY": {
+   "cik": 1031308,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "BTDR": {
+   "cik": 1899123,
+   "group": "Money",
+   "sic": 6199
+  },
+  "BTI": {
+   "cik": 1303523,
+   "group": "NoDur",
+   "sic": 2111
+  },
+  "BTU": {
+   "cik": 1064728,
+   "group": "Enrgy",
+   "sic": 1221
+  },
+  "BUD": {
+   "cik": 1668717,
+   "group": "NoDur",
+   "sic": 2082
+  },
+  "BURL": {
+   "cik": 1579298,
+   "group": "Shops",
+   "sic": 5311
+  },
+  "BWA": {
+   "cik": 908255,
+   "group": "Durbl",
+   "sic": 3714
+  },
+  "BWXT": {
+   "cik": 1486957,
+   "group": "Manuf",
+   "sic": 3510
+  },
+  "BX": {
+   "cik": 1393818,
+   "group": "Money",
+   "sic": 6282
+  },
+  "BXMT": {
+   "cik": 1061630,
+   "group": "Money",
+   "sic": 6798
+  },
+  "BXP": {
+   "cik": 1037540,
+   "group": "Money",
+   "sic": 6798
+  },
+  "BYD": {
+   "cik": 906553,
+   "group": "Other",
+   "sic": 7011
+  },
+  "BZ": {
+   "cik": 1842827,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "C": {
+   "cik": 831001,
+   "group": "Money",
+   "sic": 6021
+  },
+  "CABO": {
+   "cik": 1632127,
+   "group": "Telcm",
+   "sic": 4841
+  },
+  "CACC": {
+   "cik": 885550,
+   "group": "Money",
+   "sic": 6141
+  },
+  "CACI": {
+   "cik": 16058,
+   "group": "BusEq",
+   "sic": 7373
+  },
+  "CAG": {
+   "cik": 23217,
+   "group": "NoDur",
+   "sic": 2000
+  },
+  "CAH": {
+   "cik": 721371,
+   "group": "Shops",
+   "sic": 5122
+  },
+  "CAKE": {
+   "cik": 887596,
+   "group": "Shops",
+   "sic": 5812
+  },
+  "CALM": {
+   "cik": 16160,
+   "group": "NoDur",
+   "sic": 200
+  },
+  "CALX": {
+   "cik": 1406666,
+   "group": "Telcm",
+   "sic": 4899
+  },
+  "CALY": {
+   "cik": 837465,
+   "group": "NoDur",
+   "sic": 3949
+  },
+  "CAMT": {
+   "cik": 1109138,
+   "group": "BusEq",
+   "sic": 3827
+  },
+  "CAR": {
+   "cik": 723612,
+   "group": "Other",
+   "sic": 7510
+  },
+  "CARG": {
+   "cik": 1494259,
+   "group": "BusEq",
+   "sic": 7374
+  },
+  "CARR": {
+   "cik": 1783180,
+   "group": "Manuf",
+   "sic": 3585
+  },
+  "CART": {
+   "cik": 1579091,
+   "group": "Other",
+   "sic": 7389
+  },
+  "CASY": {
+   "cik": 726958,
+   "group": "Shops",
+   "sic": 5500
+  },
+  "CAT": {
+   "cik": 18230,
+   "group": "Manuf",
+   "sic": 3531
+  },
+  "CAVA": {
+   "cik": 1639438,
+   "group": "Shops",
+   "sic": 5812
+  },
+  "CB": {
+   "cik": 896159,
+   "group": "Money",
+   "sic": 6331
+  },
+  "CBRE": {
+   "cik": 1138118,
+   "group": "Money",
+   "sic": 6500
+  },
+  "CBRL": {
+   "cik": 1067294,
+   "group": "Shops",
+   "sic": 5812
+  },
+  "CBSH": {
+   "cik": 22356,
+   "group": "Money",
+   "sic": 6022
+  },
+  "CBT": {
+   "cik": 16040,
+   "group": "Chems",
+   "sic": 2890
+  },
+  "CC": {
+   "cik": 1627223,
+   "group": "Chems",
+   "sic": 2800
+  },
+  "CCC": {
+   "cik": 1818201,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "CCEP": {
+   "cik": 1650107,
+   "group": "NoDur",
+   "sic": 2086
+  },
+  "CCI": {
+   "cik": 1051470,
+   "group": "Money",
+   "sic": 6798
+  },
+  "CCJ": {
+   "cik": 1009001,
+   "group": "Other",
+   "sic": 1090
+  },
+  "CCK": {
+   "cik": 1219601,
+   "group": "Manuf",
+   "sic": 3411
+  },
+  "CCL": {
+   "cik": 815097,
+   "group": "Other",
+   "sic": 4400
+  },
+  "CCOI": {
+   "cik": 1158324,
+   "group": "Telcm",
+   "sic": 4899
+  },
+  "CDNS": {
+   "cik": 813672,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "CDP": {
+   "cik": 860546,
+   "group": "Money",
+   "sic": 6798
+  },
+  "CDW": {
+   "cik": 1402057,
+   "group": "Shops",
+   "sic": 5961
+  },
+  "CE": {
+   "cik": 1306830,
+   "group": "Chems",
+   "sic": 2820
+  },
+  "CEG": {
+   "cik": 1868275,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "CELH": {
+   "cik": 1341766,
+   "group": "NoDur",
+   "sic": 2086
+  },
+  "CF": {
+   "cik": 1324404,
+   "group": "Chems",
+   "sic": 2870
+  },
+  "CFG": {
+   "cik": 759944,
+   "group": "Money",
+   "sic": 6022
+  },
+  "CFR": {
+   "cik": 39263,
+   "group": "Money",
+   "sic": 6021
+  },
+  "CG": {
+   "cik": 1527166,
+   "group": "Money",
+   "sic": 6282
+  },
+  "CGNX": {
+   "cik": 851205,
+   "group": "BusEq",
+   "sic": 3823
+  },
+  "CHD": {
+   "cik": 313927,
+   "group": "Chems",
+   "sic": 2840
+  },
+  "CHDN": {
+   "cik": 20212,
+   "group": "Other",
+   "sic": 7948
+  },
+  "CHE": {
+   "cik": 19584,
+   "group": "Hlth",
+   "sic": 8082
+  },
+  "CHGG": {
+   "cik": 1364954,
+   "group": "Other",
+   "sic": 8200
+  },
+  "CHH": {
+   "cik": 1046311,
+   "group": "Other",
+   "sic": 7011
+  },
+  "CHKP": {
+   "cik": 1015922,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "CHRD": {
+   "cik": 1486159,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "CHRW": {
+   "cik": 1043277,
+   "group": "Other",
+   "sic": 4731
+  },
+  "CHTR": {
+   "cik": 1091667,
+   "group": "Telcm",
+   "sic": 4841
+  },
+  "CHWY": {
+   "cik": 1766502,
+   "group": "Shops",
+   "sic": 5961
+  },
+  "CHYM": {
+   "cik": 1795586,
+   "group": "Money",
+   "sic": 6199
+  },
+  "CI": {
+   "cik": 1739940,
+   "group": "Money",
+   "sic": 6324
+  },
+  "CIEN": {
+   "cik": 936395,
+   "group": "BusEq",
+   "sic": 3661
+  },
+  "CINF": {
+   "cik": 20286,
+   "group": "Money",
+   "sic": 6331
+  },
+  "CL": {
+   "cik": 21665,
+   "group": "Chems",
+   "sic": 2844
+  },
+  "CLDX": {
+   "cik": 744218,
+   "group": "Hlth",
+   "sic": 2835
+  },
+  "CLF": {
+   "cik": 764065,
+   "group": "Other",
+   "sic": 1000
+  },
+  "CLH": {
+   "cik": 822818,
+   "group": "Other",
+   "sic": 4955
+  },
+  "CLS": {
+   "cik": 1030894,
+   "group": "BusEq",
+   "sic": 3672
+  },
+  "CLSK": {
+   "cik": 827876,
+   "group": "Money",
+   "sic": 6199
+  },
+  "CLX": {
+   "cik": 21076,
+   "group": "Chems",
+   "sic": 2842
+  },
+  "CM": {
+   "cik": 1045520,
+   "group": "Money",
+   "sic": 6029
+  },
+  "CMBT": {
+   "cik": 1604481,
+   "group": "Other",
+   "sic": 4412
+  },
+  "CMC": {
+   "cik": 22444,
+   "group": "Manuf",
+   "sic": 3312
+  },
+  "CMCSA": {
+   "cik": 1166691,
+   "group": "Telcm",
+   "sic": 4841
+  },
+  "CME": {
+   "cik": 1156375,
+   "group": "Money",
+   "sic": 6200
+  },
+  "CMG": {
+   "cik": 1058090,
+   "group": "Shops",
+   "sic": 5812
+  },
+  "CMI": {
+   "cik": 26172,
+   "group": "Manuf",
+   "sic": 3510
+  },
+  "CMS": {
+   "cik": 811156,
+   "group": "Utils",
+   "sic": 4931
+  },
+  "CNC": {
+   "cik": 1071739,
+   "group": "Money",
+   "sic": 6324
+  },
+  "CNH": {
+   "cik": 1567094,
+   "group": "Manuf",
+   "sic": 3531
+  },
+  "CNI": {
+   "cik": 16868,
+   "group": "Other",
+   "sic": 4011
+  },
+  "CNK": {
+   "cik": 1385280,
+   "group": "Other",
+   "sic": 7830
+  },
+  "CNM": {
+   "cik": 1856525,
+   "group": "Shops",
+   "sic": 5099
+  },
+  "CNMD": {
+   "cik": 816956,
+   "group": "Hlth",
+   "sic": 3845
+  },
+  "CNO": {
+   "cik": 1224608,
+   "group": "Money",
+   "sic": 6321
+  },
+  "CNP": {
+   "cik": 1130310,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "CNQ": {
+   "cik": 1017413,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "CNR": {
+   "cik": 1710366,
+   "group": "Enrgy",
+   "sic": 1220
+  },
+  "CNX": {
+   "cik": 1070412,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "CNXC": {
+   "cik": 1803599,
+   "group": "Other",
+   "sic": 7389
+  },
+  "COF": {
+   "cik": 927628,
+   "group": "Money",
+   "sic": 6021
+  },
+  "COHR": {
+   "cik": 820318,
+   "group": "BusEq",
+   "sic": 3827
+  },
+  "COIN": {
+   "cik": 1679788,
+   "group": "Money",
+   "sic": 6199
+  },
+  "COKE": {
+   "cik": 317540,
+   "group": "NoDur",
+   "sic": 2086
+  },
+  "COLB": {
+   "cik": 887343,
+   "group": "Money",
+   "sic": 6022
+  },
+  "COLD": {
+   "cik": 1455863,
+   "group": "Money",
+   "sic": 6798
+  },
+  "COLM": {
+   "cik": 1050797,
+   "group": "NoDur",
+   "sic": 2300
+  },
+  "COMP": {
+   "cik": 1563190,
+   "group": "Money",
+   "sic": 6531
+  },
+  "COO": {
+   "cik": 711404,
+   "group": "Hlth",
+   "sic": 3851
+  },
+  "COP": {
+   "cik": 1163165,
+   "group": "Enrgy",
+   "sic": 2911
+  },
+  "COR": {
+   "cik": 1140859,
+   "group": "Shops",
+   "sic": 5122
+  },
+  "COST": {
+   "cik": 909832,
+   "group": "Shops",
+   "sic": 5331
+  },
+  "COTY": {
+   "cik": 1024305,
+   "group": "Chems",
+   "sic": 2844
+  },
+  "COUR": {
+   "cik": 1651562,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "CP": {
+   "cik": 16875,
+   "group": "Other",
+   "sic": 4011
+  },
+  "CPA": {
+   "cik": 1345105,
+   "group": "Other",
+   "sic": 4512
+  },
+  "CPAY": {
+   "cik": 1175454,
+   "group": "Other",
+   "sic": 7389
+  },
+  "CPB": {
+   "cik": 16732,
+   "group": "NoDur",
+   "sic": 2000
+  },
+  "CPNG": {
+   "cik": 1834584,
+   "group": "Shops",
+   "sic": 5961
+  },
+  "CPRI": {
+   "cik": 1530721,
+   "group": "NoDur",
+   "sic": 3100
+  },
+  "CPRT": {
+   "cik": 900075,
+   "group": "Shops",
+   "sic": 5500
+  },
+  "CPT": {
+   "cik": 906345,
+   "group": "Money",
+   "sic": 6798
+  },
+  "CR": {
+   "cik": 1944013,
+   "group": "Manuf",
+   "sic": 3490
+  },
+  "CRBG": {
+   "cik": 1889539,
+   "group": "Money",
+   "sic": 6311
+  },
+  "CRC": {
+   "cik": 1609253,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "CRDO": {
+   "cik": 1807794,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "CRH": {
+   "cik": 849395,
+   "group": "Manuf",
+   "sic": 3241
+  },
+  "CRI": {
+   "cik": 1060822,
+   "group": "NoDur",
+   "sic": 2300
+  },
+  "CRL": {
+   "cik": 1100682,
+   "group": "Other",
+   "sic": 8731
+  },
+  "CRM": {
+   "cik": 1108524,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "CROX": {
+   "cik": 1334036,
+   "group": "Manuf",
+   "sic": 3021
+  },
+  "CRS": {
+   "cik": 17843,
+   "group": "Manuf",
+   "sic": 3312
+  },
+  "CRSP": {
+   "cik": 1674416,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "CRUS": {
+   "cik": 772406,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "CRWD": {
+   "cik": 1535527,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "CSCO": {
+   "cik": 858877,
+   "group": "BusEq",
+   "sic": 3576
+  },
+  "CSGP": {
+   "cik": 1057352,
+   "group": "Other",
+   "sic": 7389
+  },
+  "CSIQ": {
+   "cik": 1375877,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "CSL": {
+   "cik": 790051,
+   "group": "Manuf",
+   "sic": 3060
+  },
+  "CSX": {
+   "cik": 277948,
+   "group": "Other",
+   "sic": 4011
+  },
+  "CTAS": {
+   "cik": 723254,
+   "group": "NoDur",
+   "sic": 2320
+  },
+  "CTRE": {
+   "cik": 1590717,
+   "group": "Money",
+   "sic": 6798
+  },
+  "CTSH": {
+   "cik": 1058290,
+   "group": "BusEq",
+   "sic": 7371
+  },
+  "CTVA": {
+   "cik": 1755672,
+   "group": "NoDur",
+   "sic": 100
+  },
+  "CUBE": {
+   "cik": 1298675,
+   "group": "Money",
+   "sic": 6798
+  },
+  "CUZ": {
+   "cik": 25232,
+   "group": "Money",
+   "sic": 6798
+  },
+  "CVCO": {
+   "cik": 278166,
+   "group": "Other",
+   "sic": 2451
+  },
+  "CVE": {
+   "cik": 1475260,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "CVI": {
+   "cik": 1376139,
+   "group": "Enrgy",
+   "sic": 2911
+  },
+  "CVLT": {
+   "cik": 1169561,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "CVNA": {
+   "cik": 1690820,
+   "group": "Shops",
+   "sic": 5500
+  },
+  "CVS": {
+   "cik": 64803,
+   "group": "Shops",
+   "sic": 5912
+  },
+  "CVSA": {
+   "cik": 730464,
+   "group": "Other",
+   "sic": 8200
+  },
+  "CVX": {
+   "cik": 93410,
+   "group": "Enrgy",
+   "sic": 2911
+  },
+  "CW": {
+   "cik": 26324,
+   "group": "Manuf",
+   "sic": 3590
+  },
+  "CWEN": {
+   "cik": 1567683,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "CWH": {
+   "cik": 1669779,
+   "group": "Shops",
+   "sic": 5500
+  },
+  "CWK": {
+   "cik": 1628369,
+   "group": "Money",
+   "sic": 6500
+  },
+  "CWST": {
+   "cik": 911177,
+   "group": "Other",
+   "sic": 4953
+  },
+  "CXM": {
+   "cik": 1569345,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "CYTK": {
+   "cik": 1061983,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "CZR": {
+   "cik": 1590895,
+   "group": "Other",
+   "sic": 7011
+  },
+  "D": {
+   "cik": 715957,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "DAL": {
+   "cik": 27904,
+   "group": "Other",
+   "sic": 4512
+  },
+  "DAR": {
+   "cik": 916540,
+   "group": "NoDur",
+   "sic": 2070
+  },
+  "DASH": {
+   "cik": 1792789,
+   "group": "Other",
+   "sic": 7389
+  },
+  "DAVA": {
+   "cik": 1656081,
+   "group": "BusEq",
+   "sic": 7371
+  },
+  "DB": {
+   "cik": 1159508,
+   "group": "Money",
+   "sic": 6022
+  },
+  "DBX": {
+   "cik": 1467623,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "DCI": {
+   "cik": 29644,
+   "group": "Manuf",
+   "sic": 3564
+  },
+  "DD": {
+   "cik": 1666700,
+   "group": "Chems",
+   "sic": 2821
+  },
+  "DDOG": {
+   "cik": 1561550,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "DE": {
+   "cik": 315189,
+   "group": "Manuf",
+   "sic": 3523
+  },
+  "DECK": {
+   "cik": 910521,
+   "group": "Manuf",
+   "sic": 3021
+  },
+  "DEI": {
+   "cik": 1364250,
+   "group": "Money",
+   "sic": 6798
+  },
+  "DELL": {
+   "cik": 1571996,
+   "group": "BusEq",
+   "sic": 3571
+  },
+  "DEO": {
+   "cik": 835403,
+   "group": "NoDur",
+   "sic": 2080
+  },
+  "DG": {
+   "cik": 29534,
+   "group": "Shops",
+   "sic": 5331
+  },
+  "DGX": {
+   "cik": 1022079,
+   "group": "Hlth",
+   "sic": 8071
+  },
+  "DHI": {
+   "cik": 882184,
+   "group": "Other",
+   "sic": 1531
+  },
+  "DHR": {
+   "cik": 313616,
+   "group": "BusEq",
+   "sic": 3823
+  },
+  "DHT": {
+   "cik": 1331284,
+   "group": "Other",
+   "sic": 4412
+  },
+  "DINO": {
+   "cik": 1915657,
+   "group": "Other",
+   "sic": 4610
+  },
+  "DIOD": {
+   "cik": 29002,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "DIS": {
+   "cik": 1744489,
+   "group": "Other",
+   "sic": 7990
+  },
+  "DK": {
+   "cik": 1694426,
+   "group": "Enrgy",
+   "sic": 2911
+  },
+  "DKNG": {
+   "cik": 1883685,
+   "group": "Other",
+   "sic": 7990
+  },
+  "DKS": {
+   "cik": 1089063,
+   "group": "Shops",
+   "sic": 5940
+  },
+  "DLB": {
+   "cik": 1308547,
+   "group": "Money",
+   "sic": 6794
+  },
+  "DLR": {
+   "cik": 1297996,
+   "group": "Money",
+   "sic": 6798
+  },
+  "DLTR": {
+   "cik": 935703,
+   "group": "Shops",
+   "sic": 5331
+  },
+  "DNLI": {
+   "cik": 1714899,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "DOC": {
+   "cik": 765880,
+   "group": "Money",
+   "sic": 6798
+  },
+  "DOCN": {
+   "cik": 1582961,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "DOCS": {
+   "cik": 1516513,
+   "group": "BusEq",
+   "sic": 7371
+  },
+  "DOCU": {
+   "cik": 1261333,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "DOV": {
+   "cik": 29905,
+   "group": "Manuf",
+   "sic": 3530
+  },
+  "DOW": {
+   "cik": 1751788,
+   "group": "Chems",
+   "sic": 2821
+  },
+  "DOX": {
+   "cik": 1062579,
+   "group": "BusEq",
+   "sic": 7371
+  },
+  "DPZ": {
+   "cik": 1286681,
+   "group": "Shops",
+   "sic": 5140
+  },
+  "DQ": {
+   "cik": 1477641,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "DRI": {
+   "cik": 940944,
+   "group": "Shops",
+   "sic": 5812
+  },
+  "DT": {
+   "cik": 1773383,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "DTE": {
+   "cik": 936340,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "DTM": {
+   "cik": 1842022,
+   "group": "Utils",
+   "sic": 4922
+  },
+  "DUK": {
+   "cik": 1326160,
+   "group": "Utils",
+   "sic": 4931
+  },
+  "DUOL": {
+   "cik": 1562088,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "DV": {
+   "cik": 1819928,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "DVA": {
+   "cik": 927066,
+   "group": "Hlth",
+   "sic": 8090
+  },
+  "DVN": {
+   "cik": 1090012,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "DXC": {
+   "cik": 1688568,
+   "group": "BusEq",
+   "sic": 7374
+  },
+  "DXCM": {
+   "cik": 1093557,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "DY": {
+   "cik": 67215,
+   "group": "Other",
+   "sic": 1623
+  },
+  "EAT": {
+   "cik": 703351,
+   "group": "Shops",
+   "sic": 5812
+  },
+  "EBAY": {
+   "cik": 1065088,
+   "group": "Other",
+   "sic": 7389
+  },
+  "EC": {
+   "cik": 1444406,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "ECL": {
+   "cik": 31462,
+   "group": "Chems",
+   "sic": 2840
+  },
+  "ED": {
+   "cik": 1047862,
+   "group": "Utils",
+   "sic": 4931
+  },
+  "EDU": {
+   "cik": 1372920,
+   "group": "Other",
+   "sic": 8200
+  },
+  "EEFT": {
+   "cik": 1029199,
+   "group": "Money",
+   "sic": 6099
+  },
+  "EFOR": {
+   "cik": 890564,
+   "group": "Other",
+   "sic": 7363
+  },
+  "EFX": {
+   "cik": 33185,
+   "group": "Other",
+   "sic": 7320
+  },
+  "EG": {
+   "cik": 1095073,
+   "group": "Money",
+   "sic": 6331
+  },
+  "EGO": {
+   "cik": 918608,
+   "group": "Other",
+   "sic": 1040
+  },
+  "EGP": {
+   "cik": 49600,
+   "group": "Money",
+   "sic": 6798
+  },
+  "EHC": {
+   "cik": 785161,
+   "group": "Hlth",
+   "sic": 8060
+  },
+  "EIX": {
+   "cik": 827052,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "EL": {
+   "cik": 1001250,
+   "group": "Chems",
+   "sic": 2844
+  },
+  "ELAN": {
+   "cik": 1739104,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "ELF": {
+   "cik": 1600033,
+   "group": "Chems",
+   "sic": 2844
+  },
+  "ELS": {
+   "cik": 895417,
+   "group": "Money",
+   "sic": 6798
+  },
+  "ELV": {
+   "cik": 1156039,
+   "group": "Money",
+   "sic": 6324
+  },
+  "EME": {
+   "cik": 105634,
+   "group": "Other",
+   "sic": 1731
+  },
+  "EMN": {
+   "cik": 915389,
+   "group": "Chems",
+   "sic": 2821
+  },
+  "EMR": {
+   "cik": 32604,
+   "group": "Manuf",
+   "sic": 3600
+  },
+  "ENB": {
+   "cik": 895728,
+   "group": "Other",
+   "sic": 4610
+  },
+  "ENOV": {
+   "cik": 1420800,
+   "group": "Hlth",
+   "sic": 3842
+  },
+  "ENPH": {
+   "cik": 1463101,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "ENR": {
+   "cik": 1632790,
+   "group": "BusEq",
+   "sic": 3690
+  },
+  "ENS": {
+   "cik": 1289308,
+   "group": "BusEq",
+   "sic": 3690
+  },
+  "ENSG": {
+   "cik": 1125376,
+   "group": "Hlth",
+   "sic": 8051
+  },
+  "ENTG": {
+   "cik": 1101302,
+   "group": "Manuf",
+   "sic": 3089
+  },
+  "ENVX": {
+   "cik": 1828318,
+   "group": "BusEq",
+   "sic": 3690
+  },
+  "EOG": {
+   "cik": 821189,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "EPAM": {
+   "cik": 1352010,
+   "group": "BusEq",
+   "sic": 7371
+  },
+  "EPD": {
+   "cik": 1061219,
+   "group": "Utils",
+   "sic": 4922
+  },
+  "EPR": {
+   "cik": 1045450,
+   "group": "Money",
+   "sic": 6798
+  },
+  "EPRT": {
+   "cik": 1728951,
+   "group": "Money",
+   "sic": 6798
+  },
+  "EQH": {
+   "cik": 1333986,
+   "group": "Money",
+   "sic": 6411
+  },
+  "EQIX": {
+   "cik": 1101239,
+   "group": "Money",
+   "sic": 6798
+  },
+  "EQNR": {
+   "cik": 1140625,
+   "group": "Enrgy",
+   "sic": 2911
+  },
+  "EQT": {
+   "cik": 33213,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "ERIE": {
+   "cik": 922621,
+   "group": "Money",
+   "sic": 6411
+  },
+  "ES": {
+   "cik": 72741,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "ESI": {
+   "cik": 1590714,
+   "group": "Chems",
+   "sic": 2890
+  },
+  "ESNT": {
+   "cik": 1448893,
+   "group": "Money",
+   "sic": 6351
+  },
+  "ESS": {
+   "cik": 920522,
+   "group": "Money",
+   "sic": 6798
+  },
+  "ESTC": {
+   "cik": 1707753,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "ET": {
+   "cik": 1276187,
+   "group": "Utils",
+   "sic": 4922
+  },
+  "ETN": {
+   "cik": 1551182,
+   "group": "Manuf",
+   "sic": 3590
+  },
+  "ETR": {
+   "cik": 65984,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "ETSY": {
+   "cik": 1370637,
+   "group": "Other",
+   "sic": 7389
+  },
+  "EVH": {
+   "cik": 1628908,
+   "group": "Other",
+   "sic": 8741
+  },
+  "EVR": {
+   "cik": 1360901,
+   "group": "Money",
+   "sic": 6282
+  },
+  "EVRG": {
+   "cik": 1711269,
+   "group": "Utils",
+   "sic": 4931
+  },
+  "EW": {
+   "cik": 1099800,
+   "group": "Hlth",
+   "sic": 3842
+  },
+  "EWBC": {
+   "cik": 1069157,
+   "group": "Money",
+   "sic": 6022
+  },
+  "EXC": {
+   "cik": 1109357,
+   "group": "Utils",
+   "sic": 4931
+  },
+  "EXE": {
+   "cik": 895126,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "EXEL": {
+   "cik": 939767,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "EXLS": {
+   "cik": 1297989,
+   "group": "Other",
+   "sic": 7389
+  },
+  "EXP": {
+   "cik": 918646,
+   "group": "Manuf",
+   "sic": 3241
+  },
+  "EXPD": {
+   "cik": 746515,
+   "group": "Other",
+   "sic": 4731
+  },
+  "EXPE": {
+   "cik": 1324424,
+   "group": "Other",
+   "sic": 4700
+  },
+  "EXPO": {
+   "cik": 851520,
+   "group": "Other",
+   "sic": 8742
+  },
+  "EXR": {
+   "cik": 1289490,
+   "group": "Money",
+   "sic": 6798
+  },
+  "EXTR": {
+   "cik": 1078271,
+   "group": "BusEq",
+   "sic": 3576
+  },
+  "EYE": {
+   "cik": 1710155,
+   "group": "Hlth",
+   "sic": 3851
+  },
+  "F": {
+   "cik": 37996,
+   "group": "Durbl",
+   "sic": 3711
+  },
+  "FAF": {
+   "cik": 1472787,
+   "group": "Money",
+   "sic": 6361
+  },
+  "FANG": {
+   "cik": 1539838,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "FAST": {
+   "cik": 815556,
+   "group": "Shops",
+   "sic": 5200
+  },
+  "FBIN": {
+   "cik": 1519751,
+   "group": "Other",
+   "sic": 2430
+  },
+  "FCFS": {
+   "cik": 840489,
+   "group": "Shops",
+   "sic": 5900
+  },
+  "FCN": {
+   "cik": 887936,
+   "group": "Other",
+   "sic": 8742
+  },
+  "FCNCA": {
+   "cik": 798941,
+   "group": "Money",
+   "sic": 6022
+  },
+  "FCX": {
+   "cik": 831259,
+   "group": "Other",
+   "sic": 1000
+  },
+  "FDS": {
+   "cik": 1013237,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "FDX": {
+   "cik": 1048911,
+   "group": "Other",
+   "sic": 4513
+  },
+  "FE": {
+   "cik": 1031296,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "FERG": {
+   "cik": 2011641,
+   "group": "Shops",
+   "sic": 5070
+  },
+  "FFIV": {
+   "cik": 1048695,
+   "group": "BusEq",
+   "sic": 3576
+  },
+  "FHI": {
+   "cik": 1056288,
+   "group": "Money",
+   "sic": 6282
+  },
+  "FHN": {
+   "cik": 36966,
+   "group": "Money",
+   "sic": 6021
+  },
+  "FICO": {
+   "cik": 814547,
+   "group": "Other",
+   "sic": 7389
+  },
+  "FIS": {
+   "cik": 1136893,
+   "group": "Other",
+   "sic": 7389
+  },
+  "FISV": {
+   "cik": 798354,
+   "group": "Other",
+   "sic": 7389
+  },
+  "FITB": {
+   "cik": 35527,
+   "group": "Money",
+   "sic": 6022
+  },
+  "FIVE": {
+   "cik": 1177609,
+   "group": "Shops",
+   "sic": 5331
+  },
+  "FIVN": {
+   "cik": 1288847,
+   "group": "BusEq",
+   "sic": 7374
+  },
+  "FIX": {
+   "cik": 1035983,
+   "group": "Other",
+   "sic": 1731
+  },
+  "FLEX": {
+   "cik": 866374,
+   "group": "BusEq",
+   "sic": 3672
+  },
+  "FLG": {
+   "cik": 910073,
+   "group": "Money",
+   "sic": 6036
+  },
+  "FLNC": {
+   "cik": 1868941,
+   "group": "BusEq",
+   "sic": 3690
+  },
+  "FLO": {
+   "cik": 1128928,
+   "group": "NoDur",
+   "sic": 2000
+  },
+  "FLR": {
+   "cik": 1124198,
+   "group": "Other",
+   "sic": 1600
+  },
+  "FLS": {
+   "cik": 30625,
+   "group": "Manuf",
+   "sic": 3561
+  },
+  "FLYW": {
+   "cik": 1580560,
+   "group": "Other",
+   "sic": 7389
+  },
+  "FMC": {
+   "cik": 37785,
+   "group": "Chems",
+   "sic": 2800
+  },
+  "FMX": {
+   "cik": 1061736,
+   "group": "NoDur",
+   "sic": 2086
+  },
+  "FN": {
+   "cik": 1408710,
+   "group": "BusEq",
+   "sic": 3661
+  },
+  "FNB": {
+   "cik": 37808,
+   "group": "Money",
+   "sic": 6021
+  },
+  "FND": {
+   "cik": 1507079,
+   "group": "Shops",
+   "sic": 5211
+  },
+  "FNF": {
+   "cik": 1331875,
+   "group": "Money",
+   "sic": 6361
+  },
+  "FNV": {
+   "cik": 1456346,
+   "group": "Other",
+   "sic": 1040
+  },
+  "FORM": {
+   "cik": 1039399,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "FOUR": {
+   "cik": 1794669,
+   "group": "Other",
+   "sic": 7389
+  },
+  "FOX": {
+   "cik": 1754301,
+   "group": "Telcm",
+   "sic": 4833
+  },
+  "FOXA": {
+   "cik": 1754301,
+   "group": "Telcm",
+   "sic": 4833
+  },
+  "FOXF": {
+   "cik": 1424929,
+   "group": "Durbl",
+   "sic": 3751
+  },
+  "FR": {
+   "cik": 921825,
+   "group": "Money",
+   "sic": 6798
+  },
+  "FRO": {
+   "cik": 913290,
+   "group": "Other",
+   "sic": 4412
+  },
+  "FROG": {
+   "cik": 1800667,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "FRPT": {
+   "cik": 1611647,
+   "group": "NoDur",
+   "sic": 2040
+  },
+  "FRSH": {
+   "cik": 1544522,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "FRT": {
+   "cik": 34903,
+   "group": "Money",
+   "sic": 6798
+  },
+  "FSK": {
+   "cik": 1422183,
+   "group": "unknown",
+   "sic": null
+  },
+  "FSLR": {
+   "cik": 1274494,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "FSLY": {
+   "cik": 1517413,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "FTAI": {
+   "cik": 1590364,
+   "group": "Other",
+   "sic": 7350
+  },
+  "FTDR": {
+   "cik": 1727263,
+   "group": "Other",
+   "sic": 7340
+  },
+  "FTI": {
+   "cik": 1681459,
+   "group": "Manuf",
+   "sic": 3533
+  },
+  "FTNT": {
+   "cik": 1262039,
+   "group": "BusEq",
+   "sic": 3577
+  },
+  "FTRE": {
+   "cik": 1965040,
+   "group": "Hlth",
+   "sic": 8071
+  },
+  "FTS": {
+   "cik": 1666175,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "FTV": {
+   "cik": 1659166,
+   "group": "BusEq",
+   "sic": 3823
+  },
+  "FUL": {
+   "cik": 39368,
+   "group": "Chems",
+   "sic": 2891
+  },
+  "FULT": {
+   "cik": 700564,
+   "group": "Money",
+   "sic": 6021
+  },
+  "FUTU": {
+   "cik": 1754581,
+   "group": "Money",
+   "sic": 6211
+  },
+  "FVRR": {
+   "cik": 1762301,
+   "group": "Other",
+   "sic": 7389
+  },
+  "FWONK": {
+   "cik": 1560385,
+   "group": "Telcm",
+   "sic": 4833
+  },
+  "FWRD": {
+   "cik": 912728,
+   "group": "Other",
+   "sic": 4731
+  },
+  "G": {
+   "cik": 1398659,
+   "group": "Other",
+   "sic": 8742
+  },
+  "GAP": {
+   "cik": 39911,
+   "group": "Shops",
+   "sic": 5651
+  },
+  "GBCI": {
+   "cik": 868671,
+   "group": "Money",
+   "sic": 6022
+  },
+  "GD": {
+   "cik": 40533,
+   "group": "Manuf",
+   "sic": 3730
+  },
+  "GDDY": {
+   "cik": 1609711,
+   "group": "BusEq",
+   "sic": 7373
+  },
+  "GE": {
+   "cik": 40545,
+   "group": "Manuf",
+   "sic": 3600
+  },
+  "GEHC": {
+   "cik": 1932393,
+   "group": "Hlth",
+   "sic": 3844
+  },
+  "GEN": {
+   "cik": 849399,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "GEO": {
+   "cik": 923796,
+   "group": "Other",
+   "sic": 1520
+  },
+  "GFF": {
+   "cik": 50725,
+   "group": "Manuf",
+   "sic": 3442
+  },
+  "GFI": {
+   "cik": 1172724,
+   "group": "Other",
+   "sic": 1040
+  },
+  "GFL": {
+   "cik": 1780232,
+   "group": "Other",
+   "sic": 4953
+  },
+  "GFS": {
+   "cik": 1709048,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "GGG": {
+   "cik": 42888,
+   "group": "Manuf",
+   "sic": 3561
+  },
+  "GH": {
+   "cik": 1576280,
+   "group": "Hlth",
+   "sic": 8071
+  },
+  "GIL": {
+   "cik": 1061894,
+   "group": "NoDur",
+   "sic": 2300
+  },
+  "GILD": {
+   "cik": 882095,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "GIS": {
+   "cik": 40704,
+   "group": "NoDur",
+   "sic": 2040
+  },
+  "GKOS": {
+   "cik": 1192448,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "GL": {
+   "cik": 320335,
+   "group": "Money",
+   "sic": 6311
+  },
+  "GLBE": {
+   "cik": 1835963,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "GLNG": {
+   "cik": 1207179,
+   "group": "Other",
+   "sic": 4400
+  },
+  "GLOB": {
+   "cik": 1557860,
+   "group": "BusEq",
+   "sic": 7374
+  },
+  "GLPI": {
+   "cik": 1575965,
+   "group": "Money",
+   "sic": 6798
+  },
+  "GLW": {
+   "cik": 24741,
+   "group": "Manuf",
+   "sic": 3357
+  },
+  "GM": {
+   "cik": 1467858,
+   "group": "Durbl",
+   "sic": 3711
+  },
+  "GMAB": {
+   "cik": 1434265,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "GME": {
+   "cik": 1326380,
+   "group": "Shops",
+   "sic": 5734
+  },
+  "GMED": {
+   "cik": 1237831,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "GNRC": {
+   "cik": 1474735,
+   "group": "Manuf",
+   "sic": 3621
+  },
+  "GNTX": {
+   "cik": 355811,
+   "group": "Durbl",
+   "sic": 3714
+  },
+  "GO": {
+   "cik": 1771515,
+   "group": "Shops",
+   "sic": 5411
+  },
+  "GOOG": {
+   "cik": 1652044,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "GOOGL": {
+   "cik": 1652044,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "GPC": {
+   "cik": 40987,
+   "group": "Shops",
+   "sic": 5013
+  },
+  "GPCR": {
+   "cik": 1888886,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "GPI": {
+   "cik": 1031203,
+   "group": "Shops",
+   "sic": 5500
+  },
+  "GPK": {
+   "cik": 1408075,
+   "group": "Manuf",
+   "sic": 2650
+  },
+  "GPN": {
+   "cik": 1123360,
+   "group": "Other",
+   "sic": 7389
+  },
+  "GPOR": {
+   "cik": 874499,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "GPRE": {
+   "cik": 1309402,
+   "group": "Chems",
+   "sic": 2860
+  },
+  "GRMN": {
+   "cik": 1121788,
+   "group": "BusEq",
+   "sic": 3812
+  },
+  "GS": {
+   "cik": 886982,
+   "group": "Money",
+   "sic": 6211
+  },
+  "GSHD": {
+   "cik": 1726978,
+   "group": "Money",
+   "sic": 6411
+  },
+  "GSK": {
+   "cik": 1131399,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "GT": {
+   "cik": 42582,
+   "group": "Manuf",
+   "sic": 3011
+  },
+  "GTLB": {
+   "cik": 1653482,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "GTM": {
+   "cik": 1794515,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "GWRE": {
+   "cik": 1528396,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "GWW": {
+   "cik": 277135,
+   "group": "Shops",
+   "sic": 5000
+  },
+  "GXO": {
+   "cik": 1852244,
+   "group": "Other",
+   "sic": 4700
+  },
+  "H": {
+   "cik": 1468174,
+   "group": "Other",
+   "sic": 7011
+  },
+  "HAE": {
+   "cik": 313143,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "HAL": {
+   "cik": 45012,
+   "group": "Enrgy",
+   "sic": 1389
+  },
+  "HALO": {
+   "cik": 1159036,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "HAS": {
+   "cik": 46080,
+   "group": "NoDur",
+   "sic": 3944
+  },
+  "HASI": {
+   "cik": 1561894,
+   "group": "Money",
+   "sic": 6799
+  },
+  "HAYW": {
+   "cik": 1834622,
+   "group": "Manuf",
+   "sic": 3580
+  },
+  "HBAN": {
+   "cik": 49196,
+   "group": "Money",
+   "sic": 6021
+  },
+  "HCA": {
+   "cik": 860730,
+   "group": "Hlth",
+   "sic": 8062
+  },
+  "HCC": {
+   "cik": 1691303,
+   "group": "Enrgy",
+   "sic": 1220
+  },
+  "HD": {
+   "cik": 354950,
+   "group": "Shops",
+   "sic": 5211
+  },
+  "HDB": {
+   "cik": 1144967,
+   "group": "Money",
+   "sic": 6029
+  },
+  "HE": {
+   "cik": 354707,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "HEI": {
+   "cik": 46619,
+   "group": "Manuf",
+   "sic": 3724
+  },
+  "HELE": {
+   "cik": 916789,
+   "group": "Durbl",
+   "sic": 3634
+  },
+  "HESM": {
+   "cik": 1789832,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "HGV": {
+   "cik": 1674168,
+   "group": "Other",
+   "sic": 7000
+  },
+  "HHH": {
+   "cik": 1981792,
+   "group": "Money",
+   "sic": 6798
+  },
+  "HIG": {
+   "cik": 874766,
+   "group": "Money",
+   "sic": 6331
+  },
+  "HII": {
+   "cik": 1501585,
+   "group": "Manuf",
+   "sic": 3730
+  },
+  "HIW": {
+   "cik": 921082,
+   "group": "Money",
+   "sic": 6798
+  },
+  "HLF": {
+   "cik": 1180262,
+   "group": "Shops",
+   "sic": 5122
+  },
+  "HLI": {
+   "cik": 1302215,
+   "group": "Money",
+   "sic": 6282
+  },
+  "HLIT": {
+   "cik": 851310,
+   "group": "BusEq",
+   "sic": 3663
+  },
+  "HLT": {
+   "cik": 1585689,
+   "group": "Other",
+   "sic": 7011
+  },
+  "HMC": {
+   "cik": 715153,
+   "group": "Durbl",
+   "sic": 3711
+  },
+  "HMY": {
+   "cik": 1023514,
+   "group": "Other",
+   "sic": 1040
+  },
+  "HOG": {
+   "cik": 793952,
+   "group": "Durbl",
+   "sic": 3751
+  },
+  "HOMB": {
+   "cik": 1331520,
+   "group": "Money",
+   "sic": 6022
+  },
+  "HON": {
+   "cik": 773840,
+   "group": "Manuf",
+   "sic": 3724
+  },
+  "HOOD": {
+   "cik": 1783879,
+   "group": "Money",
+   "sic": 6211
+  },
+  "HOS": {
+   "cik": 866829,
+   "group": "Enrgy",
+   "sic": 1389
+  },
+  "HP": {
+   "cik": 46765,
+   "group": "Enrgy",
+   "sic": 1381
+  },
+  "HPE": {
+   "cik": 1645590,
+   "group": "BusEq",
+   "sic": 3570
+  },
+  "HPQ": {
+   "cik": 47217,
+   "group": "BusEq",
+   "sic": 3570
+  },
+  "HQY": {
+   "cik": 1428336,
+   "group": "Other",
+   "sic": 7389
+  },
+  "HR": {
+   "cik": 1360604,
+   "group": "Money",
+   "sic": 6798
+  },
+  "HRB": {
+   "cik": 12659,
+   "group": "Shops",
+   "sic": 7200
+  },
+  "HRI": {
+   "cik": 1364479,
+   "group": "Other",
+   "sic": 7350
+  },
+  "HRL": {
+   "cik": 48465,
+   "group": "NoDur",
+   "sic": 2011
+  },
+  "HSBC": {
+   "cik": 1089113,
+   "group": "Money",
+   "sic": 6035
+  },
+  "HSIC": {
+   "cik": 1000228,
+   "group": "Shops",
+   "sic": 5047
+  },
+  "HST": {
+   "cik": 1070750,
+   "group": "Money",
+   "sic": 6798
+  },
+  "HSY": {
+   "cik": 47111,
+   "group": "NoDur",
+   "sic": 2060
+  },
+  "HTHT": {
+   "cik": 1483994,
+   "group": "Other",
+   "sic": 7011
+  },
+  "HTZ": {
+   "cik": 1657853,
+   "group": "Other",
+   "sic": 7510
+  },
+  "HUBB": {
+   "cik": 48898,
+   "group": "BusEq",
+   "sic": 3670
+  },
+  "HUBS": {
+   "cik": 1404655,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "HUM": {
+   "cik": 49071,
+   "group": "Money",
+   "sic": 6324
+  },
+  "HUN": {
+   "cik": 1307954,
+   "group": "Chems",
+   "sic": 2800
+  },
+  "HUT": {
+   "cik": 1964789,
+   "group": "Money",
+   "sic": 6199
+  },
+  "HWC": {
+   "cik": 750577,
+   "group": "Money",
+   "sic": 6022
+  },
+  "HWM": {
+   "cik": 4281,
+   "group": "Manuf",
+   "sic": 3350
+  },
+  "HXL": {
+   "cik": 717605,
+   "group": "Chems",
+   "sic": 2821
+  },
+  "IART": {
+   "cik": 917520,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "IBKR": {
+   "cik": 1381197,
+   "group": "Money",
+   "sic": 6211
+  },
+  "IBM": {
+   "cik": 51143,
+   "group": "BusEq",
+   "sic": 3570
+  },
+  "IBN": {
+   "cik": 1103838,
+   "group": "Money",
+   "sic": 6029
+  },
+  "IBP": {
+   "cik": 1580905,
+   "group": "Other",
+   "sic": 1520
+  },
+  "ICE": {
+   "cik": 1571949,
+   "group": "Money",
+   "sic": 6200
+  },
+  "ICLR": {
+   "cik": 1060955,
+   "group": "Other",
+   "sic": 8731
+  },
+  "ICUI": {
+   "cik": 883984,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "IDA": {
+   "cik": 1057877,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "IDCC": {
+   "cik": 1405495,
+   "group": "Money",
+   "sic": 6794
+  },
+  "IDXX": {
+   "cik": 874716,
+   "group": "Hlth",
+   "sic": 2835
+  },
+  "IDYA": {
+   "cik": 1676725,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "IEX": {
+   "cik": 832101,
+   "group": "Manuf",
+   "sic": 3561
+  },
+  "IFF": {
+   "cik": 51253,
+   "group": "Chems",
+   "sic": 2860
+  },
+  "IIPR": {
+   "cik": 1677576,
+   "group": "Money",
+   "sic": 6500
+  },
+  "ILMN": {
+   "cik": 1110803,
+   "group": "BusEq",
+   "sic": 3826
+  },
+  "IMO": {
+   "cik": 49938,
+   "group": "Enrgy",
+   "sic": 2911
+  },
+  "IMVT": {
+   "cik": 1764013,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "INCY": {
+   "cik": 879169,
+   "group": "Other",
+   "sic": 8731
+  },
+  "INFY": {
+   "cik": 1067491,
+   "group": "BusEq",
+   "sic": 7371
+  },
+  "ING": {
+   "cik": 1039765,
+   "group": "Money",
+   "sic": 6029
+  },
+  "INGR": {
+   "cik": 1046257,
+   "group": "NoDur",
+   "sic": 2040
+  },
+  "INMD": {
+   "cik": 1742692,
+   "group": "Hlth",
+   "sic": 3845
+  },
+  "INSM": {
+   "cik": 1104506,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "INSP": {
+   "cik": 1609550,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "INSW": {
+   "cik": 1679049,
+   "group": "Other",
+   "sic": 4400
+  },
+  "INTC": {
+   "cik": 50863,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "INTU": {
+   "cik": 896878,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "INVH": {
+   "cik": 1687229,
+   "group": "Money",
+   "sic": 6510
+  },
+  "IONQ": {
+   "cik": 1824920,
+   "group": "BusEq",
+   "sic": 7373
+  },
+  "IONS": {
+   "cik": 874015,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "IOT": {
+   "cik": 1642896,
+   "group": "BusEq",
+   "sic": 7373
+  },
+  "IP": {
+   "cik": 51434,
+   "group": "Manuf",
+   "sic": 2621
+  },
+  "IPGP": {
+   "cik": 1111928,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "IQV": {
+   "cik": 1478242,
+   "group": "Other",
+   "sic": 8731
+  },
+  "IR": {
+   "cik": 1699150,
+   "group": "Manuf",
+   "sic": 3560
+  },
+  "IRDM": {
+   "cik": 1418819,
+   "group": "Telcm",
+   "sic": 4899
+  },
+  "IRM": {
+   "cik": 1020569,
+   "group": "Money",
+   "sic": 6798
+  },
+  "IRT": {
+   "cik": 1466085,
+   "group": "Money",
+   "sic": 6798
+  },
+  "IRTC": {
+   "cik": 1388658,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "IRWD": {
+   "cik": 1446847,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "ISRG": {
+   "cik": 1035267,
+   "group": "Hlth",
+   "sic": 3842
+  },
+  "IT": {
+   "cik": 749251,
+   "group": "Other",
+   "sic": 8741
+  },
+  "ITGR": {
+   "cik": 1114483,
+   "group": "Hlth",
+   "sic": 3845
+  },
+  "ITRI": {
+   "cik": 780571,
+   "group": "BusEq",
+   "sic": 3825
+  },
+  "ITT": {
+   "cik": 216228,
+   "group": "Manuf",
+   "sic": 3561
+  },
+  "ITW": {
+   "cik": 49826,
+   "group": "Manuf",
+   "sic": 3560
+  },
+  "IVZ": {
+   "cik": 914208,
+   "group": "Money",
+   "sic": 6282
+  },
+  "J": {
+   "cik": 52988,
+   "group": "Other",
+   "sic": 1600
+  },
+  "JACK": {
+   "cik": 807882,
+   "group": "Shops",
+   "sic": 5812
+  },
+  "JAZZ": {
+   "cik": 1232524,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "JBGS": {
+   "cik": 1689796,
+   "group": "Money",
+   "sic": 6798
+  },
+  "JBHT": {
+   "cik": 728535,
+   "group": "Other",
+   "sic": 4213
+  },
+  "JBL": {
+   "cik": 898293,
+   "group": "BusEq",
+   "sic": 3672
+  },
+  "JCI": {
+   "cik": 833444,
+   "group": "Manuf",
+   "sic": 3585
+  },
+  "JD": {
+   "cik": 1549802,
+   "group": "Shops",
+   "sic": 5990
+  },
+  "JEF": {
+   "cik": 96223,
+   "group": "Money",
+   "sic": 6211
+  },
+  "JKHY": {
+   "cik": 779152,
+   "group": "BusEq",
+   "sic": 7373
+  },
+  "JKS": {
+   "cik": 1481513,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "JLL": {
+   "cik": 1037976,
+   "group": "Money",
+   "sic": 6531
+  },
+  "JNJ": {
+   "cik": 200406,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "JPM": {
+   "cik": 19617,
+   "group": "Money",
+   "sic": 6021
+  },
+  "JXN": {
+   "cik": 1822993,
+   "group": "Money",
+   "sic": 6311
+  },
+  "KAI": {
+   "cik": 886346,
+   "group": "Manuf",
+   "sic": 3550
+  },
+  "KBH": {
+   "cik": 795266,
+   "group": "Other",
+   "sic": 1531
+  },
+  "KBR": {
+   "cik": 1357615,
+   "group": "Other",
+   "sic": 1600
+  },
+  "KD": {
+   "cik": 1867072,
+   "group": "BusEq",
+   "sic": 7373
+  },
+  "KDP": {
+   "cik": 1418135,
+   "group": "NoDur",
+   "sic": 2080
+  },
+  "KEX": {
+   "cik": 56047,
+   "group": "Other",
+   "sic": 4400
+  },
+  "KEY": {
+   "cik": 91576,
+   "group": "Money",
+   "sic": 6021
+  },
+  "KEYS": {
+   "cik": 1601046,
+   "group": "BusEq",
+   "sic": 3823
+  },
+  "KHC": {
+   "cik": 1637459,
+   "group": "NoDur",
+   "sic": 2030
+  },
+  "KIM": {
+   "cik": 879101,
+   "group": "Money",
+   "sic": 6798
+  },
+  "KKR": {
+   "cik": 1404912,
+   "group": "Money",
+   "sic": 6282
+  },
+  "KLAC": {
+   "cik": 319201,
+   "group": "BusEq",
+   "sic": 3827
+  },
+  "KLIC": {
+   "cik": 56978,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "KMB": {
+   "cik": 55785,
+   "group": "Manuf",
+   "sic": 2670
+  },
+  "KMI": {
+   "cik": 1506307,
+   "group": "Utils",
+   "sic": 4922
+  },
+  "KMX": {
+   "cik": 1170010,
+   "group": "Shops",
+   "sic": 5500
+  },
+  "KNF": {
+   "cik": 1955520,
+   "group": "Other",
+   "sic": 1400
+  },
+  "KNSL": {
+   "cik": 1669162,
+   "group": "Money",
+   "sic": 6331
+  },
+  "KNX": {
+   "cik": 1492691,
+   "group": "Other",
+   "sic": 4213
+  },
+  "KO": {
+   "cik": 21344,
+   "group": "NoDur",
+   "sic": 2080
+  },
+  "KR": {
+   "cik": 56873,
+   "group": "Shops",
+   "sic": 5411
+  },
+  "KRC": {
+   "cik": 1025996,
+   "group": "Money",
+   "sic": 6798
+  },
+  "KRG": {
+   "cik": 1286043,
+   "group": "Money",
+   "sic": 6798
+  },
+  "KRYS": {
+   "cik": 1711279,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "KSS": {
+   "cik": 885639,
+   "group": "Shops",
+   "sic": 5311
+  },
+  "KTB": {
+   "cik": 1760965,
+   "group": "NoDur",
+   "sic": 2320
+  },
+  "KTOS": {
+   "cik": 1069258,
+   "group": "Manuf",
+   "sic": 3760
+  },
+  "KVUE": {
+   "cik": 1944048,
+   "group": "Chems",
+   "sic": 2844
+  },
+  "KVYO": {
+   "cik": 1835830,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "L": {
+   "cik": 60086,
+   "group": "Money",
+   "sic": 6331
+  },
+  "LAD": {
+   "cik": 1023128,
+   "group": "Shops",
+   "sic": 5500
+  },
+  "LAMR": {
+   "cik": 1090425,
+   "group": "Money",
+   "sic": 6798
+  },
+  "LAZ": {
+   "cik": 1311370,
+   "group": "Money",
+   "sic": 6282
+  },
+  "LBRT": {
+   "cik": 1694028,
+   "group": "Enrgy",
+   "sic": 1389
+  },
+  "LBTYA": {
+   "cik": 1570585,
+   "group": "Telcm",
+   "sic": 4841
+  },
+  "LBTYK": {
+   "cik": 1570585,
+   "group": "Telcm",
+   "sic": 4841
+  },
+  "LCII": {
+   "cik": 763744,
+   "group": "Durbl",
+   "sic": 3714
+  },
+  "LDOS": {
+   "cik": 1336920,
+   "group": "BusEq",
+   "sic": 7373
+  },
+  "LEA": {
+   "cik": 842162,
+   "group": "Durbl",
+   "sic": 3714
+  },
+  "LECO": {
+   "cik": 59527,
+   "group": "Manuf",
+   "sic": 3540
+  },
+  "LEGN": {
+   "cik": 1801198,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "LEN": {
+   "cik": 920760,
+   "group": "Other",
+   "sic": 1520
+  },
+  "LEVI": {
+   "cik": 94845,
+   "group": "NoDur",
+   "sic": 2300
+  },
+  "LFUS": {
+   "cik": 889331,
+   "group": "Manuf",
+   "sic": 3613
+  },
+  "LGIH": {
+   "cik": 1580670,
+   "group": "Other",
+   "sic": 1531
+  },
+  "LH": {
+   "cik": 920148,
+   "group": "Hlth",
+   "sic": 8071
+  },
+  "LHX": {
+   "cik": 202058,
+   "group": "BusEq",
+   "sic": 3812
+  },
+  "LI": {
+   "cik": 1791706,
+   "group": "Durbl",
+   "sic": 3711
+  },
+  "LII": {
+   "cik": 1069202,
+   "group": "Manuf",
+   "sic": 3585
+  },
+  "LIN": {
+   "cik": 1707925,
+   "group": "Chems",
+   "sic": 2810
+  },
+  "LITE": {
+   "cik": 1633978,
+   "group": "BusEq",
+   "sic": 3669
+  },
+  "LIVN": {
+   "cik": 1639691,
+   "group": "Hlth",
+   "sic": 3845
+  },
+  "LKQ": {
+   "cik": 1065696,
+   "group": "Shops",
+   "sic": 5010
+  },
+  "LLY": {
+   "cik": 59478,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "LMND": {
+   "cik": 1691421,
+   "group": "Money",
+   "sic": 6331
+  },
+  "LMT": {
+   "cik": 936468,
+   "group": "Manuf",
+   "sic": 3760
+  },
+  "LNC": {
+   "cik": 59558,
+   "group": "Money",
+   "sic": 6311
+  },
+  "LNG": {
+   "cik": 3570,
+   "group": "Utils",
+   "sic": 4924
+  },
+  "LNT": {
+   "cik": 352541,
+   "group": "Utils",
+   "sic": 4931
+  },
+  "LNTH": {
+   "cik": 1521036,
+   "group": "Hlth",
+   "sic": 2835
+  },
+  "LOGI": {
+   "cik": 1032975,
+   "group": "BusEq",
+   "sic": 3577
+  },
+  "LOPE": {
+   "cik": 1434588,
+   "group": "Other",
+   "sic": 8200
+  },
+  "LOW": {
+   "cik": 60667,
+   "group": "Shops",
+   "sic": 5211
+  },
+  "LPG": {
+   "cik": 1596993,
+   "group": "Other",
+   "sic": 4412
+  },
+  "LPLA": {
+   "cik": 1397911,
+   "group": "Money",
+   "sic": 6200
+  },
+  "LPX": {
+   "cik": 60519,
+   "group": "Other",
+   "sic": 2400
+  },
+  "LRCX": {
+   "cik": 707549,
+   "group": "Manuf",
+   "sic": 3559
+  },
+  "LRN": {
+   "cik": 1157408,
+   "group": "Other",
+   "sic": 8200
+  },
+  "LSCC": {
+   "cik": 855658,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "LSTR": {
+   "cik": 853816,
+   "group": "Other",
+   "sic": 4213
+  },
+  "LULU": {
+   "cik": 1397187,
+   "group": "NoDur",
+   "sic": 2300
+  },
+  "LUV": {
+   "cik": 92380,
+   "group": "Other",
+   "sic": 4512
+  },
+  "LVS": {
+   "cik": 1300514,
+   "group": "Other",
+   "sic": 7011
+  },
+  "LW": {
+   "cik": 1679273,
+   "group": "NoDur",
+   "sic": 2030
+  },
+  "LYB": {
+   "cik": 1489393,
+   "group": "Chems",
+   "sic": 2860
+  },
+  "LYFT": {
+   "cik": 1759509,
+   "group": "Other",
+   "sic": 7389
+  },
+  "LYV": {
+   "cik": 1335258,
+   "group": "Other",
+   "sic": 7900
+  },
+  "M": {
+   "cik": 794367,
+   "group": "Shops",
+   "sic": 5311
+  },
+  "MA": {
+   "cik": 1141391,
+   "group": "Other",
+   "sic": 7389
+  },
+  "MAA": {
+   "cik": 912595,
+   "group": "Money",
+   "sic": 6798
+  },
+  "MAC": {
+   "cik": 912242,
+   "group": "Money",
+   "sic": 6798
+  },
+  "MAN": {
+   "cik": 871763,
+   "group": "Other",
+   "sic": 7363
+  },
+  "MANH": {
+   "cik": 1056696,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "MAR": {
+   "cik": 1048286,
+   "group": "Other",
+   "sic": 7011
+  },
+  "MARA": {
+   "cik": 1507605,
+   "group": "Money",
+   "sic": 6199
+  },
+  "MAS": {
+   "cik": 62996,
+   "group": "Manuf",
+   "sic": 3430
+  },
+  "MAT": {
+   "cik": 63276,
+   "group": "NoDur",
+   "sic": 3942
+  },
+  "MATX": {
+   "cik": 3453,
+   "group": "Other",
+   "sic": 4400
+  },
+  "MBLY": {
+   "cik": 1910139,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "MC": {
+   "cik": 1596967,
+   "group": "Money",
+   "sic": 6282
+  },
+  "MCD": {
+   "cik": 63908,
+   "group": "Shops",
+   "sic": 5812
+  },
+  "MCHP": {
+   "cik": 827054,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "MCK": {
+   "cik": 927653,
+   "group": "Shops",
+   "sic": 5122
+  },
+  "MCO": {
+   "cik": 1059556,
+   "group": "Other",
+   "sic": 7320
+  },
+  "MDB": {
+   "cik": 1441816,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "MDGL": {
+   "cik": 1157601,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "MDLZ": {
+   "cik": 1103982,
+   "group": "NoDur",
+   "sic": 2000
+  },
+  "MDT": {
+   "cik": 1613103,
+   "group": "Hlth",
+   "sic": 3845
+  },
+  "MDU": {
+   "cik": 67716,
+   "group": "Utils",
+   "sic": 4924
+  },
+  "MEDP": {
+   "cik": 1668397,
+   "group": "Other",
+   "sic": 8731
+  },
+  "MELI": {
+   "cik": 1099590,
+   "group": "Other",
+   "sic": 7389
+  },
+  "MET": {
+   "cik": 1099219,
+   "group": "Money",
+   "sic": 6311
+  },
+  "META": {
+   "cik": 1326801,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "MFC": {
+   "cik": 1086888,
+   "group": "Money",
+   "sic": 6311
+  },
+  "MGA": {
+   "cik": 749098,
+   "group": "Durbl",
+   "sic": 3714
+  },
+  "MGM": {
+   "cik": 789570,
+   "group": "Other",
+   "sic": 7011
+  },
+  "MGY": {
+   "cik": 1698990,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "MHK": {
+   "cik": 851968,
+   "group": "NoDur",
+   "sic": 2273
+  },
+  "MHO": {
+   "cik": 799292,
+   "group": "Other",
+   "sic": 1531
+  },
+  "MIDD": {
+   "cik": 769520,
+   "group": "Manuf",
+   "sic": 3580
+  },
+  "MKC": {
+   "cik": 63754,
+   "group": "NoDur",
+   "sic": 2090
+  },
+  "MKL": {
+   "cik": 1096343,
+   "group": "Money",
+   "sic": 6331
+  },
+  "MKSI": {
+   "cik": 1049502,
+   "group": "BusEq",
+   "sic": 3823
+  },
+  "MKTX": {
+   "cik": 1278021,
+   "group": "Money",
+   "sic": 6211
+  },
+  "MLI": {
+   "cik": 89439,
+   "group": "Manuf",
+   "sic": 3350
+  },
+  "MLM": {
+   "cik": 916076,
+   "group": "Other",
+   "sic": 1400
+  },
+  "MLTX": {
+   "cik": 1821586,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "MMM": {
+   "cik": 66740,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "MMS": {
+   "cik": 1032220,
+   "group": "Other",
+   "sic": 7389
+  },
+  "MMSI": {
+   "cik": 856982,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "MMYT": {
+   "cik": 1495153,
+   "group": "Other",
+   "sic": 4700
+  },
+  "MNDY": {
+   "cik": 1845338,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "MNSO": {
+   "cik": 1815846,
+   "group": "Shops",
+   "sic": 5331
+  },
+  "MNST": {
+   "cik": 865752,
+   "group": "NoDur",
+   "sic": 2086
+  },
+  "MO": {
+   "cik": 764180,
+   "group": "NoDur",
+   "sic": 2111
+  },
+  "MOD": {
+   "cik": 67347,
+   "group": "Durbl",
+   "sic": 3714
+  },
+  "MOH": {
+   "cik": 1179929,
+   "group": "Money",
+   "sic": 6324
+  },
+  "MORN": {
+   "cik": 1289419,
+   "group": "Money",
+   "sic": 6282
+  },
+  "MOS": {
+   "cik": 1285785,
+   "group": "Chems",
+   "sic": 2870
+  },
+  "MP": {
+   "cik": 1801368,
+   "group": "Other",
+   "sic": 1000
+  },
+  "MPC": {
+   "cik": 1510295,
+   "group": "Enrgy",
+   "sic": 2911
+  },
+  "MPLX": {
+   "cik": 1552000,
+   "group": "Other",
+   "sic": 4610
+  },
+  "MPWR": {
+   "cik": 1280452,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "MRK": {
+   "cik": 310158,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "MRNA": {
+   "cik": 1682852,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "MRSH": {
+   "cik": 62709,
+   "group": "Money",
+   "sic": 6411
+  },
+  "MRVL": {
+   "cik": 1835632,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "MS": {
+   "cik": 895421,
+   "group": "Money",
+   "sic": 6211
+  },
+  "MSA": {
+   "cik": 66570,
+   "group": "Hlth",
+   "sic": 3842
+  },
+  "MSCI": {
+   "cik": 1408198,
+   "group": "Other",
+   "sic": 7389
+  },
+  "MSFT": {
+   "cik": 789019,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "MSGS": {
+   "cik": 1636519,
+   "group": "Other",
+   "sic": 7990
+  },
+  "MSI": {
+   "cik": 68505,
+   "group": "BusEq",
+   "sic": 3663
+  },
+  "MSM": {
+   "cik": 1003078,
+   "group": "Shops",
+   "sic": 5084
+  },
+  "MSTR": {
+   "cik": 1050446,
+   "group": "Money",
+   "sic": 6199
+  },
+  "MT": {
+   "cik": 1243429,
+   "group": "Manuf",
+   "sic": 3312
+  },
+  "MTB": {
+   "cik": 36270,
+   "group": "Money",
+   "sic": 6022
+  },
+  "MTCH": {
+   "cik": 891103,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "MTD": {
+   "cik": 1037646,
+   "group": "BusEq",
+   "sic": 3826
+  },
+  "MTDR": {
+   "cik": 1520006,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "MTG": {
+   "cik": 876437,
+   "group": "Money",
+   "sic": 6351
+  },
+  "MTH": {
+   "cik": 833079,
+   "group": "Other",
+   "sic": 1531
+  },
+  "MTN": {
+   "cik": 812011,
+   "group": "Other",
+   "sic": 7990
+  },
+  "MTSI": {
+   "cik": 1493594,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "MTZ": {
+   "cik": 15615,
+   "group": "Other",
+   "sic": 1623
+  },
+  "MU": {
+   "cik": 723125,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "MUR": {
+   "cik": 717423,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "MUSA": {
+   "cik": 1573516,
+   "group": "Shops",
+   "sic": 5500
+  },
+  "MZTI": {
+   "cik": 57515,
+   "group": "NoDur",
+   "sic": 2030
+  },
+  "NBIX": {
+   "cik": 914475,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "NBR": {
+   "cik": 1163739,
+   "group": "Enrgy",
+   "sic": 1381
+  },
+  "NCLH": {
+   "cik": 1513761,
+   "group": "Other",
+   "sic": 4400
+  },
+  "NDAQ": {
+   "cik": 1120193,
+   "group": "Money",
+   "sic": 6200
+  },
+  "NDSN": {
+   "cik": 72331,
+   "group": "Manuf",
+   "sic": 3569
+  },
+  "NE": {
+   "cik": 1895262,
+   "group": "Enrgy",
+   "sic": 1381
+  },
+  "NEE": {
+   "cik": 753308,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "NEM": {
+   "cik": 1164727,
+   "group": "Other",
+   "sic": 1040
+  },
+  "NEOG": {
+   "cik": 711377,
+   "group": "Hlth",
+   "sic": 2835
+  },
+  "NET": {
+   "cik": 1477333,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "NEU": {
+   "cik": 1282637,
+   "group": "Chems",
+   "sic": 2860
+  },
+  "NFE": {
+   "cik": 1749723,
+   "group": "Utils",
+   "sic": 4924
+  },
+  "NFG": {
+   "cik": 70145,
+   "group": "Utils",
+   "sic": 4924
+  },
+  "NFLX": {
+   "cik": 1065280,
+   "group": "Other",
+   "sic": 7841
+  },
+  "NGG": {
+   "cik": 1004315,
+   "group": "Utils",
+   "sic": 4922
+  },
+  "NI": {
+   "cik": 1111711,
+   "group": "Utils",
+   "sic": 4931
+  },
+  "NICE": {
+   "cik": 1003935,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "NJR": {
+   "cik": 356309,
+   "group": "Utils",
+   "sic": 4924
+  },
+  "NKE": {
+   "cik": 320187,
+   "group": "Manuf",
+   "sic": 3021
+  },
+  "NLY": {
+   "cik": 1043219,
+   "group": "Money",
+   "sic": 6798
+  },
+  "NNN": {
+   "cik": 751364,
+   "group": "Money",
+   "sic": 6798
+  },
+  "NOC": {
+   "cik": 1133421,
+   "group": "BusEq",
+   "sic": 3812
+  },
+  "NOG": {
+   "cik": 1104485,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "NOV": {
+   "cik": 1021860,
+   "group": "Manuf",
+   "sic": 3533
+  },
+  "NOVT": {
+   "cik": 1076930,
+   "group": "BusEq",
+   "sic": 3690
+  },
+  "NOW": {
+   "cik": 1373715,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "NRG": {
+   "cik": 1013871,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "NSC": {
+   "cik": 702165,
+   "group": "Other",
+   "sic": 4011
+  },
+  "NSIT": {
+   "cik": 932696,
+   "group": "Shops",
+   "sic": 5961
+  },
+  "NSP": {
+   "cik": 1000753,
+   "group": "Other",
+   "sic": 7363
+  },
+  "NTAP": {
+   "cik": 1002047,
+   "group": "BusEq",
+   "sic": 3572
+  },
+  "NTES": {
+   "cik": 1110646,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "NTLA": {
+   "cik": 1652130,
+   "group": "Hlth",
+   "sic": 2835
+  },
+  "NTNX": {
+   "cik": 1618732,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "NTR": {
+   "cik": 1725964,
+   "group": "Chems",
+   "sic": 2870
+  },
+  "NTRA": {
+   "cik": 1604821,
+   "group": "Hlth",
+   "sic": 8071
+  },
+  "NTRS": {
+   "cik": 73124,
+   "group": "Money",
+   "sic": 6022
+  },
+  "NUE": {
+   "cik": 73309,
+   "group": "Manuf",
+   "sic": 3312
+  },
+  "NVCR": {
+   "cik": 1645113,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "NVDA": {
+   "cik": 1045810,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "NVO": {
+   "cik": 353278,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "NVR": {
+   "cik": 906163,
+   "group": "Other",
+   "sic": 1531
+  },
+  "NVS": {
+   "cik": 1114448,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "NVST": {
+   "cik": 1757073,
+   "group": "Hlth",
+   "sic": 3843
+  },
+  "NVT": {
+   "cik": 1720635,
+   "group": "Manuf",
+   "sic": 3550
+  },
+  "NVTS": {
+   "cik": 1821769,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "NWE": {
+   "cik": 1993004,
+   "group": "Utils",
+   "sic": 4931
+  },
+  "NWG": {
+   "cik": 844150,
+   "group": "Money",
+   "sic": 6029
+  },
+  "NWS": {
+   "cik": 1564708,
+   "group": "NoDur",
+   "sic": 2711
+  },
+  "NWSA": {
+   "cik": 1564708,
+   "group": "NoDur",
+   "sic": 2711
+  },
+  "NXH": {
+   "cik": 1130713,
+   "group": "Shops",
+   "sic": 5961
+  },
+  "NXPI": {
+   "cik": 1413447,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "NXST": {
+   "cik": 1142417,
+   "group": "Telcm",
+   "sic": 4833
+  },
+  "NXT": {
+   "cik": 1852131,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "NYT": {
+   "cik": 71691,
+   "group": "NoDur",
+   "sic": 2711
+  },
+  "O": {
+   "cik": 726728,
+   "group": "Money",
+   "sic": 6798
+  },
+  "OBDC": {
+   "cik": 1655888,
+   "group": "unknown",
+   "sic": null
+  },
+  "OC": {
+   "cik": 1370946,
+   "group": "Manuf",
+   "sic": 3290
+  },
+  "ODFL": {
+   "cik": 878927,
+   "group": "Other",
+   "sic": 4213
+  },
+  "OGE": {
+   "cik": 1021635,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "OGN": {
+   "cik": 1821825,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "OGS": {
+   "cik": 1587732,
+   "group": "Utils",
+   "sic": 4924
+  },
+  "OHI": {
+   "cik": 888491,
+   "group": "Money",
+   "sic": 6798
+  },
+  "OI": {
+   "cik": 812074,
+   "group": "Manuf",
+   "sic": 3221
+  },
+  "OII": {
+   "cik": 73756,
+   "group": "Enrgy",
+   "sic": 1389
+  },
+  "OKE": {
+   "cik": 1039684,
+   "group": "Utils",
+   "sic": 4923
+  },
+  "OKTA": {
+   "cik": 1660134,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "OLED": {
+   "cik": 1005284,
+   "group": "BusEq",
+   "sic": 3670
+  },
+  "OLLI": {
+   "cik": 1639300,
+   "group": "Shops",
+   "sic": 5331
+  },
+  "OLN": {
+   "cik": 74303,
+   "group": "Chems",
+   "sic": 2800
+  },
+  "OMC": {
+   "cik": 29989,
+   "group": "Other",
+   "sic": 7311
+  },
+  "OMCL": {
+   "cik": 926326,
+   "group": "BusEq",
+   "sic": 3571
+  },
+  "OMF": {
+   "cik": 1584207,
+   "group": "Money",
+   "sic": 6141
+  },
+  "ON": {
+   "cik": 1097864,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "ONB": {
+   "cik": 707179,
+   "group": "Money",
+   "sic": 6021
+  },
+  "ONC": {
+   "cik": 1651308,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "ONON": {
+   "cik": 1858985,
+   "group": "Manuf",
+   "sic": 3021
+  },
+  "ONTO": {
+   "cik": 704532,
+   "group": "BusEq",
+   "sic": 3829
+  },
+  "OPCH": {
+   "cik": 1014739,
+   "group": "Hlth",
+   "sic": 8082
+  },
+  "ORA": {
+   "cik": 1296445,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "ORCL": {
+   "cik": 1341439,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "ORI": {
+   "cik": 74260,
+   "group": "Money",
+   "sic": 6351
+  },
+  "ORLY": {
+   "cik": 898173,
+   "group": "Shops",
+   "sic": 5531
+  },
+  "OSK": {
+   "cik": 775158,
+   "group": "Durbl",
+   "sic": 3711
+  },
+  "OTEX": {
+   "cik": 1002638,
+   "group": "BusEq",
+   "sic": 7373
+  },
+  "OTIS": {
+   "cik": 1781335,
+   "group": "Manuf",
+   "sic": 3600
+  },
+  "OUT": {
+   "cik": 1579877,
+   "group": "Money",
+   "sic": 6798
+  },
+  "OVV": {
+   "cik": 1792580,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "OWL": {
+   "cik": 1823945,
+   "group": "Money",
+   "sic": 6282
+  },
+  "OXY": {
+   "cik": 797468,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "OZK": {
+   "cik": 1569650,
+   "group": "unknown",
+   "sic": null
+  },
+  "P": {
+   "cik": 1474432,
+   "group": "BusEq",
+   "sic": 3572
+  },
+  "PAA": {
+   "cik": 1070423,
+   "group": "Other",
+   "sic": 4610
+  },
+  "PAAS": {
+   "cik": 771992,
+   "group": "Other",
+   "sic": 1040
+  },
+  "PAG": {
+   "cik": 1019849,
+   "group": "Shops",
+   "sic": 5500
+  },
+  "PAGP": {
+   "cik": 1581990,
+   "group": "Other",
+   "sic": 4610
+  },
+  "PAGS": {
+   "cik": 1712807,
+   "group": "BusEq",
+   "sic": 7374
+  },
+  "PANW": {
+   "cik": 1327567,
+   "group": "BusEq",
+   "sic": 3577
+  },
+  "PARR": {
+   "cik": 821483,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "PATH": {
+   "cik": 1734722,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "PAYX": {
+   "cik": 723531,
+   "group": "Other",
+   "sic": 8700
+  },
+  "PB": {
+   "cik": 1068851,
+   "group": "Money",
+   "sic": 6022
+  },
+  "PBA": {
+   "cik": 1546066,
+   "group": "Enrgy",
+   "sic": 1382
+  },
+  "PBF": {
+   "cik": 1534504,
+   "group": "Enrgy",
+   "sic": 2911
+  },
+  "PBR": {
+   "cik": 1119639,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "PCAR": {
+   "cik": 75362,
+   "group": "Durbl",
+   "sic": 3711
+  },
+  "PCG": {
+   "cik": 1004980,
+   "group": "Utils",
+   "sic": 4931
+  },
+  "PCOR": {
+   "cik": 1611052,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "PCTY": {
+   "cik": 1591698,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "PCVX": {
+   "cik": 1649094,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "PD": {
+   "cik": 1568100,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "PDD": {
+   "cik": 1737806,
+   "group": "Other",
+   "sic": 7389
+  },
+  "PEB": {
+   "cik": 1474098,
+   "group": "Money",
+   "sic": 6798
+  },
+  "PECO": {
+   "cik": 1476204,
+   "group": "Money",
+   "sic": 6798
+  },
+  "PEG": {
+   "cik": 788784,
+   "group": "Utils",
+   "sic": 4931
+  },
+  "PEN": {
+   "cik": 1321732,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "PENN": {
+   "cik": 921738,
+   "group": "Other",
+   "sic": 7011
+  },
+  "PEP": {
+   "cik": 77476,
+   "group": "NoDur",
+   "sic": 2080
+  },
+  "PFE": {
+   "cik": 78003,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "PFG": {
+   "cik": 1126328,
+   "group": "Money",
+   "sic": 6321
+  },
+  "PFGC": {
+   "cik": 1618673,
+   "group": "Shops",
+   "sic": 5141
+  },
+  "PFSI": {
+   "cik": 1745916,
+   "group": "Money",
+   "sic": 6162
+  },
+  "PG": {
+   "cik": 80424,
+   "group": "Chems",
+   "sic": 2840
+  },
+  "PGNY": {
+   "cik": 1551306,
+   "group": "Hlth",
+   "sic": 8090
+  },
+  "PGR": {
+   "cik": 80661,
+   "group": "Money",
+   "sic": 6331
+  },
+  "PH": {
+   "cik": 76334,
+   "group": "Manuf",
+   "sic": 3490
+  },
+  "PHG": {
+   "cik": 313216,
+   "group": "Hlth",
+   "sic": 3844
+  },
+  "PHM": {
+   "cik": 822416,
+   "group": "Other",
+   "sic": 1531
+  },
+  "PI": {
+   "cik": 1114995,
+   "group": "BusEq",
+   "sic": 3679
+  },
+  "PII": {
+   "cik": 931015,
+   "group": "Manuf",
+   "sic": 3790
+  },
+  "PINS": {
+   "cik": 1506293,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "PK": {
+   "cik": 1617406,
+   "group": "Other",
+   "sic": 7011
+  },
+  "PKG": {
+   "cik": 75677,
+   "group": "Manuf",
+   "sic": 2650
+  },
+  "PLAY": {
+   "cik": 1525769,
+   "group": "Shops",
+   "sic": 5812
+  },
+  "PLD": {
+   "cik": 1045609,
+   "group": "Money",
+   "sic": 6798
+  },
+  "PLNT": {
+   "cik": 1637207,
+   "group": "Other",
+   "sic": 7997
+  },
+  "PLTR": {
+   "cik": 1321655,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "PM": {
+   "cik": 1413329,
+   "group": "NoDur",
+   "sic": 2111
+  },
+  "PNC": {
+   "cik": 713676,
+   "group": "Money",
+   "sic": 6021
+  },
+  "PNFP": {
+   "cik": 2082866,
+   "group": "Money",
+   "sic": 6021
+  },
+  "PNR": {
+   "cik": 77360,
+   "group": "Manuf",
+   "sic": 3550
+  },
+  "PNW": {
+   "cik": 764622,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "PODD": {
+   "cik": 1145197,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "POOL": {
+   "cik": 945841,
+   "group": "Shops",
+   "sic": 5090
+  },
+  "POR": {
+   "cik": 784977,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "POST": {
+   "cik": 1530950,
+   "group": "NoDur",
+   "sic": 2040
+  },
+  "POWI": {
+   "cik": 833640,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "PPC": {
+   "cik": 802481,
+   "group": "NoDur",
+   "sic": 2015
+  },
+  "PPG": {
+   "cik": 79879,
+   "group": "Chems",
+   "sic": 2851
+  },
+  "PPL": {
+   "cik": 922224,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "PPLI": {
+   "cik": 1800227,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "PR": {
+   "cik": 1658566,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "PRGO": {
+   "cik": 1585364,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "PRI": {
+   "cik": 1475922,
+   "group": "Money",
+   "sic": 6311
+  },
+  "PRKS": {
+   "cik": 1564902,
+   "group": "Other",
+   "sic": 7990
+  },
+  "PRTA": {
+   "cik": 1559053,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "PRU": {
+   "cik": 1137774,
+   "group": "Money",
+   "sic": 6311
+  },
+  "PSA": {
+   "cik": 1393311,
+   "group": "Money",
+   "sic": 6798
+  },
+  "PSN": {
+   "cik": 275880,
+   "group": "BusEq",
+   "sic": 7373
+  },
+  "PSX": {
+   "cik": 1534701,
+   "group": "Enrgy",
+   "sic": 2911
+  },
+  "PTC": {
+   "cik": 857005,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "PTCT": {
+   "cik": 1070081,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "PTEN": {
+   "cik": 889900,
+   "group": "Enrgy",
+   "sic": 1381
+  },
+  "PVH": {
+   "cik": 78239,
+   "group": "NoDur",
+   "sic": 2320
+  },
+  "PWR": {
+   "cik": 1050915,
+   "group": "Other",
+   "sic": 1731
+  },
+  "PYPL": {
+   "cik": 1633917,
+   "group": "Other",
+   "sic": 7389
+  },
+  "PZZA": {
+   "cik": 901491,
+   "group": "Shops",
+   "sic": 5812
+  },
+  "QCOM": {
+   "cik": 804328,
+   "group": "BusEq",
+   "sic": 3663
+  },
+  "QDEL": {
+   "cik": 1906324,
+   "group": "Hlth",
+   "sic": 2835
+  },
+  "QGEN": {
+   "cik": 1015820,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "QLYS": {
+   "cik": 1107843,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "QSR": {
+   "cik": 1618756,
+   "group": "Shops",
+   "sic": 5812
+  },
+  "QTWO": {
+   "cik": 1410384,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "R": {
+   "cik": 85961,
+   "group": "Other",
+   "sic": 7510
+  },
+  "RACE": {
+   "cik": 1648416,
+   "group": "Durbl",
+   "sic": 3711
+  },
+  "RARE": {
+   "cik": 1515673,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "RBA": {
+   "cik": 1046102,
+   "group": "Other",
+   "sic": 7389
+  },
+  "RBC": {
+   "cik": 1324948,
+   "group": "Manuf",
+   "sic": 3562
+  },
+  "RBLX": {
+   "cik": 1315098,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "RCI": {
+   "cik": 733099,
+   "group": "Telcm",
+   "sic": 4841
+  },
+  "RCKT": {
+   "cik": 1281895,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "RCL": {
+   "cik": 884887,
+   "group": "Other",
+   "sic": 4400
+  },
+  "RDN": {
+   "cik": 890926,
+   "group": "Money",
+   "sic": 6351
+  },
+  "REG": {
+   "cik": 910606,
+   "group": "Money",
+   "sic": 6798
+  },
+  "REGN": {
+   "cik": 872589,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "RELX": {
+   "cik": 929869,
+   "group": "Other",
+   "sic": 7389
+  },
+  "RELY": {
+   "cik": 1782170,
+   "group": "Other",
+   "sic": 7389
+  },
+  "REXR": {
+   "cik": 1571283,
+   "group": "Money",
+   "sic": 6798
+  },
+  "RF": {
+   "cik": 1281761,
+   "group": "Money",
+   "sic": 6021
+  },
+  "RGA": {
+   "cik": 898174,
+   "group": "Money",
+   "sic": 6311
+  },
+  "RGEN": {
+   "cik": 730272,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "RGLD": {
+   "cik": 85535,
+   "group": "Money",
+   "sic": 6795
+  },
+  "RH": {
+   "cik": 1528849,
+   "group": "Shops",
+   "sic": 5712
+  },
+  "RHI": {
+   "cik": 315213,
+   "group": "Other",
+   "sic": 7363
+  },
+  "RHP": {
+   "cik": 1040829,
+   "group": "Money",
+   "sic": 6798
+  },
+  "RILY": {
+   "cik": 1464790,
+   "group": "Money",
+   "sic": 6282
+  },
+  "RIO": {
+   "cik": 863064,
+   "group": "Other",
+   "sic": 1000
+  },
+  "RIOT": {
+   "cik": 1167419,
+   "group": "Money",
+   "sic": 6199
+  },
+  "RITM": {
+   "cik": 1556593,
+   "group": "Money",
+   "sic": 6798
+  },
+  "RIVN": {
+   "cik": 1874178,
+   "group": "Durbl",
+   "sic": 3711
+  },
+  "RJF": {
+   "cik": 720005,
+   "group": "Money",
+   "sic": 6211
+  },
+  "RKT": {
+   "cik": 1805284,
+   "group": "Money",
+   "sic": 6162
+  },
+  "RL": {
+   "cik": 1037038,
+   "group": "NoDur",
+   "sic": 2320
+  },
+  "RLI": {
+   "cik": 84246,
+   "group": "Money",
+   "sic": 6331
+  },
+  "RMBS": {
+   "cik": 917273,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "RMD": {
+   "cik": 943819,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "RNG": {
+   "cik": 1384905,
+   "group": "BusEq",
+   "sic": 7374
+  },
+  "RNR": {
+   "cik": 913144,
+   "group": "Money",
+   "sic": 6331
+  },
+  "ROIV": {
+   "cik": 1635088,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "ROK": {
+   "cik": 1024478,
+   "group": "BusEq",
+   "sic": 3829
+  },
+  "ROKU": {
+   "cik": 1428439,
+   "group": "Telcm",
+   "sic": 4841
+  },
+  "ROL": {
+   "cik": 84839,
+   "group": "Other",
+   "sic": 7340
+  },
+  "ROP": {
+   "cik": 882835,
+   "group": "BusEq",
+   "sic": 3823
+  },
+  "ROST": {
+   "cik": 745732,
+   "group": "Shops",
+   "sic": 5651
+  },
+  "RPD": {
+   "cik": 1560327,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "RPM": {
+   "cik": 110621,
+   "group": "Chems",
+   "sic": 2851
+  },
+  "RPRX": {
+   "cik": 1802768,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "RRC": {
+   "cik": 315852,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "RRX": {
+   "cik": 82811,
+   "group": "Manuf",
+   "sic": 3569
+  },
+  "RS": {
+   "cik": 861884,
+   "group": "Shops",
+   "sic": 5051
+  },
+  "RSG": {
+   "cik": 1060391,
+   "group": "Other",
+   "sic": 4953
+  },
+  "RTX": {
+   "cik": 101829,
+   "group": "Manuf",
+   "sic": 3724
+  },
+  "RUN": {
+   "cik": 1469367,
+   "group": "Other",
+   "sic": 1700
+  },
+  "RVLV": {
+   "cik": 1746618,
+   "group": "Shops",
+   "sic": 5961
+  },
+  "RVMD": {
+   "cik": 1628171,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "RVTY": {
+   "cik": 31791,
+   "group": "BusEq",
+   "sic": 3826
+  },
+  "RY": {
+   "cik": 1000275,
+   "group": "Money",
+   "sic": 6029
+  },
+  "RYAAY": {
+   "cik": 1038683,
+   "group": "Other",
+   "sic": 4512
+  },
+  "RYAN": {
+   "cik": 1849253,
+   "group": "Money",
+   "sic": 6411
+  },
+  "RYTM": {
+   "cik": 1649904,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "S": {
+   "cik": 1583708,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "SAIA": {
+   "cik": 1177702,
+   "group": "Other",
+   "sic": 4213
+  },
+  "SAIC": {
+   "cik": 1571123,
+   "group": "BusEq",
+   "sic": 7373
+  },
+  "SAM": {
+   "cik": 949870,
+   "group": "NoDur",
+   "sic": 2082
+  },
+  "SANM": {
+   "cik": 897723,
+   "group": "BusEq",
+   "sic": 3672
+  },
+  "SAP": {
+   "cik": 1000184,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "SBAC": {
+   "cik": 1034054,
+   "group": "Money",
+   "sic": 6798
+  },
+  "SBH": {
+   "cik": 1368458,
+   "group": "Shops",
+   "sic": 5990
+  },
+  "SBLK": {
+   "cik": 1386716,
+   "group": "Other",
+   "sic": 4412
+  },
+  "SBRA": {
+   "cik": 1492298,
+   "group": "Money",
+   "sic": 6798
+  },
+  "SBUX": {
+   "cik": 829224,
+   "group": "Shops",
+   "sic": 5810
+  },
+  "SCCO": {
+   "cik": 1001838,
+   "group": "Other",
+   "sic": 1000
+  },
+  "SCHW": {
+   "cik": 316709,
+   "group": "Money",
+   "sic": 6211
+  },
+  "SCI": {
+   "cik": 89089,
+   "group": "Shops",
+   "sic": 7200
+  },
+  "SDGR": {
+   "cik": 1490978,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "SDRL": {
+   "cik": 1737706,
+   "group": "Enrgy",
+   "sic": 1381
+  },
+  "SE": {
+   "cik": 1703399,
+   "group": "Other",
+   "sic": 7380
+  },
+  "SEDG": {
+   "cik": 1419612,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "SEIC": {
+   "cik": 350894,
+   "group": "Money",
+   "sic": 6211
+  },
+  "SF": {
+   "cik": 720672,
+   "group": "Money",
+   "sic": 6211
+  },
+  "SFM": {
+   "cik": 1575515,
+   "group": "Shops",
+   "sic": 5411
+  },
+  "SGI": {
+   "cik": 1206264,
+   "group": "Durbl",
+   "sic": 2510
+  },
+  "SGML": {
+   "cik": 1848309,
+   "group": "Other",
+   "sic": 1000
+  },
+  "SGRY": {
+   "cik": 1638833,
+   "group": "Hlth",
+   "sic": 8062
+  },
+  "SHAK": {
+   "cik": 1620533,
+   "group": "Shops",
+   "sic": 5810
+  },
+  "SHEL": {
+   "cik": 1306965,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "SHLS": {
+   "cik": 1831651,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "SHO": {
+   "cik": 1295810,
+   "group": "Other",
+   "sic": 7011
+  },
+  "SHOO": {
+   "cik": 913241,
+   "group": "NoDur",
+   "sic": 3140
+  },
+  "SHOP": {
+   "cik": 1594805,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "SHW": {
+   "cik": 89800,
+   "group": "Shops",
+   "sic": 5200
+  },
+  "SIG": {
+   "cik": 832988,
+   "group": "Shops",
+   "sic": 5944
+  },
+  "SIGI": {
+   "cik": 230557,
+   "group": "Money",
+   "sic": 6331
+  },
+  "SIMO": {
+   "cik": 1329394,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "SITC": {
+   "cik": 894315,
+   "group": "Money",
+   "sic": 6798
+  },
+  "SITE": {
+   "cik": 1650729,
+   "group": "Shops",
+   "sic": 5040
+  },
+  "SJM": {
+   "cik": 91419,
+   "group": "NoDur",
+   "sic": 2033
+  },
+  "SKT": {
+   "cik": 899715,
+   "group": "Money",
+   "sic": 6798
+  },
+  "SKY": {
+   "cik": 90896,
+   "group": "Other",
+   "sic": 2451
+  },
+  "SLAB": {
+   "cik": 1038074,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "SLB": {
+   "cik": 87347,
+   "group": "Enrgy",
+   "sic": 1389
+  },
+  "SLF": {
+   "cik": 1097362,
+   "group": "Money",
+   "sic": 6311
+  },
+  "SLG": {
+   "cik": 1040971,
+   "group": "Money",
+   "sic": 6798
+  },
+  "SLGN": {
+   "cik": 849869,
+   "group": "Manuf",
+   "sic": 3411
+  },
+  "SLM": {
+   "cik": 1032033,
+   "group": "Money",
+   "sic": 6141
+  },
+  "SM": {
+   "cik": 893538,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "SMCI": {
+   "cik": 1375365,
+   "group": "BusEq",
+   "sic": 3571
+  },
+  "SMG": {
+   "cik": 825542,
+   "group": "Chems",
+   "sic": 2870
+  },
+  "SMPL": {
+   "cik": 1702744,
+   "group": "NoDur",
+   "sic": 2000
+  },
+  "SMTC": {
+   "cik": 88941,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "SN": {
+   "cik": 1957132,
+   "group": "Durbl",
+   "sic": 3630
+  },
+  "SNA": {
+   "cik": 91440,
+   "group": "Manuf",
+   "sic": 3420
+  },
+  "SNAP": {
+   "cik": 1564408,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "SNDX": {
+   "cik": 1395937,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "SNN": {
+   "cik": 845982,
+   "group": "Hlth",
+   "sic": 3842
+  },
+  "SNOW": {
+   "cik": 1640147,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "SNPS": {
+   "cik": 883241,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "SNX": {
+   "cik": 1177394,
+   "group": "Shops",
+   "sic": 5045
+  },
+  "SNY": {
+   "cik": 1121404,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "SO": {
+   "cik": 92122,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "SON": {
+   "cik": 91767,
+   "group": "Manuf",
+   "sic": 2650
+  },
+  "SONO": {
+   "cik": 1314727,
+   "group": "Durbl",
+   "sic": 3651
+  },
+  "SONY": {
+   "cik": 313838,
+   "group": "Durbl",
+   "sic": 3651
+  },
+  "SPB": {
+   "cik": 109177,
+   "group": "BusEq",
+   "sic": 3690
+  },
+  "SPG": {
+   "cik": 1063761,
+   "group": "Money",
+   "sic": 6798
+  },
+  "SPGI": {
+   "cik": 64040,
+   "group": "Other",
+   "sic": 7320
+  },
+  "SPHR": {
+   "cik": 1795250,
+   "group": "Other",
+   "sic": 7900
+  },
+  "SPOT": {
+   "cik": 1639920,
+   "group": "Telcm",
+   "sic": 4832
+  },
+  "SPSC": {
+   "cik": 1092699,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "SPT": {
+   "cik": 1517375,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "SQM": {
+   "cik": 909037,
+   "group": "Other",
+   "sic": 1400
+  },
+  "SR": {
+   "cik": 1126956,
+   "group": "Utils",
+   "sic": 4924
+  },
+  "SRE": {
+   "cik": 1032208,
+   "group": "Utils",
+   "sic": 4932
+  },
+  "SRPT": {
+   "cik": 873303,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "SSB": {
+   "cik": 764038,
+   "group": "Money",
+   "sic": 6022
+  },
+  "SSD": {
+   "cik": 920371,
+   "group": "Manuf",
+   "sic": 3420
+  },
+  "SSNC": {
+   "cik": 1402436,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "SSRM": {
+   "cik": 921638,
+   "group": "Money",
+   "sic": 6795
+  },
+  "SSTK": {
+   "cik": 1549346,
+   "group": "BusEq",
+   "sic": 7374
+  },
+  "ST": {
+   "cik": 1477294,
+   "group": "BusEq",
+   "sic": 3823
+  },
+  "STAA": {
+   "cik": 718937,
+   "group": "Hlth",
+   "sic": 3851
+  },
+  "STAG": {
+   "cik": 1479094,
+   "group": "Money",
+   "sic": 6798
+  },
+  "STE": {
+   "cik": 1757898,
+   "group": "Hlth",
+   "sic": 3842
+  },
+  "STLA": {
+   "cik": 1605484,
+   "group": "Durbl",
+   "sic": 3711
+  },
+  "STLD": {
+   "cik": 1022671,
+   "group": "Manuf",
+   "sic": 3312
+  },
+  "STM": {
+   "cik": 932787,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "STNE": {
+   "cik": 1745431,
+   "group": "BusEq",
+   "sic": 7374
+  },
+  "STNG": {
+   "cik": 1483934,
+   "group": "Other",
+   "sic": 4412
+  },
+  "STRL": {
+   "cik": 874238,
+   "group": "Other",
+   "sic": 1600
+  },
+  "STT": {
+   "cik": 93751,
+   "group": "Money",
+   "sic": 6022
+  },
+  "STWD": {
+   "cik": 1465128,
+   "group": "Money",
+   "sic": 6798
+  },
+  "STX": {
+   "cik": 1137789,
+   "group": "BusEq",
+   "sic": 3572
+  },
+  "STZ": {
+   "cik": 16918,
+   "group": "NoDur",
+   "sic": 2080
+  },
+  "SU": {
+   "cik": 311337,
+   "group": "Enrgy",
+   "sic": 2911
+  },
+  "SUI": {
+   "cik": 912593,
+   "group": "Money",
+   "sic": 6798
+  },
+  "SW": {
+   "cik": 2005951,
+   "group": "Manuf",
+   "sic": 2650
+  },
+  "SWK": {
+   "cik": 93556,
+   "group": "Manuf",
+   "sic": 3420
+  },
+  "SWKS": {
+   "cik": 4127,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "SWX": {
+   "cik": 1692115,
+   "group": "Utils",
+   "sic": 4923
+  },
+  "SYF": {
+   "cik": 1601712,
+   "group": "Money",
+   "sic": 6199
+  },
+  "SYK": {
+   "cik": 310764,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "SYM": {
+   "cik": 1837240,
+   "group": "Manuf",
+   "sic": 3569
+  },
+  "SYNA": {
+   "cik": 817720,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "SYY": {
+   "cik": 96021,
+   "group": "Shops",
+   "sic": 5140
+  },
+  "T": {
+   "cik": 732717,
+   "group": "Telcm",
+   "sic": 4813
+  },
+  "TAK": {
+   "cik": 1395064,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "TAL": {
+   "cik": 1499620,
+   "group": "Other",
+   "sic": 8200
+  },
+  "TALO": {
+   "cik": 1724965,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "TAP": {
+   "cik": 24545,
+   "group": "NoDur",
+   "sic": 2082
+  },
+  "TCOM": {
+   "cik": 1269238,
+   "group": "Other",
+   "sic": 7389
+  },
+  "TD": {
+   "cik": 947263,
+   "group": "Money",
+   "sic": 6029
+  },
+  "TDC": {
+   "cik": 816761,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "TDG": {
+   "cik": 1260221,
+   "group": "Manuf",
+   "sic": 3728
+  },
+  "TDOC": {
+   "cik": 1477449,
+   "group": "Hlth",
+   "sic": 8011
+  },
+  "TDS": {
+   "cik": 1051512,
+   "group": "Telcm",
+   "sic": 4813
+  },
+  "TDW": {
+   "cik": 98222,
+   "group": "Other",
+   "sic": 4400
+  },
+  "TDY": {
+   "cik": 1094285,
+   "group": "BusEq",
+   "sic": 3812
+  },
+  "TEAM": {
+   "cik": 1650372,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "TECH": {
+   "cik": 842023,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "TECK": {
+   "cik": 886986,
+   "group": "Other",
+   "sic": 1400
+  },
+  "TEL": {
+   "cik": 1385157,
+   "group": "Shops",
+   "sic": 5065
+  },
+  "TENB": {
+   "cik": 1660280,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "TER": {
+   "cik": 97210,
+   "group": "BusEq",
+   "sic": 3825
+  },
+  "TEVA": {
+   "cik": 818686,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "TEX": {
+   "cik": 97216,
+   "group": "Manuf",
+   "sic": 3537
+  },
+  "TFC": {
+   "cik": 92230,
+   "group": "Money",
+   "sic": 6021
+  },
+  "TFII": {
+   "cik": 1588823,
+   "group": "Other",
+   "sic": 4210
+  },
+  "TFX": {
+   "cik": 96943,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "TGT": {
+   "cik": 27419,
+   "group": "Shops",
+   "sic": 5331
+  },
+  "TGTX": {
+   "cik": 1001316,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "THC": {
+   "cik": 70318,
+   "group": "Hlth",
+   "sic": 8062
+  },
+  "THG": {
+   "cik": 944695,
+   "group": "Money",
+   "sic": 6331
+  },
+  "THO": {
+   "cik": 730263,
+   "group": "Durbl",
+   "sic": 3716
+  },
+  "TJX": {
+   "cik": 109198,
+   "group": "Shops",
+   "sic": 5651
+  },
+  "TKO": {
+   "cik": 1973266,
+   "group": "Other",
+   "sic": 7900
+  },
+  "TKR": {
+   "cik": 98362,
+   "group": "Manuf",
+   "sic": 3562
+  },
+  "TM": {
+   "cik": 1094517,
+   "group": "Durbl",
+   "sic": 3711
+  },
+  "TMDX": {
+   "cik": 1756262,
+   "group": "Hlth",
+   "sic": 3845
+  },
+  "TMO": {
+   "cik": 97745,
+   "group": "BusEq",
+   "sic": 3829
+  },
+  "TMUS": {
+   "cik": 1283699,
+   "group": "Telcm",
+   "sic": 4812
+  },
+  "TNDM": {
+   "cik": 1438133,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "TNET": {
+   "cik": 937098,
+   "group": "Other",
+   "sic": 7389
+  },
+  "TNK": {
+   "cik": 1419945,
+   "group": "Other",
+   "sic": 4400
+  },
+  "TNL": {
+   "cik": 1361658,
+   "group": "Other",
+   "sic": 7011
+  },
+  "TOL": {
+   "cik": 794170,
+   "group": "Other",
+   "sic": 1531
+  },
+  "TOST": {
+   "cik": 1650164,
+   "group": "BusEq",
+   "sic": 7374
+  },
+  "TPG": {
+   "cik": 1880661,
+   "group": "Money",
+   "sic": 6282
+  },
+  "TPL": {
+   "cik": 1811074,
+   "group": "Money",
+   "sic": 6792
+  },
+  "TPR": {
+   "cik": 1116132,
+   "group": "NoDur",
+   "sic": 3100
+  },
+  "TREX": {
+   "cik": 1069878,
+   "group": "Other",
+   "sic": 2400
+  },
+  "TRGP": {
+   "cik": 1389170,
+   "group": "Utils",
+   "sic": 4922
+  },
+  "TRI": {
+   "cik": 1075124,
+   "group": "NoDur",
+   "sic": 2741
+  },
+  "TRIP": {
+   "cik": 1526520,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "TRMB": {
+   "cik": 864749,
+   "group": "BusEq",
+   "sic": 3829
+  },
+  "TRNO": {
+   "cik": 1476150,
+   "group": "Money",
+   "sic": 6500
+  },
+  "TROW": {
+   "cik": 1113169,
+   "group": "Money",
+   "sic": 6282
+  },
+  "TRP": {
+   "cik": 1232384,
+   "group": "Utils",
+   "sic": 4922
+  },
+  "TRU": {
+   "cik": 1552033,
+   "group": "Other",
+   "sic": 7320
+  },
+  "TRV": {
+   "cik": 86312,
+   "group": "Money",
+   "sic": 6331
+  },
+  "TS": {
+   "cik": 1190723,
+   "group": "Manuf",
+   "sic": 3312
+  },
+  "TSCO": {
+   "cik": 916365,
+   "group": "Shops",
+   "sic": 5200
+  },
+  "TSEM": {
+   "cik": 928876,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "TSLA": {
+   "cik": 1318605,
+   "group": "Durbl",
+   "sic": 3711
+  },
+  "TSM": {
+   "cik": 1046179,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "TSN": {
+   "cik": 100493,
+   "group": "NoDur",
+   "sic": 2015
+  },
+  "TT": {
+   "cik": 1466258,
+   "group": "BusEq",
+   "sic": 3822
+  },
+  "TTC": {
+   "cik": 737758,
+   "group": "Manuf",
+   "sic": 3524
+  },
+  "TTD": {
+   "cik": 1671933,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "TTE": {
+   "cik": 879764,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "TTEK": {
+   "cik": 831641,
+   "group": "Other",
+   "sic": 8711
+  },
+  "TTWO": {
+   "cik": 946581,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "TU": {
+   "cik": 868675,
+   "group": "Telcm",
+   "sic": 4812
+  },
+  "TW": {
+   "cik": 1758730,
+   "group": "Money",
+   "sic": 6200
+  },
+  "TWLO": {
+   "cik": 1447669,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "TWST": {
+   "cik": 1581280,
+   "group": "Hlth",
+   "sic": 2836
+  },
+  "TXG": {
+   "cik": 1770787,
+   "group": "BusEq",
+   "sic": 3826
+  },
+  "TXN": {
+   "cik": 97476,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "TXNM": {
+   "cik": 1108426,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "TXRH": {
+   "cik": 1289460,
+   "group": "Shops",
+   "sic": 5812
+  },
+  "TXT": {
+   "cik": 217346,
+   "group": "Manuf",
+   "sic": 3720
+  },
+  "TYL": {
+   "cik": 860731,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "U": {
+   "cik": 1810806,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "UAL": {
+   "cik": 100517,
+   "group": "Other",
+   "sic": 4512
+  },
+  "UBER": {
+   "cik": 1543151,
+   "group": "Other",
+   "sic": 7389
+  },
+  "UBS": {
+   "cik": 1610520,
+   "group": "Money",
+   "sic": 6021
+  },
+  "UBSI": {
+   "cik": 729986,
+   "group": "Money",
+   "sic": 6022
+  },
+  "UDR": {
+   "cik": 74208,
+   "group": "Money",
+   "sic": 6798
+  },
+  "UFPI": {
+   "cik": 912767,
+   "group": "Other",
+   "sic": 2421
+  },
+  "UGI": {
+   "cik": 884614,
+   "group": "Utils",
+   "sic": 4932
+  },
+  "UHS": {
+   "cik": 352915,
+   "group": "Hlth",
+   "sic": 8062
+  },
+  "UL": {
+   "cik": 217410,
+   "group": "Chems",
+   "sic": 2840
+  },
+  "ULTA": {
+   "cik": 1403568,
+   "group": "Shops",
+   "sic": 5990
+  },
+  "UMBF": {
+   "cik": 101382,
+   "group": "Money",
+   "sic": 6021
+  },
+  "UNH": {
+   "cik": 731766,
+   "group": "Money",
+   "sic": 6324
+  },
+  "UNM": {
+   "cik": 5513,
+   "group": "Money",
+   "sic": 6321
+  },
+  "UNP": {
+   "cik": 100885,
+   "group": "Other",
+   "sic": 4011
+  },
+  "UPS": {
+   "cik": 1090727,
+   "group": "Other",
+   "sic": 4210
+  },
+  "UPST": {
+   "cik": 1647639,
+   "group": "Money",
+   "sic": 6199
+  },
+  "UPWK": {
+   "cik": 1627475,
+   "group": "BusEq",
+   "sic": 7374
+  },
+  "URBN": {
+   "cik": 912615,
+   "group": "Shops",
+   "sic": 5651
+  },
+  "URI": {
+   "cik": 1067701,
+   "group": "Other",
+   "sic": 7359
+  },
+  "USB": {
+   "cik": 36104,
+   "group": "Money",
+   "sic": 6021
+  },
+  "USFD": {
+   "cik": 1665918,
+   "group": "Shops",
+   "sic": 5140
+  },
+  "UTHR": {
+   "cik": 1082554,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "V": {
+   "cik": 1403161,
+   "group": "Other",
+   "sic": 7389
+  },
+  "VAC": {
+   "cik": 1524358,
+   "group": "Money",
+   "sic": 6531
+  },
+  "VAL": {
+   "cik": 314808,
+   "group": "Enrgy",
+   "sic": 1381
+  },
+  "VALE": {
+   "cik": 917851,
+   "group": "Other",
+   "sic": 1000
+  },
+  "VC": {
+   "cik": 1111335,
+   "group": "Durbl",
+   "sic": 3714
+  },
+  "VEEV": {
+   "cik": 1393052,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "VFC": {
+   "cik": 103379,
+   "group": "NoDur",
+   "sic": 2320
+  },
+  "VICI": {
+   "cik": 1705696,
+   "group": "Money",
+   "sic": 6798
+  },
+  "VIPS": {
+   "cik": 1529192,
+   "group": "Shops",
+   "sic": 5961
+  },
+  "VIST": {
+   "cik": 1762506,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "VKTX": {
+   "cik": 1607678,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "VLO": {
+   "cik": 1035002,
+   "group": "Enrgy",
+   "sic": 2911
+  },
+  "VLTO": {
+   "cik": 1967680,
+   "group": "BusEq",
+   "sic": 3825
+  },
+  "VLY": {
+   "cik": 714310,
+   "group": "Money",
+   "sic": 6021
+  },
+  "VMC": {
+   "cik": 1396009,
+   "group": "Other",
+   "sic": 1400
+  },
+  "VMI": {
+   "cik": 102729,
+   "group": "Manuf",
+   "sic": 3440
+  },
+  "VMRK": {
+   "cik": 906107,
+   "group": "Money",
+   "sic": 6798
+  },
+  "VNO": {
+   "cik": 899689,
+   "group": "Money",
+   "sic": 6798
+  },
+  "VNOM": {
+   "cik": 2074176,
+   "group": "Enrgy",
+   "sic": 1311
+  },
+  "VNT": {
+   "cik": 1786842,
+   "group": "BusEq",
+   "sic": 3824
+  },
+  "VOYA": {
+   "cik": 1535929,
+   "group": "Money",
+   "sic": 6311
+  },
+  "VRNS": {
+   "cik": 1361113,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "VRRM": {
+   "cik": 1682745,
+   "group": "Other",
+   "sic": 4700
+  },
+  "VRSK": {
+   "cik": 1442145,
+   "group": "BusEq",
+   "sic": 7374
+  },
+  "VRSN": {
+   "cik": 1014473,
+   "group": "BusEq",
+   "sic": 7371
+  },
+  "VRT": {
+   "cik": 1674101,
+   "group": "BusEq",
+   "sic": 3679
+  },
+  "VRTX": {
+   "cik": 875320,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "VSAT": {
+   "cik": 797721,
+   "group": "Telcm",
+   "sic": 4899
+  },
+  "VSH": {
+   "cik": 103730,
+   "group": "BusEq",
+   "sic": 3670
+  },
+  "VST": {
+   "cik": 1692819,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "VSTS": {
+   "cik": 1967649,
+   "group": "Shops",
+   "sic": 5190
+  },
+  "VSXY": {
+   "cik": 1856437,
+   "group": "Shops",
+   "sic": 5621
+  },
+  "VTR": {
+   "cik": 740260,
+   "group": "Money",
+   "sic": 6798
+  },
+  "VTRS": {
+   "cik": 1792044,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "VVV": {
+   "cik": 1674910,
+   "group": "Enrgy",
+   "sic": 2990
+  },
+  "VYX": {
+   "cik": 70866,
+   "group": "BusEq",
+   "sic": 3578
+  },
+  "VZ": {
+   "cik": 732712,
+   "group": "Telcm",
+   "sic": 4813
+  },
+  "W": {
+   "cik": 1616707,
+   "group": "Shops",
+   "sic": 5961
+  },
+  "WAB": {
+   "cik": 943452,
+   "group": "Manuf",
+   "sic": 3743
+  },
+  "WAL": {
+   "cik": 1212545,
+   "group": "Money",
+   "sic": 6022
+  },
+  "WAT": {
+   "cik": 1000697,
+   "group": "BusEq",
+   "sic": 3826
+  },
+  "WCC": {
+   "cik": 929008,
+   "group": "Shops",
+   "sic": 5063
+  },
+  "WCN": {
+   "cik": 1318220,
+   "group": "Other",
+   "sic": 4953
+  },
+  "WDAY": {
+   "cik": 1327811,
+   "group": "BusEq",
+   "sic": 7374
+  },
+  "WDC": {
+   "cik": 106040,
+   "group": "BusEq",
+   "sic": 3572
+  },
+  "WDFC": {
+   "cik": 105132,
+   "group": "Chems",
+   "sic": 2890
+  },
+  "WEC": {
+   "cik": 783325,
+   "group": "Utils",
+   "sic": 4931
+  },
+  "WELL": {
+   "cik": 766704,
+   "group": "Money",
+   "sic": 6798
+  },
+  "WEN": {
+   "cik": 30697,
+   "group": "Shops",
+   "sic": 5810
+  },
+  "WERN": {
+   "cik": 793074,
+   "group": "Other",
+   "sic": 4213
+  },
+  "WES": {
+   "cik": 1423902,
+   "group": "Utils",
+   "sic": 4922
+  },
+  "WEX": {
+   "cik": 1309108,
+   "group": "Other",
+   "sic": 7389
+  },
+  "WFC": {
+   "cik": 72971,
+   "group": "Money",
+   "sic": 6021
+  },
+  "WFRD": {
+   "cik": 1603923,
+   "group": "Manuf",
+   "sic": 3533
+  },
+  "WGO": {
+   "cik": 107687,
+   "group": "Durbl",
+   "sic": 3716
+  },
+  "WH": {
+   "cik": 1722684,
+   "group": "Other",
+   "sic": 7011
+  },
+  "WHD": {
+   "cik": 1699136,
+   "group": "Manuf",
+   "sic": 3533
+  },
+  "WHR": {
+   "cik": 106640,
+   "group": "Durbl",
+   "sic": 3630
+  },
+  "WING": {
+   "cik": 1636222,
+   "group": "Shops",
+   "sic": 5812
+  },
+  "WIX": {
+   "cik": 1576789,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "WK": {
+   "cik": 1445305,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "WLK": {
+   "cik": 1262823,
+   "group": "Chems",
+   "sic": 2860
+  },
+  "WM": {
+   "cik": 823768,
+   "group": "Other",
+   "sic": 4953
+  },
+  "WMB": {
+   "cik": 107263,
+   "group": "Utils",
+   "sic": 4922
+  },
+  "WMG": {
+   "cik": 1319161,
+   "group": "Other",
+   "sic": 7900
+  },
+  "WMS": {
+   "cik": 1604028,
+   "group": "Manuf",
+   "sic": 3086
+  },
+  "WMT": {
+   "cik": 104169,
+   "group": "Shops",
+   "sic": 5331
+  },
+  "WOLF": {
+   "cik": 895419,
+   "group": "BusEq",
+   "sic": 3674
+  },
+  "WPC": {
+   "cik": 1025378,
+   "group": "Money",
+   "sic": 6798
+  },
+  "WPM": {
+   "cik": 1323404,
+   "group": "Other",
+   "sic": 1040
+  },
+  "WRB": {
+   "cik": 11544,
+   "group": "Money",
+   "sic": 6331
+  },
+  "WSC": {
+   "cik": 1647088,
+   "group": "Other",
+   "sic": 7350
+  },
+  "WSM": {
+   "cik": 719955,
+   "group": "Shops",
+   "sic": 5700
+  },
+  "WSO": {
+   "cik": 105016,
+   "group": "Shops",
+   "sic": 5070
+  },
+  "WST": {
+   "cik": 105770,
+   "group": "Hlth",
+   "sic": 3841
+  },
+  "WTFC": {
+   "cik": 1015328,
+   "group": "Money",
+   "sic": 6022
+  },
+  "WTRG": {
+   "cik": 78128,
+   "group": "Utils",
+   "sic": 4941
+  },
+  "WTS": {
+   "cik": 795403,
+   "group": "Manuf",
+   "sic": 3490
+  },
+  "WTW": {
+   "cik": 1140536,
+   "group": "Money",
+   "sic": 6411
+  },
+  "WU": {
+   "cik": 1365135,
+   "group": "Other",
+   "sic": 7389
+  },
+  "WWD": {
+   "cik": 108312,
+   "group": "Manuf",
+   "sic": 3620
+  },
+  "WY": {
+   "cik": 106535,
+   "group": "Money",
+   "sic": 6798
+  },
+  "WYNN": {
+   "cik": 1174922,
+   "group": "Other",
+   "sic": 7011
+  },
+  "XEL": {
+   "cik": 72903,
+   "group": "Utils",
+   "sic": 4931
+  },
+  "XENE": {
+   "cik": 1582313,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "XIFR": {
+   "cik": 1603145,
+   "group": "Utils",
+   "sic": 4911
+  },
+  "XOM": {
+   "cik": 2115436,
+   "group": "Enrgy",
+   "sic": 2911
+  },
+  "XP": {
+   "cik": 1787425,
+   "group": "Money",
+   "sic": 6211
+  },
+  "XPEV": {
+   "cik": 1810997,
+   "group": "Durbl",
+   "sic": 3711
+  },
+  "XPO": {
+   "cik": 1166003,
+   "group": "Other",
+   "sic": 4700
+  },
+  "XRAY": {
+   "cik": 818479,
+   "group": "Hlth",
+   "sic": 3843
+  },
+  "XRX": {
+   "cik": 1770450,
+   "group": "BusEq",
+   "sic": 3577
+  },
+  "XYL": {
+   "cik": 1524472,
+   "group": "Manuf",
+   "sic": 3561
+  },
+  "XYZ": {
+   "cik": 1512673,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "YELP": {
+   "cik": 1345016,
+   "group": "Shops",
+   "sic": 7200
+  },
+  "YETI": {
+   "cik": 1670592,
+   "group": "NoDur",
+   "sic": 3949
+  },
+  "YOU": {
+   "cik": 1856314,
+   "group": "BusEq",
+   "sic": 7372
+  },
+  "YPF": {
+   "cik": 904851,
+   "group": "Enrgy",
+   "sic": 2911
+  },
+  "YUM": {
+   "cik": 1041061,
+   "group": "Shops",
+   "sic": 5812
+  },
+  "YUMC": {
+   "cik": 1673358,
+   "group": "Shops",
+   "sic": 5812
+  },
+  "Z": {
+   "cik": 1617640,
+   "group": "Other",
+   "sic": 7389
+  },
+  "ZBH": {
+   "cik": 1136869,
+   "group": "Hlth",
+   "sic": 3842
+  },
+  "ZBRA": {
+   "cik": 877212,
+   "group": "Manuf",
+   "sic": 3560
+  },
+  "ZG": {
+   "cik": 1617640,
+   "group": "Other",
+   "sic": 7389
+  },
+  "ZION": {
+   "cik": 109380,
+   "group": "Money",
+   "sic": 6021
+  },
+  "ZM": {
+   "cik": 1585521,
+   "group": "BusEq",
+   "sic": 7370
+  },
+  "ZS": {
+   "cik": 1713683,
+   "group": "BusEq",
+   "sic": 7371
+  },
+  "ZTO": {
+   "cik": 1677250,
+   "group": "Other",
+   "sic": 4210
+  },
+  "ZTS": {
+   "cik": 1555280,
+   "group": "Hlth",
+   "sic": 2834
+  },
+  "ZWS": {
+   "cik": 1439288,
+   "group": "Manuf",
+   "sic": 3560
+  }
+ },
+ "version": "sectors-v1"
+}
