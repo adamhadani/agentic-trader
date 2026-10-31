@@ -101,7 +101,7 @@ class OperatorSpec:
     minimum_args: int
     maximum_args: int
     window_argument: int | None = None
-    # dimensional result: preserve first argument, dimensionless, or branch units
+    # dimensional result: preserve first argument, dimensionless, matching or branch units
     result_units: str = "preserve"
 
 
@@ -175,7 +175,7 @@ def ts_resid_std(y: pd.Series, x: pd.Series, d: int) -> pd.Series:
 
 OPERATOR_SPECS.update(
     {
-        "ts_beta": OperatorSpec(ts_beta, 3, 3, 2, "matching"),
+        "ts_beta": OperatorSpec(ts_beta, 3, 3, 2, "matching_ratio"),
         "ts_resid_std": OperatorSpec(ts_resid_std, 3, 3, 2, "matching"),
         "roc": OperatorSpec(roc, 2, 2, 1, "dimensionless"),
         "realized_vol": OperatorSpec(ts_std, 2, 2, 1),

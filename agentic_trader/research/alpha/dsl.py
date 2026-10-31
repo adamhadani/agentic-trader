@@ -169,6 +169,9 @@ def compile_expression(expression: str) -> CompiledExpression:
                     raise AlphaDSLSyntaxError("Invalid clipping bounds")
             elif spec.result_units == "matching":
                 units = _same_units(entries[0][0], entries[1][0])
+            elif spec.result_units == "matching_ratio":
+                _same_units(entries[0][0], entries[1][0])
+                units = (0, 0)
             return units, lookback
         raise AlphaDSLSyntaxError(f"Unsupported expression: {type(node).__name__}")
 

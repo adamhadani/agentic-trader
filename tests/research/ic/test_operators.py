@@ -19,10 +19,14 @@ def _fields(n=80, seed=3):
 
 
 def test_ts_beta_recovers_a_known_slope():
-    _, x, _ = _fields()
-    out = EVALUATOR.evaluate("ts_beta(returns, mkt_ret, 20)", {"returns": 2 * x, "mkt_ret": x})
+    _, x, noise = _fields()
+    y = 2 * x + 0.3 * noise
+    out = EVALUATOR.evaluate("ts_beta(returns, mkt_ret, 20)", {"returns": y, "mkt_ret": x})
     assert out.iloc[:19].isna().all()
-    assert out.iloc[19:].to_numpy() == pytest.approx(2.0)
+    for end in (19, 40, 79):
+        window = slice(end - 19, end + 1)
+        slope = np.polyfit(x.iloc[window].to_numpy(), y.iloc[window].to_numpy(), 1)[0]
+        assert abs(out.iloc[end] - slope) < 1e-9
 
 
 def test_ts_beta_is_nan_when_x_has_no_variance():
@@ -49,10 +53,19 @@ def test_ts_resid_std_floors_tiny_negative_variance():
     assert out.iloc[19:].to_numpy() == pytest.approx(0.0, abs=1e-6)
 
 
-def test_price_scaled_arguments_fail_require_dimensionless():
-    with pytest.raises(ValueError, match="dimensionless"):
-        require_dimensionless("ts_beta(close, close, 60)")
+def test_ts_beta_of_matching_units_is_dimensionless():
+    require_dimensionless("ts_beta(close, close, 60)")
     require_dimensionless("ts_beta(returns, mkt_ret, 60)")
+
+
+def test_beta_over_price_fails_require_dimensionless():
+    with pytest.raises(ValueError, match="dimensionless"):
+        require_dimensionless("ts_beta(close, close, 60) / close")
+
+
+def test_ts_resid_std_of_prices_fails_require_dimensionless():
+    with pytest.raises(ValueError, match="dimensionless"):
+        require_dimensionless("ts_resid_std(close, close, 60)")
 
 
 def test_ts_beta_units_refuse_mixed_arguments():
