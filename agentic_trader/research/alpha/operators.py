@@ -156,8 +156,27 @@ def ts_sum(x: pd.Series, d: int) -> pd.Series:
     return x.rolling(d, min_periods=d).sum()
 
 
+def ts_beta(y: pd.Series, x: pd.Series, d: int) -> pd.Series:
+    """Rolling OLS slope of y on x: covariance over variance of x, full window required."""
+    variance = x.rolling(d, min_periods=d).var()
+    return y.rolling(d, min_periods=d).cov(x) / variance.where(variance > 0)
+
+
+def ts_resid_std(y: pd.Series, x: pd.Series, d: int) -> pd.Series:
+    """Residual standard deviation (ddof=2) of one OLS fit of y on x per window."""
+    if d < 3:
+        return pd.Series(np.nan, index=y.index)
+    variance = x.rolling(d, min_periods=d).var()
+    covariance = y.rolling(d, min_periods=d).cov(x)
+    explained = covariance**2 / variance.where(variance > 0)
+    residual = (y.rolling(d, min_periods=d).var() - explained).clip(lower=0)
+    return np.sqrt(residual * (d - 1) / (d - 2))
+
+
 OPERATOR_SPECS.update(
     {
+        "ts_beta": OperatorSpec(ts_beta, 3, 3, 2, "matching"),
+        "ts_resid_std": OperatorSpec(ts_resid_std, 3, 3, 2, "matching"),
         "roc": OperatorSpec(roc, 2, 2, 1, "dimensionless"),
         "realized_vol": OperatorSpec(ts_std, 2, 2, 1),
         "ts_slope": OperatorSpec(ts_slope, 2, 2, 1),

@@ -29,6 +29,8 @@ FIELD_UNITS = {
     **dict.fromkeys(("open", "high", "low", "close", "vwap"), (1.0, 0.0)),
     "volume": (0.0, 1.0),
     **dict.fromkeys(("returns", "hl_spread", "oc_spread", "open_gap"), (0.0, 0.0)),
+    # Market return (IC lane): present only when a frame carries it.
+    "mkt_ret": (0.0, 0.0),
     # Event-conditioned fields (pooled events lane, events_fields_v1): present only when a frame carries them.
     **dict.fromkeys(("earnings_age", "earnings_surprise", "earnings_reaction", "dividend_yield"), (0.0, 0.0)),
     # FINRA short-sale fields (pooled short-volume lane, short_fields_v1): present only when a frame carries them.
