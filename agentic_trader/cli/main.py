@@ -9,6 +9,7 @@ from agentic_trader.cli.commands.alpha import alpha_group
 from agentic_trader.cli.commands.alpha_controls import factor_controls_cmd, forecast_controls_cmd
 from agentic_trader.cli.commands.alpha_corporate_actions import corporate_actions_cmd
 from agentic_trader.cli.commands.alpha_forecast import forecast_study_cmd
+from agentic_trader.cli.commands.alpha_ic import ic_group
 from agentic_trader.cli.commands.alpha_insider_filings import insider_filings_cmd
 from agentic_trader.cli.commands.alpha_liquidity import liquidity_study_cmd
 from agentic_trader.cli.commands.alpha_news import news_cmd
@@ -108,6 +109,7 @@ alpha_group.add_command(corporate_actions_cmd)
 alpha_group.add_command(news_cmd)
 alpha_group.add_command(short_volume_cmd)
 alpha_group.add_command(insider_filings_cmd)
+alpha_group.add_command(ic_group)
 alpha_group.add_command(liquidity_study_cmd)
 alpha_group.add_command(spread_power_cmd)
 alpha_group.add_command(spread_null_cmd)
