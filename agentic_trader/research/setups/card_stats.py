@@ -190,6 +190,7 @@ class CardKeyStats(BaseModel, frozen=True, allow_inf_nan=False):
     posterior_mean: float | None = None
     posterior_se: float | None = None
     prior_mean: float | None = None
+    prior_replay_mean: float | None = None
     prior_se: float | None = None
     prior_weight: float | None = None
     mean_name_cost_bps: float | None = None
@@ -321,6 +322,7 @@ def _key_stats(
             "posterior_mean": post_mean,
             "posterior_se": post_se,
             "prior_mean": entry.mean,
+            "prior_replay_mean": entry.replay_mean,
             "prior_se": math.sqrt(entry.tau**2 + entry.se_session**2),
             "prior_weight": k,
             "prior_n_rows": entry.n_rows,

@@ -7,7 +7,13 @@ import pytest
 
 from agentic_trader.agent.earnings import CalendarRow, EarningsTiming
 from agentic_trader.research.apriori.catalog import load_pead_entry
-from agentic_trader.research.apriori.pead_events import MarketData, build_events, decision_at, surprise_pct
+from agentic_trader.research.apriori.pead_events import (
+    EVENT_COLUMNS,
+    MarketData,
+    build_events,
+    decision_at,
+    surprise_pct,
+)
 
 
 ENTRY = load_pead_entry(Path(__file__).resolve().parents[3] / "config/research/apriori/pead-v1.json").entry
@@ -245,3 +251,12 @@ def test_reference_names_are_recorded_per_evaluated_as_of_date():
     market, days = market_with(1.10)
     _, counts = build_events([report("XYZ", days[40])], market, entry_with_window(days[0], days[-1]))
     assert counts["reference_names"] == {days[41].isoformat(): 25}
+
+
+def test_build_events_carries_raw_eps_pair():
+    market, days = market_with(1.10)
+    entry = entry_with_window(days[0], days[-1])
+    events, _ = build_events([report("XYZ", days[40], eps=1.1, forecast=1.0, n=7)], market, entry)
+    [event] = events.to_dict("records")
+    assert (event["eps"], event["eps_forecast"], event["n_estimates"]) == (1.1, 1.0, 7)
+    assert {"eps", "eps_forecast", "n_estimates"} <= set(EVENT_COLUMNS)

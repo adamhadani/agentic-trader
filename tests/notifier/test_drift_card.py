@@ -88,3 +88,41 @@ async def test_send_signal_alert_passes_the_drift_facts_to_the_card(temp_db, eva
 
     assert EVENT_LINE in send.await_args.kwargs["text"]
     assert HOLD_LINE in send.await_args.kwargs["text"]
+
+
+BASE_RATE = {
+    "status": "measured",
+    "sha256": "f" * 64,
+    "expected_mean": 0.0123,
+    "expected_se": 0.0456,
+    "window_start": "2016-08-01",
+    "window_end": "2026-07-31",
+    "recent_from": "2025-01-01",
+    "overall_mean": 0.0712,
+    "n_leg": 12345,
+    "recent_mean": 0.0321,
+    "n_recent": 678,
+    "recent_p2_mean": -0.0154,
+}
+BASE_RATE_LINES = (
+    "• <b>Expected excess</b> (PEAD v2, LONG; 2025–26 shrunk toward 0): +0.01R ± 0.05 "
+    "(se of the 2025–26 mean) vs beta-matched SPY after cost\n"
+    "  replay 2016–26: +0.07R over 12,345 events · 2025–26: +0.03R over 678 · "
+    "beat vs all reporters 2025–26: -0.02R\n"
+    "<i>Not validated alpha. PEAD v2 events replayed on SIP bars in the native card unit; "
+    "EPS and consensus as served today, not point-in-time.</i>\n"
+)
+
+
+def test_drift_card_renders_base_rate_block(eval_res):
+    text = format_alert_card(eval_res, "pead_long", probe_risk_cap=100.0, drift={**DRIFT, "base_rate": BASE_RATE})
+    assert f"{HOLD_LINE}\n{BASE_RATE_LINES}\n" in text
+    assert text.index(HOLD_LINE) < text.index("Expected excess") < text.index("📋 <b>SETUP:")
+    unavailable = format_alert_card(eval_res, "pead_long", drift={**DRIFT, "base_rate": {"status": "unavailable"}})
+    assert f"{HOLD_LINE}\n• <b>PEAD base rate:</b> unavailable\n\n" in unavailable
+
+
+def test_drift_card_without_base_rate_key_renders_as_before(eval_res):
+    text = format_alert_card(eval_res, "pead_long", probe_risk_cap=100.0, drift=DRIFT)
+    assert f"{HOLD_LINE}\n\n" in text
+    assert "base rate" not in text and "Expected excess" not in text

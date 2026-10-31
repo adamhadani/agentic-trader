@@ -213,6 +213,18 @@ is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
   (`AlphaRepository.probe_report()`, `kind == "apriori"`) between scans. The
   renewal decision above reads the counterfactual mean over every eligible
   event, because carded and tapped events are a selected subset.
+- **Card base rate.** The Telegram PEAD block carries a measured base rate beneath the hold line
+  ("Expected excess (PEAD v2, LONG)": the shrunk 2025-on mean in `net_excess_r_v1` units, the full replay
+  and the 2025-on cell, and the paired beat over all reporters), from the digest-pinned
+  `config/research/pead-base-rate-v1.json` (`apriori.pead_base_rate_path`, `apriori.pead_base_rate_sha256`;
+  [result](pead-base-rate-2026-10-30.md)). It is loaded once at copilot construction; a missing, unpinned or
+  mismatched file logs `pead_base_rate_unavailable` (with its fixed reason: digest mismatch, file not found and so on) and the card says "PEAD base rate:
+  unavailable". The card stores the block under `drift.base_rate` and the decision provenance under
+  `pead_base_rate`. It is evidence only: it never gates, ranks, sizes, auto-enters or blocks a card, and a
+  card stored before it renders as it did.
+- **Raw EPS pair.** Each journaled `pead_decision` event now carries the calendar's raw `eps`,
+  `eps_forecast` and `n_estimates` (None when the calendar had none), as served today and not point-in-time;
+  earlier events lack them.
 - **Known limits.** The counterfactual label assumes a fill at the study's own
   decision price (the last regular-session hourly close at or before 10:35), not
   an actual broker fill — real slippage/timing is not measured. The live cohort

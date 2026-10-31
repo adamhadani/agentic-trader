@@ -6,6 +6,10 @@ caches from local disk only (no provider, database or network), converts each re
 ``card_policy.prior_sha256`` pins.
 
 Usage: uv run python scripts/card_stats_prior.py STUDY_DIR CACHE OUT_JSON
+       uv run python scripts/card_stats_prior.py shrink V1_JSON V1_SHA256 OUT_JSON
+
+``shrink`` derives the v2 prior from the digest-checked v1 file's per-key moments by empirical-Bayes
+shrinkage across keys; it reads no study frame, cache or network.
 """
 
 from __future__ import annotations
@@ -28,15 +32,18 @@ from agentic_trader.research.setups.card_prior import (
     PRIOR_TAU_FLOOR,
     PRIOR_VERSION,
     CardStatsPrior,
+    PriorEntry,
     cost_model_constants,
     estimate_prior,
     prior_rows,
+    shrink_across_keys,
 )
 from agentic_trader.research.setups.net_excess import NET_EXCESS_UNIT, R_CLIP
 
 
 MARKET = "SPY"
 ARM = "A0_live"
+PRIOR_V1_VERSION = "card-stats-prior-v1"
 ALWAYS_EXCLUDED = ("BIL", "SHY")
 # The checkout this script belongs to: its revision is the prior's, whatever the working directory.
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -72,6 +79,7 @@ def build(study: Path, cache: Path) -> CardStatsPrior:
     dailies = {symbol: _daily(cache, symbol) for symbol in sorted(frame["symbol"].unique())}
     rows = prior_rows(frame, dailies, market)
     keys, pooled_sd, pooled_tau, pooled_n = estimate_prior(rows)
+    keys, cross_key_mean = shrink_across_keys(keys, pooled_tau)
     costs = rows["name_cost_bps"].to_numpy(dtype=float)
     quantiles = {
         "p50": float(np.percentile(costs, 50)),
@@ -97,16 +105,45 @@ def build(study: Path, cache: Path) -> CardStatsPrior:
             "feed": str(protocol["feed"]),
             "window_start": start,
             "window_end": end,
+            "shrunk_from": "estimate",
+            "shrunk_from_sha256": _sha256(frame_path),
         },
         excluded_symbols=excluded,
         pooled_sd=pooled_sd,
         pooled_tau=pooled_tau,
         pooled_n_rows=pooled_n,
+        cross_key_mean=cross_key_mean,
+        between_key_tau=pooled_tau,
         keys=keys,
         cost_bps_quantiles=quantiles,
         n_no_beta=int(rows["beta"].isna().sum()),
         code_revision=_revision(),
     )
+
+
+def build_shrunk(v1_path: Path, v1_sha256: str) -> CardStatsPrior:
+    """The v2 prior from a digest-checked v1 file; v1 is plain JSON because it no longer validates as v2."""
+    if _sha256(v1_path) != v1_sha256:
+        raise SystemExit("v1 prior digest mismatch")
+    v1 = json.loads(v1_path.read_text())
+    entries = tuple(PriorEntry(**{**k, "replay_mean": k["mean"], "shrinkage": 1.0}) for k in v1["keys"])
+    keys, cross_key_mean = shrink_across_keys(entries, v1["pooled_tau"])
+    fields = {k: v for k, v in v1.items() if k not in ("keys", "version", "source", "code_revision")}
+    return CardStatsPrior(
+        **fields,
+        version=PRIOR_VERSION,
+        source={**v1["source"], "shrunk_from": PRIOR_V1_VERSION, "shrunk_from_sha256": v1_sha256},
+        cross_key_mean=cross_key_mean,
+        between_key_tau=v1["pooled_tau"],
+        keys=keys,
+        code_revision=_revision(),
+    )
+
+
+def main_shrink(v1_path: Path, v1_sha256: str, out: Path) -> None:
+    prior = build_shrunk(v1_path, v1_sha256)
+    out.write_text(json.dumps(json.loads(prior.model_dump_json()), indent=2, sort_keys=True) + "\n")
+    print(_sha256(out))
 
 
 def main(study: Path, cache: Path, out: Path) -> None:
@@ -117,4 +154,7 @@ def main(study: Path, cache: Path, out: Path) -> None:
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]))
+    if sys.argv[1] == "shrink":
+        main_shrink(Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]))
+    else:
+        main(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]))

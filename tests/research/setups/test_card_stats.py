@@ -578,3 +578,29 @@ def test_label_journaled_and_card_stats_see_the_same_rows_on_mixed_events():
         _compute(mixed, events_considered=len(MIXED))["keys"] == _compute(only, events_considered=len(nonempty))["keys"]
     )
     assert _compute(mixed, events_considered=len(MIXED))["events_considered"] == 5
+
+
+def test_key_stats_carry_prior_replay_mean():
+    prior = make_prior((prior_entry(mean=-0.03, replay_mean=0.11, shrinkage=0.5),))
+    payload = _compute(pd.DataFrame(columns=list(outcomes_module._COLUMNS)), prior=prior)
+    row = _by_key(payload)[KEY]
+    assert (row["prior_mean"], row["prior_replay_mean"]) == (-0.03, 0.11)
+    assert _by_key(payload)[(AGGREGATE, AGGREGATE, AGGREGATE)].get("prior_replay_mean") is None
+
+
+def test_a_card_policy_withheld_candidate_counts_in_the_key_like_a_sent_one():
+    """A withheld card keeps its labels, so the key can recover: card_stats reads no outcome filter."""
+
+    def stats_for(outcome):
+        event = _event_with([_candidate(contract="AAPL", rank=1, outcome=outcome)], scan_id="scan-1")
+        population = card_population([event], excluded=frozenset())
+        frame = label_journaled(
+            population.events, FakeBarSource({"AAPL": AAPL_BARS, "SPY": SPY_BARS}), now=NOW, with_beta=False
+        )
+        payload = _compute(frame, window_end=date(2026, 4, 15), events_considered=population.considered)
+        return _by_key(payload)[("BREAKOUT", "1h", "LONG")]
+
+    sent, withheld = stats_for("sent"), stats_for("card_policy_withheld")
+    for field in ("n_mature", "n_young", "n_no_beta", "n_fetch_failed", "n_immature"):
+        assert withheld[field] == sent[field]
+    assert withheld["n_mature"] + withheld["n_no_beta"] + withheld["n_young"] + withheld["n_fetch_failed"] >= 1

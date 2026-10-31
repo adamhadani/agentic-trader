@@ -698,14 +698,16 @@ The report itself never ranks, gates or sizes a card; the one gate derived from 
 `card_policy` (below). The `regime_context` and `recurrence` blocks ([card evidence](card-evidence.md#regime-and-recurrence-context)) bucket mature rows by the journaled VIX regime and macro stress, by the SPY tape derived at each decision (one extra SPY daily request per run), and by each setup's recurrence in the window; the next universe scan after the 2026-10-14 deploy is the first event with a `regime` block.
 
 **Card policy (October 8; v2 October 28).** `card_policy.mode` is the one gate derived from these
-outcomes. The code default is `off`. The shipped config is `preview` at `min_measured_ev: 0.0` since
-2026-10-28; the threshold is posterior expected excess R in `net_excess_r_v1`.
-- **Under preview:** read `would_withhold` in `cards outcomes` (summary block `card_policy`) and the
-  `card_policy_would_withhold` log lines. Expect most TREND_PULLBACK cards to journal
-  `would_withhold` once a key has 20 mature live rows, since the replay prior is about −0.08R. Cards
-  are still sent.
-- **Before `enforce`:** it is the operator's decision, and a daily-peeking enforce needs an
-  always-valid confidence sequence first ([card evidence](card-evidence.md#send-policy)).
+outcomes. The code default is `off`. The shipped config is `enforce` at `min_measured_ev: 0.0` (operator
+decision 2026-10-30, after `preview` from 2026-10-28); the threshold is posterior expected excess R in
+`net_excess_r_v1`.
+- **What to read under enforce:** `card_policy_withheld` in `cards outcomes` (summary block
+  `card_policy`), the reason on the runner-up (`card policy: expected excess …R over N < …R`). Expect most TREND_PULLBACK 4h cards to be withheld once the key has 20
+  mature live rows, since the replay prior is about −0.08R.
+- **Known gap:** the always-valid confidence sequence the v2 spec asked for is not built, so daily reads at
+  a fixed threshold inflate false withholds. A wrongly withheld key keeps its labels and can recover.
+- **Returning to preview:** set `card_policy.mode: "preview"` in `config/config.yaml` and do the controlled
+  restart; cards are then sent again and `would_withhold` is journaled.
 - **Under `enforce`:** a native candidate whose `(strategy, timeframe, direction)` has at least
   `min_mature_cards` (20) mature labels and a posterior below the threshold is skipped before the
   LLM. Its fixed outcome is `card_policy_withheld`, with runner-up reason `card policy: expected

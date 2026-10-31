@@ -18,13 +18,20 @@ from unittest.mock import AsyncMock
 import pytest
 
 import agentic_trader.agent.copilot as copilot_module
-from agentic_trader.agent.catalog_sources import DRIFT_POSITION_CAP_REACHED, CatalogCardSource, PeadDriftSource
+from agentic_trader.agent.catalog_sources import (
+    DRIFT_POSITION_CAP_REACHED,
+    CatalogCardSource,
+    PeadDriftSource,
+    pead_base_rate_block,
+)
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
+from agentic_trader.agent.insider_watch import InsiderWatchSource
 from agentic_trader.agent.macro import MacroInput
 from agentic_trader.agent.regime import RegimeUnavailable
 from agentic_trader.constants import AssetClass
 from agentic_trader.execution.durable import EventKind, NotificationKind, WorkKind
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_alert_card
+from agentic_trader.research.apriori.pead_base_rate import PeadBaseRate
 from agentic_trader.screeners.earnings_drift import PEAD_STRATEGY_ID, DriftPreparation, drift_card_facts
 from tests.agent.test_scan_drift import (  # noqa: F401  (budget_desk, drift_desk, broken_drift_desk are fixtures)
     POLICY,
@@ -45,6 +52,7 @@ from tests.agent.test_scan_drift import (  # noqa: F401  (budget_desk, drift_des
     suggestion_scan,
     today_ny,
 )
+from tests.research.apriori.test_pead_base_rate import payload
 
 
 def _session() -> str:
@@ -179,6 +187,7 @@ async def test_a_sent_drift_card_is_pinned_whole(drift_desk, temp_db, app_config
         "corporate_actions": None,
         "news": None,
         "pead_event": drift_event("WINR"),
+        "pead_base_rate": {"status": "unavailable"},
     }
 
     # Payload: the durable notification's arguments, exactly.
@@ -194,6 +203,7 @@ async def test_a_sent_drift_card_is_pinned_whole(drift_desk, temp_db, app_config
             "report_date": "2026-10-26",
             "holding_sessions": 20,
             "time_exit_at": "2026-11-24T20:45:00+00:00",
+            "base_rate": {"status": "unavailable"},
         },
         "book_sizing": None,
         "signal_id": winr["id"],
@@ -525,3 +535,40 @@ def test_the_generic_card_facts_keyword_is_accepted_and_not_rendered():
     inspect.signature(TelegramNotifier.send_signal_alert).bind(
         None, eval_res=eval_res, strategy="insider_watch", signal_id=1, card_facts={"buyers": 3}
     )
+
+
+def _base_rate():
+    return PeadBaseRate.model_validate(payload())
+
+
+def test_pead_base_rate_block_measured_and_unavailable():
+    assert pead_base_rate_block(None, "f" * 64) == {"status": "unavailable"}
+    block = pead_base_rate_block(_base_rate(), "f" * 64)
+    assert block == {
+        "status": "measured",
+        "sha256": "f" * 64,
+        "expected_mean": -0.04,
+        "expected_se": 0.0253,
+        "window_start": "2016-08-01",
+        "window_end": "2026-07-31",
+        "recent_from": "2025-01-01",
+        "overall_mean": 0.05,
+        "n_leg": 100,
+        "recent_mean": -0.1,
+        "n_recent": 10,
+        "recent_p2_mean": 0.02,
+    }
+
+
+def test_pead_source_card_provenance_carries_block():
+    block = pead_base_rate_block(_base_rate(), "f" * 64)
+    source = PeadDriftSource(SimpleNamespace(holding_sessions=20), base_rate=block)
+    prep = ok_prep()
+    assert source.card_provenance(drift_candidate(), prep) == {"pead_base_rate": block}
+    assert source.card_facts(drift_candidate(), prep) == drift_card_facts(drift_event(), prep, 20, block)
+    assert source.card_facts(drift_candidate(), prep)["base_rate"] == block
+    assert PeadDriftSource().card_provenance(drift_candidate(), prep) == {}
+
+
+def test_insider_watch_source_has_no_extra_card_provenance():
+    assert InsiderWatchSource.card_provenance(None, None, None) == {}

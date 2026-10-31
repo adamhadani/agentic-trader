@@ -58,6 +58,9 @@ def _event_row(symbol: str, session: date, *, atr: float, z: float = 2.3) -> dic
         surprise_short=np.bool_(False),
         reaction_long=np.bool_(True),
         reaction_short=np.bool_(False),
+        eps=1.1,
+        eps_forecast=1.0,
+        n_estimates=7,
     )
     return row
 

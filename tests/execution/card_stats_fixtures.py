@@ -90,6 +90,8 @@ def prior_entry(
         "n_rows": 400,
         "n_sessions": 200,
         "mean": -0.05,
+        "replay_mean": -0.05,
+        "shrinkage": 1.0,
         "sd": 1.5,
         "se_session": 0.05,
         "tau": 0.25,
@@ -101,7 +103,7 @@ def prior_entry(
 def make_prior(keys: tuple[PriorEntry, ...] | None = None) -> CardStatsPrior:
     """A hand-built prior: one replay key (TREND_PULLBACK, 4h, LONG) unless ``keys`` says otherwise."""
     return CardStatsPrior(
-        version="card-stats-prior-v1",
+        version="card-stats-prior-v2",
         unit=NET_EXCESS_UNIT,
         cost_model={
             "cost_floor_bps": COST_FLOOR_BPS,
@@ -121,6 +123,8 @@ def make_prior(keys: tuple[PriorEntry, ...] | None = None) -> CardStatsPrior:
         pooled_sd=1.4,
         pooled_tau=0.2,
         pooled_n_rows=1000,
+        cross_key_mean=-0.05,
+        between_key_tau=0.2,
         keys=keys if keys is not None else (prior_entry(),),
         cost_bps_quantiles={"p50": 6.0},
         n_no_beta=0,

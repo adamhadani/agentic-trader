@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 import agentic_trader.research.setups.card_prior as card_prior_module
-from agentic_trader.config import WORKSPACE_ROOT
+from agentic_trader.config import WORKSPACE_ROOT, load_config
 from agentic_trader.research.setups.beta import trailing_beta
 from agentic_trader.research.setups.card_prior import (
     PRIOR_TAU_FLOOR,
@@ -24,6 +24,7 @@ from agentic_trader.research.setups.card_prior import (
     load_prior,
     posterior,
     prior_rows,
+    shrink_across_keys,
 )
 from agentic_trader.research.setups.net_excess import (
     COST_CAP_BPS,
@@ -40,6 +41,7 @@ from agentic_trader.research.setups.net_excess import (
 )
 
 
+PRODUCTION = {"COPILOT_ENV": "production", "COPILOT_ENV_FILE": ""}
 KEY = ("TREND_PULLBACK", "4h", "LONG")
 QUARTER_STARTS = [date(2022 + i // 4, 3 * (i % 4) + 1, 1) for i in range(9)]
 # 12 x +1, 12 x -1, one 0: sums to zero, sum of squares 24, ddof=1 variance exactly 1.
@@ -70,6 +72,8 @@ def entry(**overrides):
         "n_rows": 100,
         "n_sessions": 50,
         "mean": -0.05,
+        "replay_mean": -0.05,
+        "shrinkage": 1.0,
         "sd": 1.5,
         "se_session": 0.0,
         "tau": 0.25,
@@ -181,7 +185,7 @@ def test_se_session_clusters_rows_that_share_a_session():
 
 def minimal_prior(**overrides):
     fields = {
-        "version": "card-stats-prior-v1",
+        "version": "card-stats-prior-v2",
         "unit": NET_EXCESS_UNIT,
         "cost_model": {
             "cost_floor_bps": COST_FLOOR_BPS,
@@ -201,6 +205,8 @@ def minimal_prior(**overrides):
         "pooled_sd": 1.4,
         "pooled_tau": 0.2,
         "pooled_n_rows": 10,
+        "cross_key_mean": -0.05,
+        "between_key_tau": 0.2,
         "keys": (entry(strategy=KEY[0], timeframe=KEY[1], direction=KEY[2]),),
         "cost_bps_quantiles": {"p50": 5.0},
         "n_no_beta": 0,
@@ -331,9 +337,9 @@ def test_load_prior_refuses_a_value_outside_its_constraint(tmp_path, mutate):
 
 
 def test_the_shipped_prior_satisfies_every_constraint():
-    """The committed, digest-pinned prior still loads under the tightened model (its digest is unchanged)."""
-    path = WORKSPACE_ROOT / "config" / "research" / "card-stats-prior-v1.json"
-    prior = load_prior(path, "6bab4e8d76a53ca099f9e5c82cd249e6cee2b9d26c4fc7e1613bd1e8469e5432")
+    """The committed, digest-pinned v2 prior loads under the model (digest from the shipped config)."""
+    policy = load_config(str(WORKSPACE_ROOT / "config" / "config.yaml"), environ=PRODUCTION).card_policy
+    prior = load_prior(policy.prior_path, policy.prior_sha256)
     assert prior.version == PRIOR_VERSION and len(prior.keys) == 3
 
 
@@ -344,6 +350,7 @@ PRIOR_UNAVAILABLE_MESSAGES = {
     "prior digest mismatch",
     "prior file invalid",
     "prior version mismatch",
+    "prior shrinkage inconsistent",
     "prior unit mismatch",
     "prior constants differ from the code",
 }
@@ -406,3 +413,70 @@ def test_prior_rows_excess():
     assert math.isnan(out.loc[1, "beta"]) and math.isnan(out.loc[1, "net_excess_r"])
     assert out.loc[1, "beta_reason"] == "no_daily_bars"
     assert out.loc[1, "name_cost_bps"] == COST_FLOOR_BPS
+
+
+V1_PATH = WORKSPACE_ROOT / "config" / "research" / "card-stats-prior-v1.json"
+
+
+def _v1_entries():
+    v1 = json.loads(V1_PATH.read_text())
+    entries = tuple(PriorEntry(**{**k, "replay_mean": k["mean"], "shrinkage": 1.0}) for k in v1["keys"])
+    return entries, v1["pooled_tau"]
+
+
+def test_shrink_across_keys_matches_closed_form():
+    entries, tau = _v1_entries()
+    assert tau == pytest.approx(0.16426, abs=1e-4)
+    shrunk, mu = shrink_across_keys(entries, tau)
+    assert mu == pytest.approx(-0.0076, abs=5e-4)
+    by_key = {(k.strategy, k.timeframe): k for k in shrunk}
+    assert by_key[("SQUEEZE_BREAKOUT", "1h")].mean == pytest.approx(-0.0200, abs=2e-3)
+    assert by_key[("SQUEEZE_BREAKOUT", "4h")].mean == pytest.approx(0.074, abs=2e-3)
+    assert by_key[("TREND_PULLBACK", "4h")].mean == pytest.approx(-0.0767, abs=2e-3)
+    for before, after in zip(entries, shrunk, strict=True):
+        assert 0 <= after.shrinkage <= 1
+        assert after.replay_mean == before.replay_mean
+        for field in ("sd", "se_session", "tau", "n_rows", "n_sessions", "tau_source"):
+            assert getattr(after, field) == getattr(before, field)
+
+
+def test_shrink_single_key_is_identity_mean():
+    only = entry(mean=0.3, replay_mean=0.3, se_session=0.2)
+    [shrunk], mu = shrink_across_keys([only], 0.16)
+    assert mu == pytest.approx(0.3)
+    assert shrunk.mean == pytest.approx(0.3)
+
+
+def test_posterior_weight_unchanged_by_shrink():
+    entries, tau = _v1_entries()
+    shrunk, _ = shrink_across_keys(entries, tau)
+    for before, after in zip(entries, shrunk, strict=True):
+        assert posterior(0, None, after)[2] == posterior(0, None, before)[2]
+
+
+def _shrunk_prior(**overrides):
+    entries, tau = _v1_entries()
+    keys, mu = shrink_across_keys(entries, tau)
+    return minimal_prior(keys=keys, cross_key_mean=mu, between_key_tau=tau, **overrides)
+
+
+def test_load_prior_round_trips_a_shrunk_prior(tmp_path):
+    prior = _shrunk_prior()
+    path, digest = write_prior(tmp_path, prior)
+    assert load_prior(path, digest) == prior
+
+
+def test_load_prior_refuses_v1_version(tmp_path):
+    path, digest = write_prior(tmp_path, _shrunk_prior(version="card-stats-prior-v1"))
+    with pytest.raises(PriorUnavailable) as caught:
+        load_prior(path, digest)
+    assert str(caught.value) == "prior version mismatch"
+
+
+def test_load_prior_refuses_inconsistent_mean(tmp_path):
+    prior = _shrunk_prior()
+    edited = prior.keys[0].model_copy(update={"mean": prior.keys[0].mean + 0.01})
+    path, digest = write_prior(tmp_path, prior.model_copy(update={"keys": (edited, *prior.keys[1:])}))
+    with pytest.raises(PriorUnavailable) as caught:
+        load_prior(path, digest)
+    assert str(caught.value) == "prior shrinkage inconsistent"

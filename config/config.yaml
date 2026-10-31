@@ -495,7 +495,7 @@ scan:
 # Honest cards (docs/card-evidence.md): measured-evidence send policy, statistics worker, card validity.
 # Quote "off": YAML reads a bare off as false (the loader maps false back to "off").
 card_policy:
-  mode: "preview"         # off -> preview -> enforce; preview since 2026-10-28, enforce is an operator decision
+  mode: "enforce"  # off -> preview -> enforce; preview from 2026-10-28, enforce by operator decision 2026-10-30
   min_measured_ev: 0.0    # posterior expected excess R, net_excess_r_v1; required for preview and enforce
   min_mature_cards: 20
   stats_window_days: 180
@@ -503,8 +503,15 @@ card_policy:
   stats_poll_seconds: 300
   stats_max_age_seconds: 345600
   validity: "session_close"
-  prior_path: "config/research/card-stats-prior-v1.json"  # frozen replay prior (docs/card-stats-prior-2026-10-28.md)
-  prior_sha256: "6bab4e8d76a53ca099f9e5c82cd249e6cee2b9d26c4fc7e1613bd1e8469e5432"
+  prior_path: "config/research/card-stats-prior-v2.json"  # frozen replay prior (docs/card-stats-prior-2026-10-28.md)
+  prior_sha256: "cbbf3538abe256252de5ed0d2fde96ffe54fb79fc4f09432b86782577e7e3689"
+
+# Catalog paper probes (docs/apriori-alphas.md). The PEAD card's measured base rate is a frozen file pinned by
+# SHA-256 (docs/pead-base-rate-2026-10-30.md); a missing or mismatched file renders "unavailable" and never
+# stops a scan.
+apriori:
+  pead_base_rate_path: "config/research/pead-base-rate-v1.json"
+  pead_base_rate_sha256: "b92308070957a0bc4f3cb917bfb2e57ab3d59f73b74e38245cf0431d69890551"
 
 # Book-aware sizing (docs/card-evidence.md "Book-aware sizing").
 # Quote "off": YAML reads a bare off as false (the loader maps false back to "off").

@@ -1,0 +1,180 @@
+{
+  "beta_window_sessions": 120,
+  "by_year": [
+    {
+      "control_mean": -0.08741209614434657,
+      "control_n": 565,
+      "control_se_session": 0.10840576239016299,
+      "mean": 0.09129290479884987,
+      "n": 112,
+      "p2_mean": 0.2208977933051712,
+      "p2_se": 0.16494956477056277,
+      "se_session": 0.1638633802592155,
+      "year": 2016
+    },
+    {
+      "control_mean": -0.0819631904646743,
+      "control_n": 1712,
+      "control_se_session": 0.04308077841689745,
+      "mean": 0.016770411305333653,
+      "n": 334,
+      "p2_mean": 0.08417608020981597,
+      "p2_se": 0.07460237824606109,
+      "se_session": 0.09431033333660038,
+      "year": 2017
+    },
+    {
+      "control_mean": -0.015469027253996076,
+      "control_n": 1841,
+      "control_se_session": 0.0434766768669402,
+      "mean": -0.018815109684663534,
+      "n": 338,
+      "p2_mean": 0.04306943158549247,
+      "p2_se": 0.04947217939083199,
+      "se_session": 0.06818243104141457,
+      "year": 2018
+    },
+    {
+      "control_mean": 0.0410348350192433,
+      "control_n": 1906,
+      "control_se_session": 0.040782029288784084,
+      "mean": 0.010141177909777527,
+      "n": 394,
+      "p2_mean": -0.037315666166555954,
+      "p2_se": 0.055076754415581144,
+      "se_session": 0.0697656930424503,
+      "year": 2019
+    },
+    {
+      "control_mean": -0.1488156915027549,
+      "control_n": 2170,
+      "control_se_session": 0.049390520361476495,
+      "mean": -0.23451317466798297,
+      "n": 385,
+      "p2_mean": -0.05284157319722531,
+      "p2_se": 0.0578645989754742,
+      "se_session": 0.07106398435902066,
+      "year": 2020
+    },
+    {
+      "control_mean": -0.06571932418719258,
+      "control_n": 2550,
+      "control_se_session": 0.04684674406896268,
+      "mean": 0.022558010801748827,
+      "n": 526,
+      "p2_mean": 0.10088929501617275,
+      "p2_se": 0.059874109024669164,
+      "se_session": 0.06905501040378213,
+      "year": 2021
+    },
+    {
+      "control_mean": 0.07548876825017527,
+      "control_n": 2566,
+      "control_se_session": 0.0361015843035068,
+      "mean": 0.10397243413724643,
+      "n": 494,
+      "p2_mean": 0.03317521650344564,
+      "p2_se": 0.04669286021330281,
+      "se_session": 0.05946603445292088,
+      "year": 2022
+    },
+    {
+      "control_mean": -0.16101552624332977,
+      "control_n": 2809,
+      "control_se_session": 0.037979030240310595,
+      "mean": -0.15876811859415801,
+      "n": 597,
+      "p2_mean": 0.015834325724422043,
+      "p2_se": 0.04140572321782211,
+      "se_session": 0.04909816714390311,
+      "year": 2023
+    },
+    {
+      "control_mean": -0.0514515090164728,
+      "control_n": 2893,
+      "control_se_session": 0.042578137007533705,
+      "mean": 0.05626470067290477,
+      "n": 642,
+      "p2_mean": 0.06939509900541566,
+      "p2_se": 0.05463122159282034,
+      "se_session": 0.06951926780767514,
+      "year": 2024
+    },
+    {
+      "control_mean": -0.007306264161444774,
+      "control_n": 3012,
+      "control_se_session": 0.04393477990133562,
+      "mean": -0.013543537444879978,
+      "n": 550,
+      "p2_mean": -0.029028030754017133,
+      "p2_se": 0.05210402819038057,
+      "se_session": 0.06374752751802971,
+      "year": 2025
+    },
+    {
+      "control_mean": -0.11913286731281446,
+      "control_n": 1844,
+      "control_se_session": 0.06235754675049859,
+      "mean": -0.09788404382309947,
+      "n": 340,
+      "p2_mean": -0.009659819344209328,
+      "p2_se": 0.07444866855473183,
+      "se_session": 0.09146178680606175,
+      "year": 2026
+    }
+  ],
+  "code_revision": "research/prospective-equity-panel-iex-v1-20260918-77-g45541a8",
+  "cost_model": {
+    "cost_cap_bps": 200.0,
+    "cost_floor_bps": 5.0,
+    "cost_min_sessions": 15.0,
+    "cost_window_sessions": 20.0,
+    "impact_coefficient": 1.0,
+    "reference_risk_usd": 1000.0
+  },
+  "entry_sha256": "fc8a5b3ec14845a2a6ce730e2bc4159e7ee579bbb6b03164a01490e90d818627",
+  "expected_mean": -0.03992629932075886,
+  "expected_se": 0.0488066903529716,
+  "n_all": 23868,
+  "n_leg": 4712,
+  "n_no_beta": 112,
+  "n_no_market": 0,
+  "overall": {
+    "control_mean": -0.053612131377352414,
+    "control_n": 23868,
+    "control_se_session": 0.014141706592474674,
+    "mean": -0.02397911414015502,
+    "n": 4712,
+    "p2_mean": 0.0289850955059475,
+    "p2_se": 0.018028942892696218,
+    "se_session": 0.022112627380672243
+  },
+  "r_clip": 10.0,
+  "recent": {
+    "control_mean": -0.049770896824361914,
+    "control_n": 4856,
+    "control_se_session": 0.0360639334220165,
+    "mean": -0.045763506173637995,
+    "n": 890,
+    "p2_mean": -0.02162893875476472,
+    "p2_se": 0.04263855564441011,
+    "se_session": 0.05225278885237769
+  },
+  "recent_from": "2025-01-01",
+  "shrinkage": 0.8724484345510736,
+  "source": {
+    "events_sha256": "23ce01f7a403d2a30781bf1e4acf88bb542a5f7c9ddda85776af661cf3bb27d8",
+    "labels_sha256": "239d85266eb3e66ea654ff1646b74ec794326003b8925f9b2467789fa33aeac8",
+    "pead_cache": "apriori-pead-v1-cache",
+    "pead_cache_files_sha256": "24961e72e0b90c0f4f784ee90c9fedb709a082bb4c0a184452153cbe53790909",
+    "pead_cache_range_sha256": "d9d9b64ed5e3dd188f07fbd8ef209a9efbfc184879386a6b23a3925aac334bc5",
+    "protocol_sha256": "d5defdfdbf25a67c0ea6efce8d6dc116283b1db10d5d8989b9209d5552b568d2",
+    "spy_hourly_caches": "setup-cache-2017, setup-cache-v1",
+    "spy_hourly_files_sha256": "851e3c8a73b82d4e63ad5139261c45600f98dbc27ce59b62434811c7ec9fa08f"
+  },
+  "tau": 0.1366584410097022,
+  "unit": "net_excess_r_v1",
+  "version": "pead-base-rate-v1",
+  "window_end": "2026-07-31",
+  "window_start": "2016-08-01"
+}

@@ -231,10 +231,23 @@ async def test_drift_card_is_sent_beside_the_native_budget(drift_desk, temp_db, 
         "report_date": "2026-10-26",
         "holding_sessions": 20,
         "time_exit_at": "2026-11-24T20:45:00+00:00",
+        "base_rate": {"status": "unavailable"},  # the fixture config pins no digest
     }
     assert card["probe_risk_cap"] == app_config.alpha_pipeline.probe_risk_dollars
     inspect.signature(TelegramNotifier.send_signal_alert).bind(None, **card)
     assert await _unavailable_notices(temp_db) == []
+
+
+async def test_unconfigured_digest_gives_unavailable_block_and_card_still_built(drift_desk, temp_db, app_config):
+    assert app_config.apriori.pead_base_rate_sha256 is None
+    assert drift_desk.pead_source.base_rate == {"status": "unavailable"}
+
+    summary = await suggestion_scan(drift_desk)
+
+    assert summary["drift"]["sent"] == 1
+    [winr] = [s for s in await _signals(temp_db) if s["contract"] == "WINR"]
+    assert winr["decision_provenance"]["pead_base_rate"] == {"status": "unavailable"}
+    assert winr["decision_provenance"]["pead_event"]["symbol"] == "WINR"
 
 
 @pytest.mark.parametrize(

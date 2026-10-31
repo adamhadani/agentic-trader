@@ -205,6 +205,17 @@ class AprioriConfig(BaseModel):
     # The frozen study entered at 10:35 prices: a decision scan that reaches its drift
     # decision more than this long after its slot journals the decision skipped instead.
     max_drift_lateness_seconds: int = Field(default=900, gt=0)
+    # The PEAD card's measured base rate (docs/pead-base-rate-2026-10-30.md): an immutable file pinned by SHA-256.
+    pead_base_rate_path: Path = Field(default=Path("config/research/pead-base-rate-v1.json"), validate_default=True)
+    pead_base_rate_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("pead_base_rate_path", mode="after")
+    @classmethod
+    def _resolve_pead_base_rate_path(cls, value: Path) -> Path:
+        """A relative path must mean the same file for the daemon, an operator CLI invocation and a test alike."""
+        if value.is_absolute():
+            return value
+        return (WORKSPACE_ROOT / value).resolve()
 
 
 class ScanBudget(StrEnum):
@@ -272,8 +283,8 @@ CardPolicyMode = Literal["off", "preview", "enforce"]
 class CardPolicyConfig(BaseModel):
     """Measured-evidence card policy, statistics worker and card validity (docs/card-evidence.md).
 
-    The code default is off; the shipped config runs ``preview`` at 0.0 (journal ``would_withhold``,
-    still send) and ``enforce`` is the operator's call. The evidence block is always rendered. It
+    The code default is off; the shipped config runs ``enforce`` at 0.0 (operator decision 2026-10-30,
+    after ``preview`` from 2026-10-28, which journals ``would_withhold`` and still sends). The evidence block is always rendered. It
     withholds native cards only on complete, time-matured evidence whose posterior expected excess R
     (``net_excess_r_v1``: a frozen replay prior shrunk toward the live record) is below
     ``min_measured_ev`` (partial, stale or missing evidence never withholds; alpha, probe and drift
@@ -291,7 +302,7 @@ class CardPolicyConfig(BaseModel):
     stats_max_age_seconds: int = Field(default=345600, gt=0)
     validity: CardValidity = "session_close"
     # The frozen replay prior (docs/card-stats-prior-2026-10-28.md): an immutable file pinned by SHA-256.
-    prior_path: Path = Field(default=Path("config/research/card-stats-prior-v1.json"), validate_default=True)
+    prior_path: Path = Field(default=Path("config/research/card-stats-prior-v2.json"), validate_default=True)
     prior_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @field_validator("prior_path", mode="after")
@@ -1246,6 +1257,7 @@ def load_config(
         card_policy=CardPolicyConfig(**(cfg_dict.get("card_policy") or {})),
         book_sizing=BookSizingConfig(**(cfg_dict.get("book_sizing") or {})),
         corporate_actions=CorporateActionsConfig(**(cfg_dict.get("corporate_actions") or {})),
+        apriori=AprioriConfig(**(cfg_dict.get("apriori") or {})),
         news=NewsConfig(**(cfg_dict.get("news") or {})),
         llm_gate=LLMGateConfig(**(cfg_dict.get("llm_gate") or {})),
         insider_watch=InsiderWatchConfig(**(cfg_dict.get("insider_watch") or {})),

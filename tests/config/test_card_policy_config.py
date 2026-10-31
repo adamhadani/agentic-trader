@@ -109,10 +109,10 @@ def test_a_bare_or_missing_block_loads_the_defaults(tmp_path, body):
 
 
 def test_shipped_card_policy():
-    """The shipped policy is the preview of the posterior at 0.0 over a 180-day window with the pinned prior."""
+    """The shipped policy is the enforcement of the posterior at 0.0 over a 180-day window with the pinned prior."""
     policy = load_config(str(REPO / "config" / "config.yaml"), environ=PRODUCTION).card_policy
-    assert (policy.mode, policy.min_measured_ev, policy.stats_window_days) == ("preview", 0.0, 180)
-    assert policy.prior_path == (REPO / "config" / "research" / "card-stats-prior-v1.json").resolve()
+    assert (policy.mode, policy.min_measured_ev, policy.stats_window_days) == ("enforce", 0.0, 180)
+    assert policy.prior_path == (REPO / "config" / "research" / "card-stats-prior-v2.json").resolve()
     assert re.fullmatch(r"[0-9a-f]{64}", policy.prior_sha256 or "")
     shipped = yaml.safe_load((REPO / "config" / "config.yaml").read_text())["card_policy"]
     assert CardPolicyConfig(**shipped) == policy
