@@ -199,14 +199,15 @@ Both run on the gate's own cohort, target and window, through the gate's code pa
 
 **A-IC, the planted effect.**
 
-- **Decisive base:** the same fixed-permutation composite, again keeping real persistence and factor shape. For each of 50 replicates at planted `λ`:
+- **Decisive base:** the same fixed-permutation composite, which keeps real persistence and sector shape but breaks the link between a name's score and its own factor loadings. For each of 50 replicates at planted `λ`:
 
   ```
   score = sqrt(1 − λ²) · z(base) + λ · z(rank(e_20))
   ```
 
 - **Pass:** at `λ = 0.03` the gate rule accepts at least 70% of replicates. IC 0.03 is about where a card nears break-even by the report's arithmetic, and 70% is the low end of the report's own power range.
-- **Reported:** power at `λ = 0.02`, the report's figure, and at `0.04`, plus the same for the report's literal base, a pure AR(1) score with `φ = 0.97` per name. An i.i.d.-noise base understates daily IC variance, because it has no factor exposure, so it would overstate power *(my call)*.
+- **Reported:** power at `λ = 0.02`, the report's figure, and at `0.04`, plus the same for the report's literal base, a pure AR(1) score with `φ = 0.97` per name.
+- **A-IC is a plumbing check, not a power statement.** Permuting names removes the IC variance that factor returns put into a real composite, so this arm's power is overstated: in a synthetic factor world it held `t` near 10 at every exposure, about three times the real figure at high exposure. **The honest measure comes from the read itself:** the gate reports `min_detectable_ic = min_t × se`, using the composite's own bootstrap `se`. If it exceeds 0.03, the results say a fail could not rule out IC 0.03, so the closure rests on the report's rule and not on evidence of absence. The decision rule does not change.
 - This check exercises the gate's code path end to end, but it is **not** an alignment check. The plant and the read share one target array, so a misdated array is invisible to it, and on an overlapping 20-session target a shift of up to about ten sessions still passes. Alignment rests on the exact-formula tests in the arrays task and on a spot check of real cells against raw bars before the read.
 
 **If A-IC fails, the gate does not run.** The result doc then says the window cannot decide this question. If C-IC fails, the statistic is wrong, and it is fixed and re-run before anything else.

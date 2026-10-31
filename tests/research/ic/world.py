@@ -1,4 +1,4 @@
-"""A small deterministic world for the IC lane tests: 8 names, SPY and a cube on a weekday calendar."""
+"""Small deterministic worlds for the IC lane tests: 8 names (48 from ``long_world``), SPY and a cube on weekdays."""
 
 from __future__ import annotations
 

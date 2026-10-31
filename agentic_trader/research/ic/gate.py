@@ -18,6 +18,7 @@ from agentic_trader.research.ic.arrays import build_ic_arrays
 from agentic_trader.research.ic.checks import (
     Progress,
     _say,
+    failed_outcome,
     gate_read,
     mapped_floor_reason,
     mapped_fraction,
@@ -73,7 +74,7 @@ async def _read_secondary(
         built, spy = await build_secondary()
         read = await asyncio.to_thread(_read_cohort, protocol, built, spy, sectors)
     except Exception as exc:
-        return {"status": "failed", "reason": f"{type(exc).__name__}: {exc}"}
+        return failed_outcome(exc, "the secondary cohort (reported only)", progress)
     return {"status": "completed", **read}
 
 
@@ -99,10 +100,21 @@ async def _gate_outcome(
     built, spy = await build()
     cube_sha256 = built.cube.sha256
     if cube_sha256 != checks["cube_sha256"]:
-        return {"status": "refused", "reason": "the cached cube is not the cube the checks ran on"}
-    floor = mapped_floor_reason(protocol, sectors.groups(built.cube.symbols))
+        return {
+            "status": "refused",
+            "reason": "the cached cube is not the cube the checks ran on",
+            "cube_sha256": cube_sha256,
+            "checks_cube_sha256": checks["cube_sha256"],
+        }
+    groups = sectors.groups(built.cube.symbols)
+    floor = mapped_floor_reason(protocol, groups)
     if floor is not None:
-        return {"status": "refused", "reason": floor, "cube_sha256": cube_sha256}
+        return {
+            "status": "refused",
+            "reason": floor,
+            "cube_sha256": cube_sha256,
+            "mapped_fraction": mapped_fraction(groups),
+        }
     _say(progress, "reading the decisive cohort")
     decisive = await asyncio.to_thread(_read_cohort, protocol, built, spy, sectors)
     return {
@@ -113,18 +125,28 @@ async def _gate_outcome(
     }
 
 
+def _gate_line(gate: dict) -> str:
+    return (
+        f"t {gate['t']:.2f} mean IC {gate['mean']:.4f} se {gate['se']:.4f} positive blocks {gate['positive_blocks']} "
+        f"min detectable IC {gate['min_detectable_ic']:.4f} median pairs/session {gate['median_pairs_per_session']:.1f}"
+    )
+
+
 def _render(result: dict) -> str:
-    gate = result["gate"]
     lines = [
         f"composite-ic gate: {result['decision']} (a hypothesis on a read window and a survivor cohort at most)",
-        f"t {gate['t']:.2f} mean IC {gate['mean']:.4f} positive blocks {gate['positive_blocks']}",
         "",
         "decisive cohort",
+        _gate_line(result["gate"]),
         render_tear_sheet(result["tear_sheet"]),
     ]
     secondary = result["secondary"]
     if secondary["status"] == "completed":
-        lines += ["secondary cohort (reported, never decides)", render_tear_sheet(secondary["tear_sheet"])]
+        lines += [
+            "secondary cohort (reported, never decides)",
+            _gate_line(secondary["gate"]),
+            render_tear_sheet(secondary["tear_sheet"]),
+        ]
     else:
         lines += [f"secondary cohort (reported, never decides): {secondary['reason']}", ""]
     return "\n".join(lines)
@@ -163,7 +185,7 @@ async def execute_gate(
             progress=progress,
         )
     except Exception as exc:
-        outcome = {"status": "failed", "reason": f"{type(exc).__name__}: {exc}"}
+        outcome = failed_outcome(exc, "the gate", progress)
     result = {**outcome, **base}
     save_json_report(_finite_json(result), output / "result.json")
     if result["status"] == "completed":

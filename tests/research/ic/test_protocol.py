@@ -77,3 +77,12 @@ def test_the_pinned_files_hash_to_the_shipped_digests():
         (protocol.secondary.protocol, protocol.secondary.sha256),
     ):
         assert hashlib.sha256((root / relative).read_bytes()).hexdigest() == digest, relative
+
+
+def test_a_ic_bases_are_not_c_ic_replicates():
+    """Replicates seed at ``seed + replicate``, so overlapping ranges would make A-IC reuse C-IC's permutations."""
+    checks = load_composite(PATH).protocol.checks
+    assert checks.a_ic.seed == 20271102
+    c_ic_longest = max(checks.c_ic.replicates, checks.c_ic.session_shuffle_replicates)
+    c_ic_seeds = set(range(checks.c_ic.seed, checks.c_ic.seed + c_ic_longest))
+    assert not c_ic_seeds & set(range(checks.a_ic.seed, checks.a_ic.seed + checks.a_ic.replicates))

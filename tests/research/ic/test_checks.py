@@ -77,7 +77,32 @@ def test_gate_read_applies_the_protocols_rule_and_bootstrap():
         draws=100,
         seed=20261103,
     )
-    assert gate_read(composite, target, mask, protocol) == expected
+    read = gate_read(composite, target, mask, protocol)
+    assert {key: read[key] for key in expected} == expected  # the two descriptions change nothing in the rule
+    assert read["min_detectable_ic"] == 2.0 * read["se"]
+    assert read["median_pairs_per_session"] == 60.0
+
+
+def test_gate_read_counts_pairs_over_evaluated_sessions_only():
+    rng = np.random.default_rng(0)
+    score, target = rng.normal(size=(7, 50)), rng.normal(size=(7, 50))
+    mask = np.ones((7, 50), bool)
+    mask[:, 40:] = False  # 40 names in the mask
+    score[:, 35] = np.nan  # one has no score
+    target[:, 34] = np.nan  # one has no target
+    mask[:4, :25] = False  # 13 pairs in most sessions: below min_names, so unavailable, and they must not count
+    read = gate_read(score, target, mask, shrunk(PROTOCOL, draws=20))
+    assert read["n_unavailable"] == 4
+    assert read["median_pairs_per_session"] == 38.0
+
+
+def test_a_read_with_no_evaluated_session_reports_no_detectable_effect():
+    rng = np.random.default_rng(0)
+    read = gate_read(rng.normal(size=(4, 10)), rng.normal(size=(4, 10)), np.ones((4, 10), bool), PROTOCOL)
+    assert read["n_sessions"] == 0
+    assert np.isnan(read["min_detectable_ic"])
+    assert np.isnan(read["median_pairs_per_session"])
+    assert read["passes"] is False
 
 
 def test_fixed_permutation_stays_within_sector_and_is_constant_over_time():
@@ -140,6 +165,8 @@ def test_c_ic_passes_on_a_null_panel_and_reports_both_controls():
     assert out["fixed_permutation"]["acceptance"] <= 0.10
     assert out["session_shuffle"]["replicates"] == 3
     assert out["fixed_permutation"]["sessions_evaluated"] == 1000
+    assert out["fixed_permutation"]["median_pairs_per_session"] == 60.0
+    assert out["session_shuffle"]["median_pairs_per_session"] == 60.0
 
 
 def test_c_ic_fails_when_the_statistic_is_broken(monkeypatch):
@@ -213,8 +240,24 @@ def test_a_ic_reports_every_lambda_on_both_bases():
     for base in ("fixed_permutation", "ar1"):
         assert set(out[base]) == {"0.02", "0.03", "0.04"}
         for row in out[base].values():
-            assert set(row) >= {"power", "mean_ic", "accepted", "replicates"}
+            assert set(row) >= {"power", "mean_ic", "accepted", "replicates", "median_pairs_per_session"}
             assert row["replicates"] == 2
+
+
+def test_each_arm_reports_how_a_permutation_shrinks_the_pairs():
+    """Scores land on names with no target, so a permuted arm has fewer pairs than the AR(1) arm's full mask."""
+    composite, target, mask, groups = _panel(s=120, n=90, phi=0.5)
+    mask = mask.copy()
+    mask[:, ::3] = False  # a third of each sector is outside the mask, so it has no score and no target
+    composite[:, ::3] = np.nan
+    target[:, ::3] = np.nan
+    protocol = shrunk(PROTOCOL, c_replicates=2, shuffle_replicates=1, a_replicates=1, draws=20)
+    c_out = c_ic(protocol, composite, target, mask, groups)
+    a_out = a_ic(protocol, composite, target, mask, groups)
+    assert a_out["ar1"]["0.03"]["median_pairs_per_session"] == 60.0
+    assert c_out["fixed_permutation"]["median_pairs_per_session"] < 60.0
+    assert c_out["session_shuffle"]["median_pairs_per_session"] < 60.0
+    assert a_out["fixed_permutation"]["0.03"]["median_pairs_per_session"] < 60.0
 
 
 def test_a_ic_draws_a_new_base_for_each_replicate_and_the_same_one_across_lambdas(monkeypatch):
@@ -377,6 +420,25 @@ async def test_mapped_floor_is_measured_over_the_cube_symbols_not_the_sector_fil
     assert "62.5%" in result["reason"]
 
 
+@pytest.mark.parametrize("error", [RuntimeError, ValueError])
+async def test_a_raised_message_reaches_progress_and_never_the_result(tmp_path, error):
+    """A ``ValueError`` too: only the deliberate refusals keep their text, not whatever a build raises."""
+    _, sectors, loaded, output = _world_setup(tmp_path)
+
+    async def build():
+        raise error("provider-secret-text")
+
+    said: list[str] = []
+    result = await execute_checks(
+        loaded, output, build=build, sectors=sectors, environment=environment(), progress=said.append
+    )
+    assert result["status"] == "failed"
+    assert result["reason"] == error.__name__
+    assert "provider-secret-text" not in (output / "result.json").read_text()
+    assert "provider-secret-text" not in (output / "manifest.json").read_text()
+    assert any("provider-secret-text" in line for line in said)
+
+
 async def test_checks_write_manifest_before_computing(tmp_path):
     _, sectors, loaded, output = _world_setup(tmp_path)
 
@@ -388,7 +450,7 @@ async def test_checks_write_manifest_before_computing(tmp_path):
         loaded, output, build=build, sectors=sectors, environment=environment(), progress=None
     )
     assert result["status"] == "failed"
-    assert "RuntimeError" in result["reason"]
+    assert result["reason"] == "RuntimeError"
     assert (output / "manifest.json").exists()
     assert json.loads((output / "result.json").read_text())["status"] == "failed"
 

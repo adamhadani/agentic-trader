@@ -73,8 +73,12 @@ def _cube_builder(clients, pooled, cache: Path):
 
 
 def _echo(result: dict, completed: str) -> None:
+    """The result's summary on stdout. ``reason`` is fixed text or a type name; a fault's message went to ``_progress``."""
     keys = ("status", "decision", "reason", "composite_sha256", "sectors_sha256", "cube_sha256")
-    click.echo(json.dumps({key: result[key] for key in keys if key in result}, default=str))
+    summary = {key: result[key] for key in keys if key in result}
+    if "secondary" in result:
+        summary["secondary_status"] = result["secondary"]["status"]
+    click.echo(json.dumps(summary, default=str))
     if result.get("status") != completed:
         raise click.ClickException(f"{result.get('status')}: {result.get('reason')}")
 

@@ -144,6 +144,33 @@ def test_cli_a_gate_fail_is_a_completed_read_and_exits_zero(tmp_path, stubbed):
     assert call["build"] is not call["build_secondary"]
 
 
+def test_cli_shows_the_secondary_status(tmp_path, stubbed):
+    stubbed["capture"](
+        "execute_gate",
+        {"status": "completed", "decision": "pass", "secondary": {"status": "failed", "reason": "RuntimeError"}},
+    )
+    result = CliRunner().invoke(ic_group, _gate_args(tmp_path / "out"))
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["secondary_status"] == "failed"
+
+
+def test_cli_sends_a_raised_message_to_stderr_only(tmp_path, stubbed, monkeypatch):
+    def broken_builder(*_args):
+        async def build():
+            raise RuntimeError("provider-secret-text")
+
+        return build
+
+    monkeypatch.setattr(alpha_ic, "_cube_builder", broken_builder)
+    output = tmp_path / "out"
+    result = CliRunner().invoke(ic_group, _checks_args(output))
+    assert result.exit_code != 0
+    assert "provider-secret-text" in result.stderr
+    assert "provider-secret-text" not in result.stdout
+    assert json.loads(result.stdout)["reason"] == "RuntimeError"
+    assert "provider-secret-text" not in (output / "result.json").read_text()
+
+
 @pytest.mark.parametrize("status", ["refused", "failed"])
 def test_cli_a_gate_without_a_read_exits_non_zero(tmp_path, stubbed, status):
     stubbed["capture"]("execute_gate", {"status": status, "reason": "why not"})

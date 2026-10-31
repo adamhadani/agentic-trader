@@ -18,6 +18,10 @@ the target's own overlap: at a 20-session horizon a one-session shift keeps abou
 passes, and a shift of the whole horizon removes it. A fault common to both, such as arrays misdated as a whole,
 is out of its reach. ``test_arrays`` pins the arrays' dates, session by session.
 
+A-IC is a plumbing check, not a power statement: the permuted base breaks the link between a name's score and its
+own factor loadings, so its power is overstated. Every read therefore reports ``min_detectable_ic``, the gate's
+``t`` times the read's own ``se``; on the real composite that is the honest measure. It decides nothing.
+
 Neither check computes the IC of the real, unpermuted composite. That read belongs to the gate alone.
 """
 
@@ -50,6 +54,7 @@ __all__ = [
     "ar1_base",
     "c_ic",
     "execute_checks",
+    "failed_outcome",
     "fixed_permutation",
     "gate_read",
     "mapped_floor_reason",
@@ -71,6 +76,12 @@ Progress = Callable[[str], None] | None
 def _say(progress: Progress, message: str) -> None:
     if progress is not None:
         progress(message)
+
+
+def failed_outcome(exc: Exception, what: str, progress: Progress) -> dict:
+    """A fault's outcome. Provider text can sit in the message, so the result keeps the type name only."""
+    _say(progress, f"{what} failed: {type(exc).__name__}: {exc}")
+    return {"status": "failed", "reason": type(exc).__name__}
 
 
 def mapped_fraction(groups: np.ndarray) -> float:
@@ -110,10 +121,15 @@ def write_manifest(
 
 
 def gate_read(score: np.ndarray, target: np.ndarray, mask: np.ndarray, protocol: CompositeProtocol) -> dict:
-    """The gate's rule on one score panel: the one path by which the gate and both checks read a score."""
+    """The gate's rule on one score panel: the one path by which the gate and both checks read a score.
+
+    ``min_detectable_ic`` and ``median_pairs_per_session`` (over evaluated sessions) describe the read; the rule
+    does not use them.
+    """
     rule = protocol.gate
-    return gate_verdict(
-        rank_ic_series(score, target, mask, min_names=protocol.min_names),
+    ic = rank_ic_series(score, target, mask, min_names=protocol.min_names)
+    verdict = gate_verdict(
+        ic,
         protocol.horizon,
         min_t=rule.min_t,
         blocks=rule.blocks,
@@ -121,6 +137,13 @@ def gate_read(score: np.ndarray, target: np.ndarray, mask: np.ndarray, protocol:
         draws=protocol.bootstrap.draws,
         seed=protocol.bootstrap.seed,
     )
+    pairs = (np.asarray(mask, dtype=bool) & np.isfinite(score) & np.isfinite(target)).sum(axis=1)
+    evaluated = pairs[np.isfinite(ic)]
+    return {
+        **verdict,
+        "min_detectable_ic": rule.min_t * verdict["se"],
+        "median_pairs_per_session": float(np.median(evaluated)) if evaluated.size else float("nan"),
+    }
 
 
 def fixed_permutation(groups: np.ndarray, rng: np.random.Generator) -> np.ndarray:
@@ -180,6 +203,11 @@ def _finite_sd(values: Sequence[float]) -> float:
     return float(np.std(kept, ddof=1)) if len(kept) > 1 else float("nan")
 
 
+def _finite_median(values: Sequence[float]) -> float:
+    kept = [value for value in values if math.isfinite(value)]
+    return float(np.median(kept)) if kept else float("nan")
+
+
 def _tally(reads: Sequence[dict]) -> dict:
     accepted = sum(1 for read in reads if read["passes"])
     return {
@@ -190,6 +218,7 @@ def _tally(reads: Sequence[dict]) -> dict:
         "t_mean": _finite_mean([read["t"] for read in reads]),
         "t_sd": _finite_sd([read["t"] for read in reads]),
         "sessions_evaluated": max((read["n_sessions"] for read in reads), default=0),
+        "median_pairs_per_session": _finite_median([read["median_pairs_per_session"] for read in reads]),
     }
 
 
@@ -258,6 +287,7 @@ def a_ic(
                 "replicates": tally["replicates"],
                 "mean_ic": tally["mean_ic"],
                 "t_mean": tally["t_mean"],
+                "median_pairs_per_session": tally["median_pairs_per_session"],
             }
         return rows
 
@@ -307,8 +337,11 @@ async def _checks_outcome(
     environment: dict,
     progress: Progress,
 ) -> dict:
-    require_clean_revision(environment)
-    require_pinned_sectors(protocol, sectors)
+    try:
+        require_clean_revision(environment)
+        require_pinned_sectors(protocol, sectors)
+    except ValueError as exc:  # Only these deliberate refusals: their text is fixed, a build's error is not.
+        return {"status": "failed", "reason": str(exc)}
     built, spy = await build()
     cube = built.cube
     groups = sectors.groups(cube.symbols)
@@ -343,7 +376,7 @@ async def execute_checks(
     try:
         outcome = await _checks_outcome(loaded.protocol, build, sectors, environment, progress)
     except Exception as exc:
-        outcome = {"status": "failed", "reason": f"{type(exc).__name__}: {exc}"}
+        outcome = failed_outcome(exc, "the checks", progress)
     result = {**outcome, **base}
     save_json_report(_finite_json(result), output / "result.json")
     return result
