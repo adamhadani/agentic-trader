@@ -30,11 +30,11 @@ The operator deferred Sharadar on 2026-10-30, so the review's fresh 2007–2016 
 4. A zero-trial re-score of the 64 pairs on known windows: it reproduces the campaigns' recorded edges and applies a batch-mean rule.
 5. `composite-ic-v1`, frozen and hashed, and its development gate.
 6. A $0 sector map (SEC SIC codes mapped to Fama-French 12), because the report's SIC came from Sharadar.
-7. New risk operators in the DSL, `ts_beta` and `ts_resid_std`, and a `cs_regress_out` panel kernel.
+7. New risk operators in the DSL, `ts_beta` and `ts_resid_std`, and a `cross_sectional_regress_out` panel kernel.
 
 ## 3. Non-goals and anti-goals
 
-- **No cards, probe, registry entry, shadow or promotion credit, broker, Telegram or database access.** Nothing here runs in the daemon. No schema or migration.
+- **No cards, probe, registry entry, shadow or promotion credit, broker order or account access, Telegram or database access.** Nothing here runs in the daemon. No schema or migration.
 - **No read of the reserve.** Nothing reads a price or label after 2023-12-29 (ledger W2 stays unused). A test poisons those prices and asserts every output is unchanged.
 - **No era read and no slice decay check.** Both need the parked Sharadar work or a revised D6.
 - **No search.** Fixed formulas only, and no free-form "score this expression" command: a tool for unlogged reads would break rule R1.
@@ -52,6 +52,8 @@ The operator deferred Sharadar on 2026-10-30, so the review's fresh 2007–2016 
 ## 4. Inputs
 
 All from the existing pooled cache (`~/agentic-trader-research/pooled-cache-v1`), via the same `build_cube_inputs(..., require_cached=True)` the campaigns use, so no bars are fetched.
+
+**The one provider call.** `build_cube_inputs` reads the trading calendar from Alpaca before it checks the cache, and that calendar sets every `D−1` read and `D+h` index. The lane reuses the existing research client `_AprioriClients` (`cli/commands/alpha.py`), which calls `load_config()` and needs the Alpaca keys, rather than deriving a second calendar that would have to match the cube's exactly *(my call)*. It makes no other provider call and opens no database.
 
 | Input | Source |
 |---|---|
@@ -76,7 +78,7 @@ r_h[D, i] = open[D + h, i] / open[D, i] − 1
 
 It is NaN if either open is missing, or if session `D + h` falls after `window_end`. So decisions near the end of the window drop out at longer horizons, and no reserve price is read.
 
-**An hourly-scored batch enters a session later.** Those formulas read bars through 10:00 on `D`, so `D`'s open is before the score exists, and using it would leak. For them, `r_h[D, i] = open[D + 1 + h, i] / open[D + 1, i] − 1`. A test pins this.
+**An hourly-scored batch enters a session later.** Those formulas read bars through 10:00 on `D`, so `D`'s open is before the score exists, and using it would leak. For them, `r_h[D, i] = open[D + 1 + h, i] / open[D + 1, i] − 1`. A test pins this. The hourly cache could supply a 10:00 price on `D`, but one entry convention keeps all eight batches comparable, so I use the next open *(my call)*. It blunts the two intraday batches by one session; the results say so.
 
 **`beta_60`** is `ts_beta(returns, mkt_ret, 60)`, read at `D−1`.
 
@@ -98,10 +100,10 @@ e_h[D, i] = r_h[D, i] − beta_60[D, i] · spy_r_h[D]
 
 **Acquisition.** `alpha ic sectors` maps each cohort ticker to a CIK with `company_tickers.json`, then reads `sic` from `https://data.sec.gov/submissions/CIK{cik:010d}.json`:
 
-- paced at no more than 5 requests a second, with `EDGAR_USER_AGENT` from the environment, exactly as `insider_filings.py` does;
-- HTTPS, host allow-list `www.sec.gov` and `data.sec.gov`, no redirects followed to any other host;
+- paced at 2 requests a second, `insider_filings.py`'s rate, with `EDGAR_USER_AGENT` from the environment as that module reads it;
+- HTTPS, host allow-list `www.sec.gov` and `data.sec.gov`, no redirects followed to any other host. `insider_filings.py` checks one host and has no `submissions` fetch, so this is new code that follows its pattern;
 - **the user agent never appears in a file, a manifest or printed output**: it holds an email address;
-- GET only, with retries allowed since a read has no side effects; a failed name is recorded with the type name of its error.
+- GET only, with one retry on `httpx.TransportError` as in that module; a failed name is recorded with the type name of its error.
 
 **Frozen outputs:**
 
@@ -110,7 +112,7 @@ e_h[D, i] = r_h[D, i] − beta_60[D, i] · spy_r_h[D]
 
 **Limits, stated in the docs.** SIC is current, not point-in-time, so it carries a small look-ahead. SEC SIC codes rarely change.
 
-**Unmapped names.** A name with no SIC gets `unknown` and is **excluded from the IC and the composite**, because it cannot be sector-neutralised. The gate and checks refuse to run if fewer than 90% of the decisive cohort's names are mapped *(my call)*.
+**Unmapped names.** A name with no SIC gets `unknown` and is **excluded from the IC and the composite**, because it cannot be sector-neutralised. The gate and checks refuse to run if fewer than 90% of the decisive cohort's names are mapped *(my call)*. There is no fallback source and the floor is not relaxed: below it, the lane stops and the result doc says why. The cached `company_tickers.json` already covers 100% of both cohorts' tickers (measured 2026-10-31), so only a blank `sic` can cost coverage.
 
 ## 7. The IC statistic
 
@@ -119,7 +121,7 @@ e_h[D, i] = r_h[D, i] − beta_60[D, i] · spy_r_h[D]
 **Inference.** Unavailable sessions are dropped first and counted.
 
 - **Primary:** the mean IC with a stationary session-block bootstrap, using the existing `bootstrap_draws`. Mean block length is `2h`, 2,000 draws, a seed from the protocol. `t = mean / se_boot`.
-- **Cross-check:** Newey-West at `2h` lags through `summarize_expected_values` and `ICPolicy`. It is reported and never decides.
+- **Cross-check:** Newey-West at `2h` lags through `summarize_expected_values` and `ICPolicy`. Lags count retained sessions, since unavailable ones are already dropped. It is reported and never decides.
 
 The report asks only for more than `h − 1` lags. `2h` for both is my call, and C-IC tests it.
 
@@ -160,7 +162,7 @@ The neutraliser skip is an addition to the report's rule *(my call)*. Without it
 
 1. Multiply by the sign, z-score across names, clip at ±3.
 2. Z-score within sector. A sector with fewer than 5 finite names gives NaN for those names that session.
-3. Regress out `beta_60` and `log_adv` with an intercept (`cs_regress_out`), on rows where all three are finite, requiring at least 30 rows. Keep the residual.
+3. Regress out `beta_60` and `log_adv` with an intercept (`cross_sectional_regress_out`), on rows where all three are finite, requiring at least 30 rows. Keep the residual.
 4. Z-score the residual across names, so each member has the same scale before averaging *(my call; the report's list leaves it open)*.
 
 **Then combine, per name:**
@@ -215,7 +217,9 @@ Both run on the gate's own cohort, target and window, through the gate's code pa
 
 **Zero-trial.** The formulas and windows were already spent, and this charges nothing and journals nothing: no database. The record is its ledger row.
 
-**Rehearsal (R2).** For each pair, recompute the discovery `edge_mean` and `n_sessions` through the campaign's own scoring path, and compare with the campaign's `formulas.jsonl` in `~/agentic-trader-research/pooled-campaign-*`. `edge_mean` must match within 1e-9 and `n_sessions` exactly, or the command fails with the first mismatch. The pointers to the eight directories go in a frozen file with the digests of their `formulas.jsonl`.
+**Rehearsal (R2), per set and before any IC.** For each pair, recompute the discovery `edge_mean` and `n_sessions` through the campaign's own scoring path, and compare with the campaign's `formulas.jsonl` in `~/agentic-trader-research/pooled-campaign-*`. `edge_mean` must match within 1e-9 and `n_sessions` exactly. The pointers to the eight directories go in a frozen file with the digests of their `formulas.jsonl`.
+
+The campaigns ran at older revisions, so a set may drift. A set with any mismatch is `not_reproduced`: it records its mismatches, gets **no IC read and no batch verdict**, and the other sets continue. The command exits non-zero if any set did not reproduce, and the results count the pairs covered. A code fix is allowed only if it changes no hypothesis, and each fix is logged in the results (R2).
 
 **The IC read.** Per pair: `e_20` IC with the same statistic, over discovery and selection separately, with the expression as written. Sectors come from §6; `unknown` is excluded as in §6. Tear-sheet fields go in the output directory.
 
@@ -231,7 +235,7 @@ Carrying is not a pass. It only makes a member eligible for a later spec that te
 
 ## 10. Commands
 
-`agentic_trader/cli/commands/alpha_ic.py`, group `alpha ic`, registered like `alpha_spread`. Each writes a new private output directory, refuses one that exists, and writes its manifest before computing. Each requires a clean revision (`require_clean_revision`) except `sectors`.
+`agentic_trader/cli/commands/alpha_ic.py`, group `alpha ic`, registered like `alpha_spread`. Each writes a new private output directory, refuses one that exists, and writes its manifest before computing. Each requires a clean revision (`require_clean_revision`) except `sectors`, which runs before its output is committed.
 
 | Command | Does |
 |---|---|
@@ -240,7 +244,7 @@ Carrying is not a pass. It only makes a member eligible for a later spec that te
 | `alpha ic gate` | §8.1 |
 | `alpha ic rescore` | §9 |
 
-Code lives in a new package `agentic_trader/research/ic/`, with tests in `tests/research/ic/`. No runtime config, database, broker or Telegram, like the other research lanes.
+Code lives in a new package `agentic_trader/research/ic/`, with tests in `tests/research/ic/`. Like the other research lanes it uses no database, broker orders or Telegram; `load_config()` is called only by the calendar client (§4).
 
 ## 11. DSL additions
 
@@ -254,7 +258,7 @@ Additive only, in `research/alpha/operators.py`: existing formulas and their ide
 
 ## 12. Docs and ledger
 
-- **`docs/research-window-ledger.md`:** rows for the checks, the re-score and the gate are added **before each read**, naming window, cohort, and that this is a go/no-go on development data with no α claim. The header counts update.
+- **`docs/research-window-ledger.md`:** rows for the checks, the re-score and the gate are added **in one commit before the first read**, with the frozen composite and sector files, naming window, cohort, and that this is a go/no-go on development data with no α claim. The header counts update. The three commands then run at that one clean revision, because the gate requires the checks' exact revision. A code fix after that means a new revision and a re-run of the checks.
 - **`docs/alpha-ic-lane.md`:** the contract, including the limits above.
 - **`docs/alpha-ic-lane-results-YYYY-MM-DD.md`:** results, with the hypothesis-only statement first.
 - **`CLAUDE.md`** gets a short pointer, and **`docs/alpha-roadmap.md`** and **`docs/alpha-directions-2026-10-30/README.md`** get status updates. The README still says direction 1 is awaiting merge; fix that too.
