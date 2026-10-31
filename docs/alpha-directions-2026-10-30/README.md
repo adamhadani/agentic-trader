@@ -34,7 +34,7 @@ code changes; file and symbol names are the stable reference.
   clusters (+0.070R over matched controls). Both were measured on survivorship-biased cohorts. Paper
   trading cannot validate anything within the program: a 0.1R card effect takes about 28 months of
   cards to see.
-- **Direction 1, an honest card stream ($0, week 1).** Status: built on `feature/honest-stream` (2026-10-30), awaiting merge and deploy; `card_policy` is decided (`enforce` at 0.0, operator, 2026-10-30).
+- **Direction 1, an honest card stream ($0, week 1).** Status: merged and deployed (#138, 2026-10-31); `card_policy` is decided (`enforce` at 0.0, operator, 2026-10-30).
   - `card_policy` ships `enforce` at 0.0 (decided 2026-10-30).
   - Give `card_stats` an empirical-Bayes prior across keys.
   - Put a net-excess base rate on PEAD cards, and journal the raw EPS/consensus pair.
@@ -46,7 +46,8 @@ code changes; file and symbol names are the stable reference.
   first.
 - **Direction 3, IC machinery and one mechanically chosen composite ($0 beyond Sharadar).** Adds
   cross-sectional operators, residual returns and rank IC, then confirms one mechanical JKP composite on
-  the era. The composite becomes the yardstick every new data source must beat.
+  the era. The composite becomes the yardstick every new data source must beat. Status: closed 2026-10-31.
+  The composite failed its development gate ([results](../alpha-ic-lane-results-2026-10-31.md)), so the era is not read for it; the [IC tools](../alpha-ic-lane.md) stay.
 - **Direction 4, options.** Deferred to a feed check.
 - **Cut:** residual reversal, TSMOM, intraday SPY/QQQ and `veto-v1`.
 - **No** vectorbt PRO, no GPU work in this program, no social/congress/estimate feeds.

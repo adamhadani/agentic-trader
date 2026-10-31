@@ -1,5 +1,6 @@
 """Explicit timestamp × symbol operators; never overload single-series rank."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -35,6 +36,45 @@ def group_neutralize(panel: pd.DataFrame, groups: pd.Series) -> pd.DataFrame:
         columns = groups.index[groups == group]
         result[columns] = panel[columns].sub(panel[columns].mean(axis=1), axis=0)
     return result
+
+
+def group_zscore(panel: pd.DataFrame, groups: pd.Series, *, min_names: int) -> pd.DataFrame:
+    """Per-row z-score inside each group; NaN where a group has fewer than min_names finite names."""
+    validate_panel(panel)
+    if not groups.index.equals(panel.columns) or groups.isna().any():
+        raise ValueError("Group membership must align to every symbol")
+    result = pd.DataFrame(np.nan, index=panel.index, columns=panel.columns, dtype=float)
+    for group in sorted(groups.unique()):
+        columns = groups.index[groups == group]
+        block = panel[columns].astype(float)
+        deviation = block.sub(block.mean(axis=1), axis=0).div(block.std(axis=1).replace(0, np.nan), axis=0)
+        result[columns] = deviation.where(block.notna().sum(axis=1) >= min_names, other=np.nan, axis=0)
+    return result
+
+
+def cross_sectional_regress_out(
+    panel: pd.DataFrame, regressors: Sequence[pd.DataFrame], *, min_rows: int
+) -> pd.DataFrame:
+    """Per-row OLS residual of panel on regressors with an intercept; NaN rows unless every
+    regressor and the panel are finite on at least min_rows names."""
+    validate_panel(panel)
+    for regressor in regressors:
+        validate_panel(regressor)
+        if not regressor.index.equals(panel.index) or not regressor.columns.equals(panel.columns):
+            raise ValueError("Regressors must align exactly to the panel")
+    values = panel.to_numpy(dtype=float)
+    stacked = [r.to_numpy(dtype=float) for r in regressors]
+    result = np.full(values.shape, np.nan)
+    width = len(stacked) + 1
+    for i in range(values.shape[0]):
+        columns = [values[i], *(s[i] for s in stacked)]
+        usable = np.all([np.isfinite(c) for c in columns], axis=0)
+        if usable.sum() < max(min_rows, width + 1):
+            continue
+        design = np.column_stack([np.ones(usable.sum()), *(s[i][usable] for s in stacked)])
+        coefficients, *_ = np.linalg.lstsq(design, values[i][usable], rcond=None)
+        result[i, usable] = values[i][usable] - design @ coefficients
+    return pd.DataFrame(result, index=panel.index, columns=panel.columns)
 
 
 class PanelCoverageError(ValueError):

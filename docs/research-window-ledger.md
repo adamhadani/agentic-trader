@@ -7,6 +7,8 @@ Every row below was taken from the result doc it links, read for its exact windo
 state something, the row says "not stated in the doc". Nothing is inferred from memory or from the review.
 
 The ledger does not change any gate, and a row here grants no promotion, shadow or probe credit.
+It holds reads L01–L42; L40–L42 (the [IC lane](alpha-ic-lane.md)) were added before their first read and
+have no result yet.
 
 ## Rules
 
@@ -31,6 +33,7 @@ catch the rest.
 | --- | --- | --- | --- | --- |
 | Event lane, Sharadar era 2007-01 → 2016-07 | `insider-oos-v1` (H2a), `pead-sue-v3` (H2b), Holm over 2 | 0.05 one-sided | The era manifest, frozen at week 2 of the review's plan | Not declared yet; no read has happened |
 | Price lane, Sharadar era | `composite-ic-v1` | 0.05 one-sided | The same manifest | Not declared yet; no read has happened |
+| IC lane, development window 2016-08-01 → 2023-12-29 | `composite-ic-v1` gate on cohort v3 (v2 reported); checks A-IC and C-IC; the 64-pair re-score | 0.05 one-sided | The frozen `composite-ic-v1.json`, `rescore-v1.json`, `sectors-v1.json` and `ff12-sic-v1.json`, committed with rows L40–L42 | No α: development only; `t ≥ 2` at h = 20 behaves as about 5% one-sided (calibration in [the contract](alpha-ic-lane.md#6-the-ic-statistic)) |
 | Prospective insider read from 2026-08-01 | The frozen `insider` v1 rule | To be declared with the 2027-08 read | Its own row | Not declared yet |
 | Any new lane | Per its spec | 0.05 one-sided, Holm within the lane | Its row, before the read | — |
 
@@ -52,7 +55,7 @@ Statuses follow the review's §2.5. The "Reads" column lists ledger ids from the
 
 | # | Window | Status | Use in this program | Reads |
 | --- | --- | --- | --- | --- |
-| W1 | Pooled cube, discovery 2016-08-01 → 2021-12-31 and selection 2022-01-03 → 2023-12-29 | development only | Development and rehearsal | L01–L11 (discovery; L11 also read selection); L12–L17 read the whole decision window, including these dates |
+| W1 | Pooled cube, discovery 2016-08-01 → 2021-12-31 and selection 2022-01-03 → 2023-12-29 | development only | Development and rehearsal | L01–L11 (discovery; L11 also read selection); L12–L17 read the whole decision window, including these dates; L40–L42 (IC lane) read the whole window 2016-08-01 → 2023-12-29, selection included |
 | W2 | Pooled confirmation 2024-01-02 → 2026-07-31 | reserve (decay check only) | Held in reserve; unused for pooled formulas | Unused by the pooled campaigns; read by L12–L20 and L39 for other lanes (see the note below the table) |
 | W3 | Native setups 2017-01-03 → 2021-04-30 | spent (third read) | Not used | L21–L24 |
 | W4 | Native setups 2021-06-01 → 2026-01-29 | development only | Descriptive | L25–L30 |
@@ -154,6 +157,23 @@ where the doc states them.
 | L39 | 2026-09-19 | Matched screened-equity DSL panel | Screened cohort | 2021–2025 attempt failed closed on `PanelCoverageError` before scoring; recent diagnostic 2025-07-16 → 2025-12-31 | [matched panel](alpha-matched-panel-2026-09-19.md) | Descriptive only |
 
 L18–L20 (above) are also ETF and equity-panel reads.
+
+### IC lane (cube 2016-08 → 2023-12, development window W1)
+
+Declared before the reads. Window `2016-08-01 → 2023-12-29` for every row; nothing after 2023-12-29 is read.
+Frozen files and digests: `composite-ic-v1.json` `63269ca1ba2a2bf7437a8c979646948007f5a671c680efaa9b71b301077d63b4`,
+`rescore-v1.json` `961f60f9fcebbe716a482d3a545e73e693f6ef80a204aa989b430a538776c8ec`, `sectors-v1.json`
+`56bc70fb52ce541aa2e4292673e81ebbc42df18bcf53484e6907cb52d4689574`, `ff12-sic-v1.json`
+`4fac501b2baffd0792188f514e0b93fe41bd195f6c09c66b288e23befe83bcb5`. The lane's α is in the table above.
+
+| Id | Date | Lane / study | Cohort | What will be read | Result doc | Verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| L40 | 2026-10-31 | IC checks A-IC and C-IC, plus the alignment spot check of real cells | Cohort v3 (`cohort3-daily-v1`), target `e_20`, window 2016-08-01 → 2023-12-29 | The composite's permuted and planted replicates over the whole window; the spot check compares 200 seeded cells of the forward-return arrays with raw cached bars and **computes no IC** | [results](alpha-ic-lane-results-2026-10-31.md) | Passed: C-IC accepted 3.0% (limit 10%), `t` sd 1.13; A-IC power 100%, a plumbing check; spot check no mismatch. No α claim; C-IC validates h = 20 on the composite only |
+| L41 | 2026-10-31 | Zero-trial re-score of the 64 tested pairs, by rank IC | Cohorts v2 and v3 (eight fixed sets of eight formulas) | Discovery 2016-08-01 → 2021-12-31 and selection 2022-01-03 → 2023-12-29 for each pair, with a placebo per pair and window; batch-mean verdicts, no `t ≥ 2` rule. **Selection is new for 63 of the 64 pairs** (only `shorts_retreat` on cohort v3 reached it, L11); allowed because W1 is development only, and any batch that carries then has no unread selection window left | [results](alpha-ic-lane-results-2026-10-31.md) | All eight sets reproduced; 2 of 8 batches carry, the chance rate (`short-v1`, `cohort3-events-v1`); no pair reaches `t ≥ 2` in both windows. No α claim; carrying is not a pass |
+| L42 | 2026-10-31 | `composite-ic-v1` gate | Cohort v3 decisive (`cohort3-daily-v1`); cohort v2 (`campaign-v4`) reported and not deciding | `e_20` rank IC over 2016-08-01 → 2023-12-29, other horizons and raw returns reported; the decomposition (themes, composite excluding low risk, 252-session lag) and `min_detectable_ic` | [results](alpha-ic-lane-results-2026-10-31.md) | **Fail, composite closed:** v3 mean IC +0.0116, `t` 1.53, 3 of 4 blocks, power at IC 0.03 97.5%; v2 reported at +0.0148, `t` 1.50. No α claim |
+
+A re-run after L42 is a declared second look. The checks and the gate run at one clean code revision; a code fix
+after L40 means a new revision and a re-run of the checks.
 
 ### Prospective from 2026-08-01
 

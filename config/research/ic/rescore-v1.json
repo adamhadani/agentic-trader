@@ -1,0 +1,117 @@
+{
+  "id": "ic-rescore",
+  "version": 1,
+  "rationale": "A zero-trial re-score of the eight fixed sets run so far, read by rank IC. The formulas and their discovery window were already spent, and selection is new for 63 of the 64 pairs but is development data (ledger W1), so this charges nothing and journals nothing. Each batch first reproduces its campaign's recorded discovery edges; one that does not gets no IC read and no verdict. A batch carries only if its mean IC is above zero on discovery and on selection, which is not a pass: it only makes a member eligible for a later spec that tests incremental IC over the composite. The insider sets never ran, so they are out. Paths under batches are relative to the research root, except protocol, which is relative to the repository. Bootstrap draws and seed and min_names are the composite's.",
+  "sectors_path": "config/research/ic/sectors-v1.json",
+  "sectors_sha256": "56bc70fb52ce541aa2e4292673e81ebbc42df18bcf53484e6907cb52d4689574",
+  "horizon": 20,
+  "min_names": 30,
+  "min_sessions": 250,
+  "bootstrap": {
+    "draws": 2000,
+    "seed": 20261103
+  },
+  "placebo_seed": 20261201,
+  "edge_statistic_reference": {
+    "t_mean": -0.06,
+    "t_sd": 1.25
+  },
+  "known_families": [
+    "shorts_retreat",
+    "quiet_momentum"
+  ],
+  "batches": [
+    {
+      "id": "campaign-v4",
+      "protocol": "config/research/pooled/campaign-v4.json",
+      "protocol_sha256": "a72f2e65378f2f49e9c6d7b6c38079fbbed1f673017ebcbbd074874a96270f0d",
+      "campaign_dir": "pooled-campaign-v4-20261007",
+      "formulas_sha256": "136dc76125be875eb48d2d340d350b52769a4fdd8d935f891187afa51b7d65b2",
+      "score": "daily",
+      "entry_delay": 0,
+      "inputs": {}
+    },
+    {
+      "id": "intraday-v1",
+      "protocol": "config/research/pooled/intraday-v1.json",
+      "protocol_sha256": "5b4c3fdf23aa180039aecd97cb4d067e22ffb0302e858aaebb905a54a22a7d5d",
+      "campaign_dir": "pooled-campaign-intraday-v1-20261014",
+      "formulas_sha256": "0cb341b7215f32799bf27c37bbbedb8de63e423ad620556fce9ab8d77f1bb725",
+      "score": "hourly",
+      "entry_delay": 1,
+      "inputs": {}
+    },
+    {
+      "id": "events-v1",
+      "protocol": "config/research/pooled/events-v1.json",
+      "protocol_sha256": "4e156fd8dcb45064a042505433260bd59aa628357106abaad145ccd24988d73b",
+      "campaign_dir": "pooled-campaign-events-v1-20261015",
+      "formulas_sha256": "8ea4a5eeadca95d2f01d44efc56dd3c211182712f2de78c05b043a40808fe05c",
+      "score": "daily",
+      "entry_delay": 0,
+      "inputs": {
+        "earnings_pages": "apriori-pead-v1-cache/nasdaq",
+        "corporate_actions": "corporate-actions-cohort-v2-20261014/actions.json"
+      }
+    },
+    {
+      "id": "short-v1",
+      "protocol": "config/research/pooled/short-v1.json",
+      "protocol_sha256": "4be5bf3a584d73343b7e9c145dfe13c1fc3d866141c87b91e6deb668ae88e587",
+      "campaign_dir": "pooled-campaign-short-v1-20261020",
+      "formulas_sha256": "34a352d27b7ae6b97e5219159975b0fa28af3bd9d045fac8d4d80607ff6c106c",
+      "score": "daily",
+      "entry_delay": 0,
+      "inputs": {
+        "short_volume": "short-volume-cache/short-volume",
+        "corporate_actions": "corporate-actions-cohort-v2-20261014/actions.json"
+      }
+    },
+    {
+      "id": "cohort3-daily-v1",
+      "protocol": "config/research/pooled/cohort3-daily-v1.json",
+      "protocol_sha256": "002b0ac27e2912105d8020495aabdf3e879c6bbc8bfa77665de45e297f290574",
+      "campaign_dir": "pooled-campaign-cohort3-daily-v1-20261016",
+      "formulas_sha256": "c8afd90c5da9b0a62262f2441d83e860289fa25908c3a82672706bc827aedebb",
+      "score": "daily",
+      "entry_delay": 0,
+      "inputs": {}
+    },
+    {
+      "id": "cohort3-intraday-v1",
+      "protocol": "config/research/pooled/cohort3-intraday-v1.json",
+      "protocol_sha256": "e6cda73e2c157a184b9c17beb00a0432d36aa0fac3fdbb2d6130c8a2ef14f124",
+      "campaign_dir": "pooled-campaign-cohort3-intraday-v1-20261016",
+      "formulas_sha256": "089ef40a6941cc99197db94db9126df9aec3a3d30994d6e09ae8e2e98a235fe0",
+      "score": "hourly",
+      "entry_delay": 1,
+      "inputs": {}
+    },
+    {
+      "id": "cohort3-events-v1",
+      "protocol": "config/research/pooled/cohort3-events-v1.json",
+      "protocol_sha256": "b692d7f9a1ec1d797542f710a69aa2f7556e72873e29f571f4bf946a37243843",
+      "campaign_dir": "pooled-campaign-cohort3-events-v1-20261016",
+      "formulas_sha256": "bb8805b6332adb3ec2ca39627e33bf4e4535886a8673baf5e963a6ea42c548cb",
+      "score": "daily",
+      "entry_delay": 0,
+      "inputs": {
+        "earnings_pages": "apriori-pead-v1-cache/nasdaq",
+        "corporate_actions": "corporate-actions-cohort-v3-20261015/actions.json"
+      }
+    },
+    {
+      "id": "cohort3-short-v1",
+      "protocol": "config/research/pooled/cohort3-short-v1.json",
+      "protocol_sha256": "817076247520a85ff7944857e6060c41bcad28ad63a95fa2618f10910ee7a633",
+      "campaign_dir": "pooled-campaign-cohort3-short-v1-20261020",
+      "formulas_sha256": "d8cd33fb0cd9d76cba9f05abe7846fa2f5a112b89ff769865e770eb437a7a065",
+      "score": "daily",
+      "entry_delay": 0,
+      "inputs": {
+        "short_volume": "short-volume-cache/short-volume",
+        "corporate_actions": "corporate-actions-cohort-v3-20261015/actions.json"
+      }
+    }
+  ]
+}

@@ -298,6 +298,10 @@ class _Acquisition:
         )
 
 
+def cube_cache_path(cache_dir: Path, cohort: LoadedCohort, spec: CubeSpec) -> Path:
+    return cache_dir / f"cube-{cohort.sha256[:16]}-{spec.identity[:16]}.npz"
+
+
 async def build_cube_inputs(
     cohort: LoadedCohort,
     spec: CubeSpec,
@@ -321,7 +325,7 @@ async def build_cube_inputs(
         if progress is not None:
             progress(message)
 
-    cube_path = cache_dir / f"cube-{cohort.sha256[:16]}-{spec.identity[:16]}.npz"
+    cube_path = cube_cache_path(cache_dir, cohort, spec)
     if require_cached and not cube_path.exists():
         raise ValueError(
             f"no cached cube {cube_path} for this cohort and spec; run alpha pooled power first "
