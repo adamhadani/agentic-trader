@@ -20,7 +20,8 @@ is out of its reach. ``test_arrays`` pins the arrays' dates, session by session.
 
 A-IC is a plumbing check, not a power statement: the permuted base breaks the link between a name's score and its
 own factor loadings, so its power is overstated. Every read therefore reports ``min_detectable_ic``, the gate's
-``t`` times the read's own ``se``; on the real composite that is the honest measure. It decides nothing.
+``t`` times the read's own ``se``, which is the level with 50% power, and ``power_at``, the power at fixed levels of
+IC from the same ``se``. On the real composite those are the honest measures. They decide nothing.
 
 Neither check computes the IC of the real, unpermuted composite. That read belongs to the gate alone.
 """
@@ -36,6 +37,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
 
 from agentic_trader.research.alpha.panel import cross_sectional_rank, cross_sectional_zscore
 from agentic_trader.research.ic.arrays import build_ic_arrays
@@ -60,6 +62,7 @@ __all__ = [
     "mapped_floor_reason",
     "mapped_fraction",
     "planted_score",
+    "power_at",
     "require_checks",
     "require_pinned_sectors",
     "session_shuffle",
@@ -69,6 +72,7 @@ __all__ = [
 CHECKS_KIND = "ic_checks"
 FIXED_PERMUTATION = "fixed_permutation"
 AR1 = "ar1"
+POWER_AT_IC = (0.02, 0.03)
 
 Progress = Callable[[str], None] | None
 
@@ -120,11 +124,18 @@ def write_manifest(
     )
 
 
+def power_at(se: float, min_t: float) -> dict[str, float]:
+    """``Phi(ic / se - min_t)`` per level of IC; NaN when the read has no usable ``se``."""
+    if not math.isfinite(se) or se <= 0:
+        return {str(ic): float("nan") for ic in POWER_AT_IC}
+    return {str(ic): float(norm.cdf(ic / se - min_t)) for ic in POWER_AT_IC}
+
+
 def gate_read(score: np.ndarray, target: np.ndarray, mask: np.ndarray, protocol: CompositeProtocol) -> dict:
     """The gate's rule on one score panel: the one path by which the gate and both checks read a score.
 
-    ``min_detectable_ic`` and ``median_pairs_per_session`` (over evaluated sessions) describe the read; the rule
-    does not use them.
+    ``min_detectable_ic``, ``power_at`` and ``median_pairs_per_session`` (over evaluated sessions) describe the read;
+    the rule does not use them.
     """
     rule = protocol.gate
     ic = rank_ic_series(score, target, mask, min_names=protocol.min_names)
@@ -142,6 +153,7 @@ def gate_read(score: np.ndarray, target: np.ndarray, mask: np.ndarray, protocol:
     return {
         **verdict,
         "min_detectable_ic": rule.min_t * verdict["se"],
+        "power_at": power_at(verdict["se"], rule.min_t),
         "median_pairs_per_session": float(np.median(evaluated)) if evaluated.size else float("nan"),
     }
 
@@ -287,6 +299,7 @@ def a_ic(
                 "replicates": tally["replicates"],
                 "mean_ic": tally["mean_ic"],
                 "t_mean": tally["t_mean"],
+                "t_sd": tally["t_sd"],
                 "median_pairs_per_session": tally["median_pairs_per_session"],
             }
         return rows

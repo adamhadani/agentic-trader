@@ -17,6 +17,9 @@ TICKERS = {
     "1": {"cik_str": 789019, "ticker": "MSFT", "title": "Microsoft"},
     "2": {"cik_str": 1, "ticker": "BLNK", "title": "Blank"},
     "3": {"cik_str": 2, "ticker": "NOSIC", "title": "Nokey"},
+    "4": {"cik_str": 1067983, "ticker": "BRK-B", "title": "Berkshire"},
+    "5": {"cik_str": 11, "ticker": "TWO-A", "title": "Two spellings, dash"},
+    "6": {"cik_str": 12, "ticker": "TWO.A", "title": "Two spellings, exact"},
 }
 SENTINEL_AGENT = "sentinel-agent person@example.invalid"
 
@@ -138,6 +141,31 @@ async def test_acquire_retries_once_on_transport_error(ff12):
 async def test_acquire_records_unmapped_ticker(ff12):
     doc = await _run(_handler({}), ["ZZZZ"], ff12)
     assert doc["failures"] == {"ZZZZ": "no_ticker"}
+
+
+async def test_acquire_resolves_a_dotted_symbol_through_its_dash_entry(ff12):
+    seen: list[str] = []
+    handler = _handler({"CIK0001067983.json": httpx.Response(200, json={"sic": "6331"})}, seen)
+    doc = await _run(handler, ["BRK.B"], ff12)
+    assert doc["symbols"]["BRK.B"] == {"cik": 1067983, "sic": 6331, "group": "Money"}
+    assert doc["failures"] == {}
+    assert "https://data.sec.gov/submissions/CIK0001067983.json" in seen
+
+
+async def test_acquire_takes_the_exact_spelling_when_both_exist(ff12):
+    seen: list[str] = []
+    handler = _handler({"CIK0000000012.json": httpx.Response(200, json={"sic": "2911"})}, seen)
+    doc = await _run(handler, ["TWO.A"], ff12)
+    assert doc["symbols"]["TWO.A"]["cik"] == 12
+    assert not any("CIK0000000011" in url for url in seen)
+
+
+async def test_acquire_refuses_a_client_that_follows_redirects(ff12):
+    seen: list[str] = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_handler({}, seen)), follow_redirects=True) as client:
+        with pytest.raises(ValueError, match="redirects"):
+            await acquire_sectors(["AAPL"], client=client, pace=_pace, ff12=ff12, progress=None)
+    assert seen == []
 
 
 async def test_user_agent_never_reaches_the_document(ff12):

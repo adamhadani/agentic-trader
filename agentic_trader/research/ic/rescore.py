@@ -1,6 +1,8 @@
 """The zero-trial re-score of the tested formula-cohort pairs (research only).
 
-The formulas and windows were already spent, so this charges nothing and journals nothing: no database.
+The formulas and their discovery window were already spent, so this charges nothing and journals nothing: no
+database. Selection is new for all the pairs but one, which is allowed because it is a development window; it leaves
+any batch that carries with no unread selection window.
 
 **Rehearsal, before any IC.** Each pair's discovery ``edge_mean`` and ``n_sessions`` are recomputed through the
 campaign's own scoring path and compared with its ``formulas.jsonl``: within 1e-9 and exactly. A batch with any
@@ -12,9 +14,13 @@ them, so nothing reads the reserve. A discovery decision's forward return can re
 expected: both are development dates. An hourly batch reads through 10:00 on ``D``, after ``D``'s open, so its
 return starts at the next open (``entry_delay``); that blunts the intraday batches by one session.
 
+**The negative control.** One fixed within-sector name permutation per pair, through the same read on each window.
+The earlier edge ``t`` sd is not a null, so the placebo's ``t`` sits beside the real one.
+
 **The batch-mean rule.** A batch carries only if the mean IC over its formulas is above zero on discovery and on
-selection. Carrying is not a pass: it only makes a member eligible for a later spec, and nothing here authorizes
-anything.
+selection. A formula with fewer than ``min_sessions`` evaluated sessions on a window is out of that window's mean and
+counted. Carrying is not a pass: under a global null about a quarter of batches carry. It only makes a member eligible
+for a later spec, and nothing here authorizes anything.
 """
 
 from __future__ import annotations
@@ -28,16 +34,16 @@ import math
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from agentic_trader.research.alpha.search import canonical_expression
 from agentic_trader.research.ic.arrays import build_ic_arrays, truncate_bars
-from agentic_trader.research.ic.checks import Progress, _say, failed_outcome, mapped_fraction
+from agentic_trader.research.ic.checks import Progress, _say, failed_outcome, fixed_permutation, mapped_fraction
 from agentic_trader.research.ic.protocol import Bootstrap
 from agentic_trader.research.ic.sectors import LoadedSectors
 from agentic_trader.research.ic.statistic import ic_inference, rank_ic_series, tear_sheet
@@ -79,12 +85,24 @@ class _Frozen(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+def _stays_under_its_root(path: str) -> str:
+    pure = PurePosixPath(path)
+    if pure.is_absolute() or ".." in pure.parts:
+        raise ValueError("a pinned path is relative to its root, with no '..'")
+    return path
+
+
 class BatchInputs(_Frozen):
     """A protocol's extra field sources, relative to the research root."""
 
     earnings_pages: str | None = None
     corporate_actions: str | None = None
     short_volume: str | None = None
+
+    @field_validator("earnings_pages", "corporate_actions", "short_volume")
+    @classmethod
+    def _relative(cls, value: str | None) -> str | None:
+        return None if value is None else _stays_under_its_root(value)
 
 
 class RescoreBatch(_Frozen):
@@ -96,6 +114,11 @@ class RescoreBatch(_Frozen):
     score: Literal["daily", "hourly"]
     entry_delay: int
     inputs: BatchInputs = BatchInputs()
+
+    @field_validator("protocol", "campaign_dir")
+    @classmethod
+    def _relative(cls, value: str) -> str:
+        return _stays_under_its_root(value)
 
     @model_validator(mode="after")
     def _delay_follows_score(self) -> RescoreBatch:
@@ -119,7 +142,9 @@ class RescoreProtocol(_Frozen):
     sectors_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     horizon: int = Field(ge=1)
     min_names: int = Field(ge=1)
+    min_sessions: int = Field(ge=1)
     bootstrap: Bootstrap
+    placebo_seed: int
     edge_statistic_reference: EdgeStatisticReference
     known_families: tuple[str, ...]
     batches: tuple[RescoreBatch, ...] = Field(min_length=1)
@@ -249,16 +274,31 @@ def _mean_or_nan(values: Sequence[float]) -> float:
     return float(np.mean(values)) if values else float("nan")
 
 
-def batch_verdict(rows: Sequence[dict]) -> dict:
-    """The batch-mean rule. A formula with no evaluated session on a window is left out of that window's mean;
-    ``n_without_sessions`` counts the formulas missing from at least one of the two."""
-    means = {window: [row[window]["mean"] for row in rows if _finite(row[window]["mean"])] for window in WINDOWS}
+def _sd_or_nan(values: Sequence[float]) -> float:
+    return float(np.std(values, ddof=1)) if len(values) > 1 else float("nan")
+
+
+def batch_verdict(rows: Sequence[dict], *, min_sessions: int) -> dict:
+    """The batch-mean rule. A formula with fewer than ``min_sessions`` evaluated sessions on a window is left out of
+    that window's mean; ``n_without_sessions`` counts the formulas missing from at least one of the two. The session
+    figures cover every formula, including those left out."""
+
+    def counts(row: dict, window: str) -> bool:
+        return _finite(row[window]["mean"]) and row[window]["n_sessions"] >= min_sessions
+
+    means = {window: [row[window]["mean"] for row in rows if counts(row, window)] for window in WINDOWS}
     discovery, selection = _mean_or_nan(means["discovery"]), _mean_or_nan(means["selection"])
+    sessions = {window: [row[window]["n_sessions"] for row in rows] for window in WINDOWS}
     return {
         "discovery_mean": discovery,
         "selection_mean": selection,
         "n_formulas": len(rows),
-        "n_without_sessions": sum(1 for row in rows if not all(_finite(row[window]["mean"]) for window in WINDOWS)),
+        "n_without_sessions": sum(1 for row in rows if not all(counts(row, window) for window in WINDOWS)),
+        **{f"{window}_min_sessions_observed": min(sessions[window], default=0) for window in WINDOWS},
+        **{
+            f"{window}_median_sessions": float(np.median(sessions[window])) if sessions[window] else float("nan")
+            for window in WINDOWS
+        },
         "carries": bool(discovery > 0 and selection > 0),  # False for a NaN mean
     }
 
@@ -273,8 +313,11 @@ def read_pairs(
     groups: np.ndarray,
     *,
     entry_delay: int,
+    first_pair: int,
 ) -> tuple[list[dict], list[dict]]:
-    """One row per pair with both windows' inference, and one tear sheet per pair over the batch's whole read."""
+    """One row per pair with both windows' inference and placebo ``t``, and one tear sheet per pair over the batch's
+    whole read. ``first_pair`` is this batch's first index among the frozen file's pairs: each pair seeds its own
+    permutation with ``placebo_seed + index``, whatever became of the batches before it."""
     discovery, selection = protocol.windows.discovery, protocol.windows.selection
     horizon = rescore.horizon
     arrays = build_ic_arrays(
@@ -289,14 +332,22 @@ def read_pairs(
     draws, seed = rescore.bootstrap.draws, rescore.bootstrap.seed
     rows: list[dict] = []
     sheets: list[dict] = []
-    for row in recorded:
+    for pair_index, row in enumerate(recorded, start=first_pair):
         scores = book.panel(row["expression"])[arrays.offset : stop]
         ic = rank_ic_series(scores, target, arrays.eligible, min_names=rescore.min_names)
+        order = fixed_permutation(arrays.groups, np.random.default_rng(rescore.placebo_seed + pair_index))
+        placebo = rank_ic_series(scores[:, order], target, arrays.eligible, min_names=rescore.min_names)
         identity = {"formula_id": row["formula_id"], "family": row["family"], "expression": row["expression"]}
         rows.append(
             {
                 **identity,
-                **{name: ic_inference(ic[mask], horizon, draws=draws, seed=seed) for name, mask in masks.items()},
+                **{
+                    name: {
+                        **ic_inference(ic[mask], horizon, draws=draws, seed=seed),
+                        "placebo_t": ic_inference(placebo[mask], horizon, draws=draws, seed=seed)["t"],
+                    }
+                    for name, mask in masks.items()
+                },
             }
         )
         sheets.append(
@@ -316,6 +367,7 @@ def _read_batch(
     spy: pd.DataFrame,
     sectors: LoadedSectors,
     rescore: RescoreProtocol,
+    first_pair: int,
     progress: Progress,
 ) -> tuple[dict, list[dict], list[dict]]:
     """The batch's record, pair rows and tear sheets. Bars are cut first; the rehearsal comes before any IC."""
@@ -333,14 +385,23 @@ def _read_batch(
         return record, [], []
     _say(progress, f"{batch.id}: reproduced, reading rank IC")
     groups = sectors.groups(truncated.cube.symbols)
-    rows, sheets = read_pairs(rescore, protocol, truncated, spy, book, recorded, groups, entry_delay=batch.entry_delay)
+    rows, sheets = read_pairs(
+        rescore, protocol, truncated, spy, book, recorded, groups, entry_delay=batch.entry_delay, first_pair=first_pair
+    )
     labelled = [{"batch": batch.id, **row, "rehearsal": rehearsal["edges"][row["formula_id"]]} for row in rows]
-    record.update(mapped_fraction=mapped_fraction(groups), verdict=batch_verdict(labelled))
+    record.update(
+        mapped_fraction=mapped_fraction(groups), verdict=batch_verdict(labelled, min_sessions=rescore.min_sessions)
+    )
     return record, labelled, [{"batch": batch.id, **sheet} for sheet in sheets]
 
 
 async def _run_batch(
-    pinned: _PinnedBatch, build: Builder, sectors: LoadedSectors, rescore: RescoreProtocol, progress: Progress
+    pinned: _PinnedBatch,
+    build: Builder,
+    sectors: LoadedSectors,
+    rescore: RescoreProtocol,
+    first_pair: int,
+    progress: Progress,
 ) -> tuple[dict, list[dict], list[dict]]:
     """A batch whose inputs fail stays out by its error's type name; the others continue."""
     batch = pinned.batch
@@ -355,7 +416,9 @@ async def _run_batch(
     try:
         _say(progress, f"{batch.id}: building")
         built, spy = await build()
-        record, rows, sheets = await asyncio.to_thread(_read_batch, pinned, built, spy, sectors, rescore, progress)
+        record, rows, sheets = await asyncio.to_thread(
+            _read_batch, pinned, built, spy, sectors, rescore, first_pair, progress
+        )
     except Exception as exc:
         return {**identity, **failed_outcome(exc, f"batch {batch.id}", progress)}, [], []
     return {**identity, **record}, rows, sheets
@@ -371,10 +434,14 @@ def _summary(rescore: RescoreProtocol, records: Sequence[dict], rows: Sequence[d
     windows = {}
     for window in WINDOWS:
         ts = [row[window]["t"] for row in rows if _finite(row[window]["t"])]
+        placebo = [row[window]["placebo_t"] for row in rows if _finite(row[window]["placebo_t"])]
         windows[window] = {
             "n_t": len(ts),
             "t_mean": _mean_or_nan(ts),
-            "t_sd": float(np.std(ts, ddof=1)) if len(ts) > 1 else float("nan"),
+            "t_sd": _sd_or_nan(ts),
+            "n_placebo_t": len(placebo),
+            "placebo_t_mean": _mean_or_nan(placebo),
+            "placebo_t_sd": _sd_or_nan(placebo),
         }
     return {
         "n_pairs": sum(record["n_pairs"] for record in records),
@@ -407,6 +474,7 @@ def _write_manifest(loaded: LoadedRescore, sectors: LoadedSectors, environment: 
             "check": RESCORE_KIND,
             "rescore_sha256": loaded.sha256,
             "sectors_sha256": sectors.sha256,
+            "edge_tolerance": EDGE_TOLERANCE,
             "environment": environment,
             "started_at": datetime.now(UTC).isoformat(),
             "authorizes_promotion": False,
@@ -416,12 +484,28 @@ def _write_manifest(loaded: LoadedRescore, sectors: LoadedSectors, environment: 
     )
 
 
+def _require_inputs(rescore: RescoreProtocol, research_root: Path, cube_files: Mapping[str, Path]) -> None:
+    """Every batch's inputs and cached cube exist, by name only: none of them is opened here."""
+    missing = []
+    for batch in rescore.batches:
+        missing += [
+            f"{batch.id}: input {name} {relative} under the research root"
+            for name, relative in batch.inputs.model_dump(exclude_none=True).items()
+            if not (research_root / relative).exists()
+        ]
+        if not cube_files[batch.id].exists():
+            missing.append(f"{batch.id}: cached cube {cube_files[batch.id].name} in the cache")
+    if missing:
+        raise ValueError(f"missing before any build: {'; '.join(missing)}")
+
+
 async def _rescore_outcome(
     loaded: LoadedRescore,
     output: Path,
     *,
     research_root: Path,
     builders: Mapping[str, Builder],
+    cube_files: Mapping[str, Path],
     sectors: LoadedSectors,
     environment: dict,
     progress: Progress,
@@ -435,15 +519,18 @@ async def _rescore_outcome(
         if missing:
             raise ValueError(f"no builder for batches {missing}")
         pins = [await asyncio.to_thread(_pin_batch, batch, research_root) for batch in rescore.batches]
+        await asyncio.to_thread(_require_inputs, rescore, research_root, cube_files)
     except ValueError as exc:  # Only these deliberate refusals: their text is fixed, a build's error is not.
         return {"status": "refused", "reason": str(exc)}
     records: list[dict] = []
     rows: list[dict] = []
     sheets: list[dict] = []
+    first_pair = 0
     for pinned in pins:
         record, batch_rows, batch_sheets = await _run_batch(
-            pinned, builders[pinned.batch.id], sectors, rescore, progress
+            pinned, builders[pinned.batch.id], sectors, rescore, first_pair, progress
         )
+        first_pair += len(pinned.recorded)
         records.append(record)
         rows.extend(batch_rows)
         sheets.extend(batch_sheets)
@@ -472,6 +559,7 @@ async def execute_rescore(
     *,
     research_root: Path,
     builders: Mapping[str, Builder],
+    cube_files: Mapping[str, Path],
     sectors: LoadedSectors,
     environment: dict,
     progress: Progress = None,
@@ -492,6 +580,7 @@ async def execute_rescore(
             output,
             research_root=research_root,
             builders=builders,
+            cube_files=cube_files,
             sectors=sectors,
             environment=environment,
             progress=progress,

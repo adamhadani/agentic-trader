@@ -2,6 +2,7 @@
 
 Per-session IC is the Spearman correlation over names with a finite score, a finite target and a true mask
 (average ranks for ties); a session below ``min_names`` pairs, or with a constant score or target, is NaN.
+The Pearson series applies the same rules to the values themselves, and it is reported only.
 Inference drops unavailable sessions first, then bootstraps the mean IC with a stationary session-block
 bootstrap of mean block length ``2h`` (primary) and reports Newey-West at ``2h`` lags as a cross-check.
 """
@@ -9,7 +10,7 @@ bootstrap of mean block length ``2h`` (primary) and reports Newey-West at ``2h``
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import numpy as np
 from scipy.stats import rankdata
@@ -19,15 +20,20 @@ from agentic_trader.research.ic.arrays import ICArrays
 from agentic_trader.research.pooled.stats import _summary, bootstrap_draws
 
 
-__all__ = ["gate_verdict", "ic_inference", "rank_ic_series", "render_tear_sheet", "tear_sheet"]
+__all__ = ["gate_verdict", "ic_inference", "pearson_ic_series", "rank_ic_series", "render_tear_sheet", "tear_sheet"]
 
 DECILES = 10
 TARGETS = ("raw", "residual")
 _NAN = float("nan")
 
 
-def rank_ic_series(scores: np.ndarray, target: np.ndarray, mask: np.ndarray, *, min_names: int = 30) -> np.ndarray:
-    """``[S]`` Spearman IC per session; NaN when unavailable."""
+def _ic_series(
+    scores: np.ndarray,
+    target: np.ndarray,
+    mask: np.ndarray,
+    min_names: int,
+    transform: Callable[[np.ndarray], np.ndarray],
+) -> np.ndarray:
     scores = np.asarray(scores, dtype=float)
     target = np.asarray(target, dtype=float)
     if scores.shape != target.shape or scores.shape != np.shape(mask):
@@ -37,12 +43,22 @@ def rank_ic_series(scores: np.ndarray, target: np.ndarray, mask: np.ndarray, *, 
         keep = np.asarray(mask[s], dtype=bool) & np.isfinite(scores[s]) & np.isfinite(target[s])
         if keep.sum() < max(min_names, 2):
             continue
-        a = rankdata(scores[s][keep])
-        b = rankdata(target[s][keep])
+        a = transform(scores[s][keep])
+        b = transform(target[s][keep])
         if np.ptp(a) == 0 or np.ptp(b) == 0:
             continue
         out[s] = float(np.corrcoef(a, b)[0, 1])
     return out
+
+
+def rank_ic_series(scores: np.ndarray, target: np.ndarray, mask: np.ndarray, *, min_names: int = 30) -> np.ndarray:
+    """``[S]`` Spearman IC per session; NaN when unavailable."""
+    return _ic_series(scores, target, mask, min_names, rankdata)
+
+
+def pearson_ic_series(scores: np.ndarray, target: np.ndarray, mask: np.ndarray, *, min_names: int = 30) -> np.ndarray:
+    """``[S]`` Pearson IC per session, under the masking and unavailable rules of ``rank_ic_series``."""
+    return _ic_series(scores, target, mask, min_names, np.asarray)
 
 
 def _nan_inference(n_unavailable: int) -> dict:
@@ -120,7 +136,7 @@ def gate_verdict(
 def _session_deciles(score: np.ndarray, ret: np.ndarray) -> np.ndarray:
     """Mean return per score decile for one session, ordinal ranks (ties by position)."""
     n = score.size
-    decile = (rankdata(score, method="ordinal") - 1) * DECILES // n
+    decile = (rankdata(score, method="ordinal") - 1) * DECILES // n  # a tie breaks by column position
     return np.array([ret[decile == d].mean() for d in range(DECILES)])
 
 
@@ -164,6 +180,7 @@ def _score_stats(scores: np.ndarray, eligible: np.ndarray, min_names: int) -> di
         if valid[s].sum() >= max(min_names, DECILES) and valid[s - 1].sum() >= max(min_names, DECILES):
             top = _top_decile(scores[s], valid[s])
             before = _top_decile(scores[s - 1], valid[s - 1])
+            # A name that was not eligible the session before counts as an entrant.
             turnover.append(float((top & ~before).sum() / top.sum()))
     return {
         "median_names": float(np.median(counts)) if counts.size else _NAN,
@@ -176,7 +193,7 @@ def _top_decile(score: np.ndarray, valid: np.ndarray) -> np.ndarray:
     top = np.zeros(score.shape, bool)
     idx = np.flatnonzero(valid)
     n = idx.size
-    rank = rankdata(score[idx], method="ordinal") - 1
+    rank = rankdata(score[idx], method="ordinal") - 1  # a tie breaks by column position
     top[idx[(rank * DECILES // n) == DECILES - 1]] = True
     return top
 

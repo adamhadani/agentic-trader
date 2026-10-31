@@ -13,6 +13,7 @@ from agentic_trader.research.ic.arrays import ICArrays
 from agentic_trader.research.ic.statistic import (
     gate_verdict,
     ic_inference,
+    pearson_ic_series,
     rank_ic_series,
     render_tear_sheet,
     tear_sheet,
@@ -68,6 +69,45 @@ def test_all_nan_score_gives_all_nan_series():
     scores, target = _panel()
     out = rank_ic_series(np.full(scores.shape, np.nan), target, np.ones(scores.shape, bool))
     assert np.isnan(out).all()
+
+
+def test_pearson_ic_matches_numpy_corrcoef_over_the_pairs_each_session_keeps():
+    scores, target = _panel()
+    mask = np.ones(scores.shape, bool)
+    mask[:, ::4] = False
+    out = pearson_ic_series(scores, target, mask, min_names=3)
+    assert np.isfinite(out).all()
+    for s in range(scores.shape[0]):
+        keep = mask[s] & np.isfinite(scores[s]) & np.isfinite(target[s])
+        assert out[s] == pytest.approx(np.corrcoef(scores[s][keep], target[s][keep])[0, 1], abs=1e-14)
+
+
+def test_pearson_ic_reads_the_values_where_rank_ic_reads_their_order():
+    rng = np.random.default_rng(2)
+    scores = rng.normal(size=(5, 40))
+    target = scores.copy()
+    target[:, 0] = 1000.0  # the top rank, but far from the line
+    rank = rank_ic_series(scores, target, np.ones(scores.shape, bool), min_names=3)
+    pearson = pearson_ic_series(scores, target, np.ones(scores.shape, bool), min_names=3)
+    assert (pearson < 0.5).all() and (rank > 0.5).all()
+
+
+def test_pearson_ic_has_rank_ics_unavailable_sessions():
+    scores, target = _panel(s=6, n=40)
+    mask = np.ones(scores.shape, bool)
+    mask[1, 15:] = False  # below min_names
+    scores[2] = 1.0  # constant score
+    target[3] = 2.0  # constant target
+    scores[4] = np.nan  # no score
+    pearson = pearson_ic_series(scores, target, mask, min_names=20)
+    rank = rank_ic_series(scores, target, mask, min_names=20)
+    assert np.array_equal(np.isnan(pearson), np.isnan(rank))
+    assert np.isnan(pearson[1:5]).all() and np.isfinite(pearson[[0, 5]]).all()
+
+
+def test_pearson_ic_refuses_mismatched_shapes():
+    with pytest.raises(ValueError, match="one shape"):
+        pearson_ic_series(np.zeros((2, 3)), np.zeros((2, 4)), np.ones((2, 3), bool))
 
 
 def test_inference_drops_unavailable_sessions_and_counts_them():
@@ -126,10 +166,10 @@ def test_gate_blocks_are_equal_consecutive_blocks_of_evaluated_sessions():
     out = gate_verdict(ic, 1, min_t=0.0, blocks=3, min_positive_blocks=1, draws=50, seed=1)
     kept = ic[np.isfinite(ic)]
     assert out["block_means"] == [float(p.mean()) for p in np.array_split(kept, 3)]
-    assert out["block_means"] == [1.0, -1.0, 2.0] or len(out["block_means"]) == 3
 
 
-def test_overlapping_null_does_not_overstate_t():
+def test_overlapping_null_guard_catches_only_a_gross_failure():
+    # A guard against a gross failure, not a calibration: 3 of these 40 paths (7.5%) reach t >= 2, the bar is 15%.
     rng = np.random.default_rng(0)
     n, hits = 1000, 0
     for _ in range(40):

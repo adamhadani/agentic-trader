@@ -31,11 +31,13 @@ from agentic_trader.research.ic.sectors import UNKNOWN, acquire_sectors, load_ff
 from agentic_trader.research.insider_filings import _TIMEOUT_SECONDS, REQUESTS_PER_SECOND
 from agentic_trader.research.pooled.cohort import load_cohort
 from agentic_trader.research.pooled.entry import REPO_ROOT
+from agentic_trader.research.pooled.runner import cube_cache_path
 from agentic_trader.research.short_volume import write_private
 
 
 _COMPOSITE_HELP = "The frozen composite file"
 _CACHE_HELP = "The pooled cache directory the cubes were built in; nothing is fetched into it"
+_CACHE_PATH = click.Path(exists=True, file_okay=False, path_type=Path)
 _OUTPUT_HELP = "New private directory; no overwrite"
 _RESCORE_HELP = "The frozen re-score file"
 _RESEARCH_ROOT_HELP = "The directory holding the campaign directories and their pinned inputs"
@@ -118,6 +120,14 @@ def _rescore_builders(clients, loaded: LoadedRescore, pooled: dict, research_roo
     }
 
 
+def _rescore_cube_files(loaded: LoadedRescore, pooled: dict, cache: Path) -> dict[str, Path]:
+    """Where each batch's build will look for its cached cube."""
+    return {
+        batch.id: cube_cache_path(cache, pooled[batch.id][1], pooled[batch.id][0].protocol.cube_spec())
+        for batch in loaded.protocol.batches
+    }
+
+
 async def _verified_rescore_pins(path: Path):
     """The re-score file, its sector map and each batch's protocol, each checked against its digest."""
     try:
@@ -141,6 +151,7 @@ def _echo(result: dict, completed: str) -> None:
     keys = (
         "status",
         "decision",
+        "declared_reading",
         "reason",
         "composite_sha256",
         "rescore_sha256",
@@ -233,7 +244,7 @@ async def sectors_cmd(cohorts: tuple[Path, ...], ff12: Path, output: Path):
 @click.option(
     "--composite", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path), help=_COMPOSITE_HELP
 )
-@click.option("--cache", required=True, type=click.Path(path_type=Path), help=_CACHE_HELP)
+@click.option("--cache", required=True, type=_CACHE_PATH, help=_CACHE_HELP)
 @click.option("--output", required=True, type=click.Path(path_type=Path), help=_OUTPUT_HELP)
 @coro
 async def checks_cmd(composite: Path, cache: Path, output: Path):
@@ -264,7 +275,7 @@ async def checks_cmd(composite: Path, cache: Path, output: Path):
     type=click.Path(file_okay=False, path_type=Path),
     help="The directory of `alpha ic checks`, run at this code revision",
 )
-@click.option("--cache", required=True, type=click.Path(path_type=Path), help=_CACHE_HELP)
+@click.option("--cache", required=True, type=_CACHE_PATH, help=_CACHE_HELP)
 @click.option("--output", required=True, type=click.Path(path_type=Path), help=_OUTPUT_HELP)
 @coro
 async def gate_cmd(composite: Path, checks_dir: Path, cache: Path, output: Path):
@@ -300,7 +311,7 @@ async def gate_cmd(composite: Path, checks_dir: Path, cache: Path, output: Path)
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     help=_RESEARCH_ROOT_HELP,
 )
-@click.option("--cache", required=True, type=click.Path(path_type=Path), help=_CACHE_HELP)
+@click.option("--cache", required=True, type=_CACHE_PATH, help=_CACHE_HELP)
 @click.option("--output", required=True, type=click.Path(path_type=Path), help=_OUTPUT_HELP)
 @coro
 async def rescore_cmd(rescore_path: Path, research_root: Path, cache: Path, output: Path):
@@ -317,6 +328,7 @@ async def rescore_cmd(rescore_path: Path, research_root: Path, cache: Path, outp
             output,
             research_root=research_root,
             builders=_rescore_builders(clients, loaded, pooled, research_root, cache),
+            cube_files=_rescore_cube_files(loaded, pooled, cache),
             sectors=sectors,
             environment=environment,
             progress=_progress,

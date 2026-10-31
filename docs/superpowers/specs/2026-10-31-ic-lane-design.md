@@ -90,7 +90,7 @@ It is NaN if either open is missing, or if session `D + h` falls after `window_e
 e_h[D, i] = r_h[D, i] − beta_60[D, i] · spy_r_h[D]
 ```
 
-`spy_r_h` is SPY's open-to-open return over the same sessions. `e_h` is then demeaned per session within each sector, over names with a finite value. A NaN beta makes `e_h` NaN. **The decisive target is `e_20`.** Raw `r_h` is reported beside it.
+`spy_r_h` is SPY's open-to-open return over the same sessions. `e_h` is then demeaned per session within each sector, over eligible names with a finite value, and is NaN for non-eligible names, so the target is sector-neutral on the set the IC scores. A NaN beta makes `e_h` NaN. **The decisive target is `e_20`.** Raw `r_h` is reported beside it.
 
 **`log_adv`** is the log of the cube's `dollar_volume`; a non-positive value is NaN.
 
@@ -123,7 +123,7 @@ e_h[D, i] = r_h[D, i] − beta_60[D, i] · spy_r_h[D]
 - **Primary:** the mean IC with a stationary session-block bootstrap, using the existing `bootstrap_draws`. Mean block length is `2h`, 2,000 draws, a seed from the protocol. `t = mean / se_boot`.
 - **Cross-check:** Newey-West at `2h` lags through `summarize_expected_values` and `ICPolicy`. Lags count retained sessions, since unavailable ones are already dropped. It is reported and never decides.
 
-The report asks only for more than `h − 1` lags. `2h` for both is my call, and C-IC tests it.
+The report asks only for more than `h − 1` lags. `2h` for both is my call. **Calibration, measured on the triangular overlap a target of horizon `h` produces (600 simulated series, n = 1,790):** under pure overlap, `t ≥ 2` accepts 3.0%, 4.2%, 5.0% and 5.8% at h = 1, 5, 20 and 60, with `t` sd 1.00 to 1.25. So at h = 20, `t ≥ 2` behaves like one-sided 5%, which matches R1. A slow drift in the IC mean inflates short horizons far more: 30% at h = 1, 9% at h = 20. So `t` is not comparable across horizons. C-IC validates h = 20, on the composite only, and the results quote its `t` sd.
 
 **Tear sheet.** One JSON document and a text rendering, per horizon and per target (raw, residual):
 
@@ -154,7 +154,14 @@ The report asks only for more than `h − 1` lags. `2h` for both is my call, and
 3. `turnover_126d` (Datar, Naik and Radcliffe, 1998): not computable. It needs shares outstanding.
 4. `ivol_capm_252d` (Ali, Hwang and Trombley, 2003): taken.
 
-The neutraliser skip is an addition to the report's rule *(my call)*. Without it the low-risk theme would be noise after neutralising. Survivorship probably works against this member, since the high-volatility names that blew up are missing.
+The neutraliser skip is an addition to the report's rule *(my call)*. Without it the low-risk theme would be noise after neutralising.
+
+**This member carries two large, opposite, name-linked biases in a rank statistic** (synthetic worlds with zero arithmetic alpha, final review, 2026-10-31):
+
+- **Rank IC against volatility.** Twenty-session returns compound, so a high-volatility name has a lower median. A rank target therefore favours low volatility even at zero alpha: about +0.012 to +0.016 on the composite with no selection, growing with horizon.
+- **Survivor selection.** High-volatility names reach a liquidity band by rising, which pushes the other way. On a cohort-v3-shaped band the net is +0.0005 to +0.007; on a v2-shaped top cut it is −0.002 to −0.006. So cohort v2 is not a replication: the two cohorts are pushed apart mechanically by about 0.01.
+
+The arithmetic spread is biased too: on this cohort a negative top-minus-bottom beside a positive rank IC is expected with no effect. C-IC breaks name identity by design, so it **cannot see any of this**. §8.1 therefore reports a decomposition, and declares its reading before the read.
 
 **Excluded by the report:** Amihud, `short_ratio_z`, PEAD, insider, seasonality.
 
@@ -180,7 +187,22 @@ Report rule, on cohort v3, `e_20`, 2016-08-01 → 2023-12-29:
 
 - `alpha ic gate` writes its manifest before computing, like every other lane.
 - It refuses unless A-IC and C-IC passed for the same composite digest, sector digest and clean code revision.
-- Cohort v2 and the other horizons are reported, and do not decide.
+- Cohort v2 and the other horizons are reported, and do not decide. In the tear sheet, horizons are compared by means and block means, not by `t`: the bootstrap's `t` is not comparable across them (§7).
+
+**Reported beside the decision, on both cohorts, none of it deciding:**
+
+- each theme's rank IC with its `t`, and its arithmetic IC (per-session Pearson);
+- the composite excluding the low-risk theme, with its `t`, and the composite's Pearson IC;
+- the composite lagged 252 sessions, which in the synthetic worlds tracked the mechanical part of the IC;
+- `min_detectable_ic = min_t × se`, and `power_at` 0.02 and 0.03, computed as `Φ(ic/se − min_t)` from the read's own `se`.
+
+**Declared reading, fixed before the read:**
+
+> A pass whose composite excluding low risk does not reach `t ≥ 2` is recorded as **carried by the low-risk leg**, and it does not strengthen the case for Sharadar's price lane.
+
+This is a reading, not a decision rule *(my call)*: the report's rule stays as it is, and a pass confers nothing beyond a hypothesis either way. The results state it if it applies.
+
+**What a fail can rule out.** `min_detectable_ic` is the level with 50% power. A fail rules out IC 0.03 at 80% power only if `se ≤ 0.0106`, which is `min_detectable_ic ≤ 0.021`. Above that, the results say a fail could not rule out IC 0.03, and the closure rests on the report's rule, not on evidence of absence.
 
 | Result | What it means | What follows |
 |---|---|---|
@@ -207,7 +229,7 @@ Both run on the gate's own cohort, target and window, through the gate's code pa
 
 - **Pass:** at `λ = 0.03` the gate rule accepts at least 70% of replicates. IC 0.03 is about where a card nears break-even by the report's arithmetic, and 70% is the low end of the report's own power range.
 - **Reported:** power at `λ = 0.02`, the report's figure, and at `0.04`, plus the same for the report's literal base, a pure AR(1) score with `φ = 0.97` per name.
-- **A-IC is a plumbing check, not a power statement.** Permuting names removes the IC variance that factor returns put into a real composite, so this arm's power is overstated: in a synthetic factor world it held `t` near 10 at every exposure, about three times the real figure at high exposure. **The honest measure comes from the read itself:** the gate reports `min_detectable_ic = min_t × se`, using the composite's own bootstrap `se`. If it exceeds 0.03, the results say a fail could not rule out IC 0.03, so the closure rests on the report's rule and not on evidence of absence. The decision rule does not change.
+- **A-IC is a plumbing check, not a power statement.** Permuting names removes the IC variance that factor returns put into a real composite, so this arm's power is overstated: in a synthetic factor world it held `t` near 10 at every exposure, about three times the real figure at high exposure. **The honest measure comes from the read itself:** the gate reports `min_detectable_ic` and `power_at` from §8.1, using the composite's own bootstrap `se`. The decision rule does not change.
 - This check exercises the gate's code path end to end, but it is **not** an alignment check. The plant and the read share one target array, so a misdated array is invisible to it, and on an overlapping 20-session target a shift of up to about ten sessions still passes. Alignment rests on the exact-formula tests in the arrays task and on a spot check of real cells against raw bars before the read.
 
 **If A-IC fails, the gate does not run.** The result doc then says the window cannot decide this question. If C-IC fails, the statistic is wrong, and it is fixed and re-run before anything else.
@@ -216,7 +238,7 @@ Both run on the gate's own cohort, target and window, through the gate's code pa
 
 **Scope.** The eight fixed sets run so far, 8 formulas each: `campaign-v4`, `intraday-v1`, `events-v1`, `short-v1`, `cohort3-daily-v1`, `cohort3-intraday-v1`, `cohort3-events-v1`, `cohort3-short-v1`. Insider sets never ran, so they are out. Inputs come from `score_book` per protocol, with digest-pinned event and short inputs.
 
-**Zero-trial.** The formulas and windows were already spent, and this charges nothing and journals nothing: no database. The record is its ledger row.
+**Zero-trial.** This charges nothing and journals nothing: no database. The record is its ledger row. The formulas and their discovery window were already spent, but **selection is new for 63 of the 64 pairs**: only `shorts_retreat` on cohort v3 ever reached it. That is allowed, because W1 is development only. It also means any batch that carries has no unread selection window left, so a later spec needs the era or a prospective read.
 
 **Rehearsal (R2), per set and before any IC.** For each pair, recompute the discovery `edge_mean` and `n_sessions` through the campaign's own scoring path, and compare with the campaign's `formulas.jsonl` in `~/agentic-trader-research/pooled-campaign-*`. `edge_mean` must match within 1e-9 and `n_sessions` exactly. The pointers to the eight directories go in a frozen file with the digests of their `formulas.jsonl`.
 
@@ -224,11 +246,17 @@ The campaigns ran at older revisions, so a set may drift. A set with any mismatc
 
 **The IC read.** Per pair: `e_20` IC with the same statistic, over discovery and selection separately, with the expression as written. Sectors come from §6; `unknown` is excluded as in §6. Tear-sheet fields go in the output directory.
 
+**Negative control (R4).** One fixed within-sector permutation placebo per pair, per window, through the same read. The summary gives placebo `t` mean and sd beside the real ones. The earlier "sd 1.25" is not a null: the null itself gives about 1.18 at h = 20.
+
+**How to read it.** Windowed formulas such as `earnings_age <= 20` rank names inside the window only, where the campaign compared picks with all eligible cells, so IC session counts sit beside the rehearsed `n_sessions`. Sets hold opposing members (`quiet_momentum` and `quiet_reversal`; `shorts_*` and `squeeze`; `momentum_12_1` and `reversal_5`), so a near-zero batch mean does not mean every member is null, which is what the rule intends. Raw formulas take the §8 volatility bias unneutralised.
+
 **The batch-mean rule** *(my definition; the report names the rule without defining it)*:
 
 > A batch (one fixed set on one cohort) **carries** only if its mean IC over its eight formulas is greater than 0 on discovery **and** on selection. No member of a batch that does not carry goes anywhere, however good it looks.
 
-Carrying is not a pass. It only makes a member eligible for a later spec that tests incremental IC over the composite. Selection is the out-of-sample half, which is what *Finding Alphas* ch. 15 judges.
+A formula with fewer than 250 evaluated sessions in a window, about 12 independent 20-session periods, is left out of that window's mean and counted. Per-window session counts are reported.
+
+Carrying is not a pass. **Under a global null about a quarter of batches carry** (two positive means), so about 2 of 8, and the batches are correlated. It only makes a member eligible for a later spec that tests incremental IC over the composite. Selection is the out-of-sample half, which is what *Finding Alphas* ch. 15 judges.
 
 **Also reported:** the mean and standard deviation of the 64 t-statistics against the existing "mean −0.06, sd 1.25" for the edge statistic, and where the known names landed: `shorts_retreat`, `quiet_momentum`.
 
@@ -260,7 +288,7 @@ Additive only, in `research/alpha/operators.py`: existing formulas and their ide
 ## 12. Docs and ledger
 
 - **`docs/research-window-ledger.md`:** rows for the checks, the re-score and the gate are added **in one commit before the first read**, with the frozen composite and sector files, naming window, cohort, and that this is a go/no-go on development data with no α claim. The header counts update. The three commands then run at that one clean revision, because the gate requires the checks' exact revision. A code fix after that means a new revision and a re-run of the checks.
-- **`docs/alpha-ic-lane.md`:** the contract, including the limits above.
+- **`docs/alpha-ic-lane.md`:** the contract, including the limits above, and **the power statement R3 asks for**, in both units. Using the report's arithmetic (9% residual volatility, top-decile z 1.75, 30 bp round trip, 8.5% implied stop): IC 0.02, the shrunk effect, is +0.015% net per pick or about +0.002R per card; IC 0.03 is +0.172% or +0.020R; IC 0.04 is +0.330% or +0.039R. This is an arithmetic conversion, not a measured `net_excess_r_v1`, which would need a bracket replay with per-name cost and a beta-matched control. It ignores the survivor bias on arithmetic spreads (§8), and R5's economic gate is untouched.
 - **`docs/alpha-ic-lane-results-YYYY-MM-DD.md`:** results, with the hypothesis-only statement first.
 - **`CLAUDE.md`** gets a short pointer, and **`docs/alpha-roadmap.md`** and **`docs/alpha-directions-2026-10-30/README.md`** get status updates. The README still says direction 1 is awaiting merge; fix that too.
 

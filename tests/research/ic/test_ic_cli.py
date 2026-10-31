@@ -50,8 +50,14 @@ def stubbed(monkeypatch):
     return calls
 
 
+def _cache(output) -> str:
+    cache = output.parent / "cache"
+    cache.mkdir(exist_ok=True)
+    return str(cache)
+
+
 def _checks_args(output, composite=COMPOSITE):
-    return ["checks", "--composite", str(composite), "--cache", str(output.parent / "cache"), "--output", str(output)]
+    return ["checks", "--composite", str(composite), "--cache", _cache(output), "--output", str(output)]
 
 
 def _gate_args(output, composite=COMPOSITE):
@@ -62,7 +68,7 @@ def _gate_args(output, composite=COMPOSITE):
         "--checks",
         str(output.parent),
         "--cache",
-        str(output.parent / "cache"),
+        _cache(output),
         "--output",
         str(output),
     ]
@@ -82,6 +88,21 @@ def test_cli_refuses_an_existing_output(tmp_path, build_args, stubbed):
     result = CliRunner().invoke(ic_group, build_args(output))
     assert result.exit_code != 0
     assert "already exists" in result.output
+
+
+@pytest.mark.parametrize("build_args", [_checks_args, _gate_args])
+def test_cli_refuses_a_missing_cache_and_creates_no_output(tmp_path, build_args, stubbed):
+    stubbed["capture"]("execute_checks", {"status": "passed"})
+    stubbed["capture"]("execute_gate", {"status": "completed", "decision": "pass"})
+    output = tmp_path / "out"
+    args = build_args(output)
+    (tmp_path / "cache").rmdir()
+    result = CliRunner().invoke(ic_group, args)
+    assert result.exit_code != 0
+    assert "does not exist" in result.output
+    assert not output.exists()
+    assert "execute_checks" not in stubbed
+    assert "execute_gate" not in stubbed
 
 
 @pytest.mark.parametrize("build_args", [_checks_args, _gate_args])
@@ -142,6 +163,15 @@ def test_cli_a_gate_fail_is_a_completed_read_and_exits_zero(tmp_path, stubbed):
     assert call["checks_dir"] == tmp_path
     assert callable(call["build"]) and callable(call["build_secondary"])
     assert call["build"] is not call["build_secondary"]
+
+
+def test_cli_shows_the_declared_reading_beside_the_decision(tmp_path, stubbed):
+    stubbed["capture"](
+        "execute_gate", {"status": "completed", "decision": "pass", "declared_reading": "carried_by_low_risk"}
+    )
+    result = CliRunner().invoke(ic_group, _gate_args(tmp_path / "out"))
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["declared_reading"] == "carried_by_low_risk"
 
 
 def test_cli_shows_the_secondary_status(tmp_path, stubbed):

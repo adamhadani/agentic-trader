@@ -24,6 +24,7 @@ from agentic_trader.cli.main import cli
 from agentic_trader.research.alpha.search import canonical_expression
 from agentic_trader.research.ic import rescore as rescore_module, statistic as statistic_module
 from agentic_trader.research.ic.arrays import build_ic_arrays, truncate_bars
+from agentic_trader.research.ic.checks import fixed_permutation
 from agentic_trader.research.ic.rescore import (
     LoadedRescore,
     RescoreBatch,
@@ -36,9 +37,10 @@ from agentic_trader.research.ic.rescore import (
 from agentic_trader.research.ic.sectors import LoadedSectors
 from agentic_trader.research.ic.statistic import ic_inference, rank_ic_series
 from agentic_trader.research.pooled.campaign import CampaignProtocol, DiscoveryEvaluator, load_campaign_protocol
+from agentic_trader.research.pooled.cohort import load_cohort
 from agentic_trader.research.pooled.entry import REPO_ROOT
 from agentic_trader.research.pooled.events import EVENT_FIELDS, EventCoverage, EventFrames
-from agentic_trader.research.pooled.runner import CubeBuild
+from agentic_trader.research.pooled.runner import CubeBuild, cube_cache_path
 from agentic_trader.research.pooled.scoring import ScoreBook, score_book
 from agentic_trader.research.pooled.short_fields import SHORT_FIELDS, ShortCoverage, ShortFrames
 from agentic_trader.storage.db import SignalDatabase
@@ -61,6 +63,8 @@ COMPOSITE = REPO_ROOT / "config" / "research" / "ic" / "composite-ic-v1.json"
 POOLED = REPO_ROOT / "config" / "research" / "pooled"
 SECTOR_MAP_SHA256 = "56bc70fb52ce541aa2e4292673e81ebbc42df18bcf53484e6907cb52d4689574"
 DAILY_FAMILIES = ("reversal_5", "signed_volume", "abnormal_volume")
+SCENE_MIN_SESSIONS = 30  # the test calendar's windows are short: 141 and 100 sessions
+PLACEBO_SEED = 77
 EXPECTED_BATCHES = {
     "campaign-v4": (
         "a72f2e65378f2f49e9c6d7b6c38079fbbed1f673017ebcbbd074874a96270f0d",
@@ -119,6 +123,13 @@ EXPECTED_BATCHES = {
         0,
     ),
 }
+
+
+@pytest.fixture(autouse=True)
+def repository_is_the_test_directory(tmp_path, monkeypatch):
+    """A batch's protocol is relative to the repository, and a scene's protocols live under the test's directory."""
+    monkeypatch.setattr(rescore_module, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(alpha_ic, "REPO_ROOT", tmp_path)
 
 
 def labelled_world() -> World:
@@ -181,6 +192,7 @@ class Spec:
     score: str = "daily"
     entry_delay: int = 0
     tamper: Callable[[list[dict]], None] | None = None
+    inputs: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass
@@ -190,6 +202,11 @@ class Scene:
     loaded: LoadedRescore
     sectors: LoadedSectors
     builders: dict
+    cube_files: dict[str, Path]
+
+    def protocol_path(self) -> Path:
+        """The first batch's; a test's batches share one protocol document."""
+        return self.root.parent / self.loaded.protocol.batches[0].protocol
 
 
 def _write_batch(root: Path, spec: Spec) -> dict:
@@ -212,13 +229,23 @@ def _write_batch(root: Path, spec: Spec) -> dict:
     (campaign / "formulas.jsonl").write_bytes(body)
     return {
         "id": spec.id,
-        "protocol": str(protocol_path),
+        "protocol": str(protocol_path.relative_to(root.parent)),
         "protocol_sha256": pinned.sha256,
         "campaign_dir": campaign.name,
         "formulas_sha256": hashlib.sha256(body).hexdigest(),
         "score": spec.score,
         "entry_delay": spec.entry_delay,
+        "inputs": dict(spec.inputs),
     }
+
+
+def _touch_cube_file(root: Path, batch: dict) -> Path:
+    """An empty file under the name the batch's build would look for: the tests' builders never open it."""
+    pinned = load_campaign_protocol(root.parent / batch["protocol"]).protocol
+    cube = cube_cache_path(root / "cache", load_cohort(REPO_ROOT / pinned.cohort), pinned.cube_spec())
+    cube.parent.mkdir(exist_ok=True)
+    cube.touch()
+    return cube
 
 
 def _scene(root: Path, specs: list[Spec] | None = None, *, write_sectors: bool = False) -> Scene:
@@ -240,7 +267,9 @@ def _scene(root: Path, specs: list[Spec] | None = None, *, write_sectors: bool =
         "sectors_sha256": sectors.sha256,
         "horizon": 20,
         "min_names": 30,
+        "min_sessions": SCENE_MIN_SESSIONS,
         "bootstrap": {"draws": 100, "seed": 3},
+        "placebo_seed": PLACEBO_SEED,
         "edge_statistic_reference": {"t_mean": -0.06, "t_sd": 1.25},
         "known_families": ["reversal_5"],
         "batches": [_write_batch(root, spec) for spec in specs],
@@ -248,13 +277,15 @@ def _scene(root: Path, specs: list[Spec] | None = None, *, write_sectors: bool =
     path = root / "rescore.json"
     path.write_text(json.dumps(document))
     builders = {spec.id: as_builder(spec.world or labelled_world()) for spec in specs}
-    return Scene(root, path, load_rescore(path), sectors, builders)
+    cube_files = {batch["id"]: _touch_cube_file(root, batch) for batch in document["batches"]}
+    return Scene(root, path, load_rescore(path), sectors, builders, cube_files)
 
 
 async def _run(scene: Scene, output: Path, **overrides) -> dict:
     arguments = {
         "research_root": scene.root,
         "builders": scene.builders,
+        "cube_files": scene.cube_files,
         "sectors": scene.sectors,
         "environment": environment(),
         "progress": None,
@@ -274,11 +305,15 @@ def _batch(output: Path, batch_id: str) -> dict:
     return next(entry for entry in _json(output / "batches.json")["batches"] if entry["id"] == batch_id)
 
 
-def _pair(discovery: float, selection: float) -> dict:
-    def window(mean: float) -> dict:
-        return {"mean": mean, "n_sessions": 0 if math.isnan(mean) else 100}
+def _pair(discovery: float, selection: float, *, sessions: tuple[int, int] = (300, 300)) -> dict:
+    def window(mean: float, count: int) -> dict:
+        return {"mean": mean, "n_sessions": 0 if math.isnan(mean) else count}
 
-    return {"discovery": window(discovery), "selection": window(selection)}
+    return {"discovery": window(discovery, sessions[0]), "selection": window(selection, sessions[1])}
+
+
+def _verdict(rows: list[dict]) -> dict:
+    return batch_verdict(rows, min_sessions=250)
 
 
 def _never(*_args, **_kwargs):
@@ -308,6 +343,8 @@ def test_shipped_rescore_file_has_eight_batches_and_entry_delay_follows_score():
     assert protocol.sectors_sha256 == SECTOR_MAP_SHA256 == _json(COMPOSITE)["sectors"]["sha256"]
     assert hashlib.sha256((REPO_ROOT / protocol.sectors_path).read_bytes()).hexdigest() == SECTOR_MAP_SHA256
     assert protocol.horizon == 20
+    assert protocol.min_sessions == 250
+    assert protocol.placebo_seed == 20261201
     assert protocol.min_names == _json(COMPOSITE)["min_names"]
     assert protocol.bootstrap.draws == _json(COMPOSITE)["bootstrap"]["draws"]
     assert {"shorts_retreat", "quiet_momentum"} <= set(protocol.known_families)
@@ -379,7 +416,7 @@ async def test_a_broken_pin_or_a_dirty_revision_is_refused_before_any_build(tmp_
     scene = _scene(tmp_path / "scene")
     overrides: dict = {}
     if change == "protocol":
-        target = Path(scene.loaded.protocol.batches[0].protocol)
+        target = scene.protocol_path()
         target.write_text(target.read_text() + "\n")
     elif change == "sectors":
         overrides["sectors"] = LoadedSectors(document=scene.sectors.document, sha256="0" * 64)
@@ -572,6 +609,7 @@ def test_the_command_exits_zero_on_a_complete_run_with_no_batch_carrying(tmp_pat
     result = CliRunner().invoke(ic_group, _rescore_args(scene, output))
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["batches_carrying"] == []
+    assert seen["cube_files"] == scene.cube_files
     assert seen["research_root"] == scene.root
     assert seen["sectors"].sha256 == scene.loaded.protocol.sectors_sha256
     assert set(seen["builders"]) == {"daily"}
@@ -640,11 +678,11 @@ async def test_the_command_builds_each_batch_from_its_own_inputs(tmp_path, monke
 
 async def test_ic_is_not_computed_before_rehearsal(tmp_path, monkeypatch):
     scene = _scene(tmp_path / "scene", [Spec(id="drifted", tamper=_drifted)])
-    _forbid_ic(monkeypatch)
-    result = await _run(scene, tmp_path / "failed")
+    with monkeypatch.context() as forbidden:
+        _forbid_ic(forbidden)
+        result = await _run(scene, tmp_path / "failed")
     assert result["status"] == "partial"
     assert result["batches_not_reproduced"] == ["drifted"]
-    monkeypatch.undo()
 
     # And on a batch that does reproduce, the rehearsal comes first.
     scene = _scene(tmp_path / "scene2")
@@ -671,7 +709,7 @@ async def test_discovery_and_selection_each_read_their_own_sessions(tmp_path):
     output = tmp_path / "out"
     assert (await _run(scene, output))["status"] == "completed"
     world = labelled_world()
-    protocol = load_campaign_protocol(Path(scene.loaded.protocol.batches[0].protocol)).protocol
+    protocol = load_campaign_protocol(scene.protocol_path()).protocol
     start, end = protocol.windows.discovery[0], protocol.windows.selection[1]
     groups = scene.sectors.groups(world.build.cube.symbols)
     arrays = build_ic_arrays(world.build, world.spy, groups, (start, end), horizons=(20,))
@@ -726,18 +764,20 @@ async def test_hourly_batch_target_starts_at_the_next_open(tmp_path):
     assert abs(row["selection"]["mean"]) < 0.04
 
     # The same score against a target that starts at D's own open reads its own first hour.
-    batch = scene.loaded.protocol.batches[0]
-    protocol = load_campaign_protocol(Path(batch.protocol)).protocol
+    protocol = load_campaign_protocol(scene.protocol_path()).protocol
     records = [
         json.loads(line) for line in (scene.root / "campaign-hourly" / "formulas.jsonl").read_text().splitlines()
     ]
     book = score_book(protocol, world.build)
     groups = scene.sectors.groups(world.build.cube.symbols)
     leaked, _sheets = read_pairs(
-        scene.loaded.protocol, protocol, world.build, world.spy, book, records, groups, entry_delay=0
+        scene.loaded.protocol, protocol, world.build, world.spy, book, records, groups, entry_delay=0, first_pair=0
     )
     assert leaked[0]["discovery"]["mean"] > 0.15
     assert leaked[0]["selection"]["mean"] > 0.15
+    # A read that strong is the score's link to its own name, and the placebo breaks exactly that link.
+    for window in ("discovery", "selection"):
+        assert abs(leaked[0][window]["placebo_t"]) < 3.0 < leaked[0][window]["t"]
 
 
 def test_truncation_keeps_the_last_sessions_hourly_bars():
@@ -764,7 +804,7 @@ async def test_the_score_book_never_holds_a_bar_after_the_selection_end(tmp_path
     """Scores read at ``D-1`` cannot show it in an output, so this pins what the book is handed."""
     world = first_hour_world()
     scene = _scene(tmp_path / "scene", [_hourly_spec(world)])
-    protocol = load_campaign_protocol(Path(scene.loaded.protocol.batches[0].protocol)).protocol
+    protocol = load_campaign_protocol(scene.protocol_path()).protocol
     assert protocol.windows.selection[1] < HOURLY_DAYS[-1]
     latest: list[date] = []
     real = rescore_module.score_book
@@ -785,7 +825,7 @@ async def test_an_hourly_price_after_the_selection_end_changes_nothing(tmp_path)
     world = first_hour_world()
     scene = _scene(tmp_path / "scene", [_hourly_spec(world)])
     await _run(scene, tmp_path / "plain")
-    protocol = load_campaign_protocol(Path(scene.loaded.protocol.batches[0].protocol)).protocol
+    protocol = load_campaign_protocol(scene.protocol_path()).protocol
     first_reserve = next(day for day in HOURLY_DAYS if day > protocol.windows.selection[1])
     build = dataclasses.replace(
         world.build,
@@ -859,24 +899,28 @@ async def test_an_extra_field_batch_scores_from_the_frames_its_build_carries(tmp
 
 def test_batch_carries_only_if_both_means_are_positive():
     rows = [_pair(0.01, 0.02), _pair(0.03, 0.04)]
-    verdict = batch_verdict(rows)
+    verdict = _verdict(rows)
     assert verdict == {
         "discovery_mean": pytest.approx(0.02),
         "selection_mean": pytest.approx(0.03),
         "n_formulas": 2,
         "n_without_sessions": 0,
+        "discovery_min_sessions_observed": 300,
+        "selection_min_sessions_observed": 300,
+        "discovery_median_sessions": 300.0,
+        "selection_median_sessions": 300.0,
         "carries": True,
     }
-    assert batch_verdict([_pair(0.01, -0.02), _pair(0.01, 0.01)])["carries"] is False
-    assert batch_verdict([_pair(-0.01, 0.02), _pair(0.0, 0.02)])["carries"] is False
-    assert batch_verdict([_pair(0.0, 0.01)])["carries"] is False
+    assert _verdict([_pair(0.01, -0.02), _pair(0.01, 0.01)])["carries"] is False
+    assert _verdict([_pair(-0.01, 0.02), _pair(0.0, 0.02)])["carries"] is False
+    assert _verdict([_pair(0.0, 0.01)])["carries"] is False
     # A member's own read does not rescue a batch whose mean is not positive.
-    assert batch_verdict([_pair(0.5, 0.5), _pair(-0.6, -0.6)])["carries"] is False
+    assert _verdict([_pair(0.5, 0.5), _pair(-0.6, -0.6)])["carries"] is False
 
 
 def test_formula_with_no_evaluated_session_is_left_out_of_the_mean_and_counted():
     nan = float("nan")
-    verdict = batch_verdict([_pair(0.02, 0.02), _pair(nan, nan), _pair(nan, 0.04)])
+    verdict = _verdict([_pair(0.02, 0.02), _pair(nan, nan), _pair(nan, 0.04)])
     assert verdict["n_formulas"] == 3
     assert verdict["n_without_sessions"] == 2
     assert verdict["discovery_mean"] == pytest.approx(0.02)
@@ -884,11 +928,44 @@ def test_formula_with_no_evaluated_session_is_left_out_of_the_mean_and_counted()
     assert verdict["carries"] is True
     # None is how a saved row holds it.
     saved = {"mean": None, "n_sessions": 0}
-    assert batch_verdict([{"discovery": saved, "selection": saved}, _pair(0.01, 0.01)])["n_without_sessions"] == 1
+    assert _verdict([{"discovery": saved, "selection": saved}, _pair(0.01, 0.01)])["n_without_sessions"] == 1
 
-    empty = batch_verdict([_pair(nan, nan)])
+    empty = _verdict([_pair(nan, nan)])
     assert math.isnan(empty["discovery_mean"]) and math.isnan(empty["selection_mean"])
     assert empty["carries"] is False
+
+
+def test_one_session_no_longer_drives_carries():
+    lucky = _pair(0.9, 0.9, sessions=(1, 1))
+    weak = _pair(-0.01, -0.01)
+    assert batch_verdict([lucky, weak], min_sessions=1)["carries"] is True  # what it used to take
+    verdict = _verdict([lucky, weak])
+    assert verdict["carries"] is False
+    assert verdict["n_without_sessions"] == 1
+    assert verdict["discovery_mean"] == pytest.approx(-0.01)
+    assert _verdict([lucky])["carries"] is False  # and alone it leaves no mean at all
+
+
+def test_the_session_floor_is_inclusive_and_applies_to_each_window_alone():
+    at_floor = _verdict([_pair(0.01, 0.01, sessions=(250, 250))])
+    assert at_floor["n_without_sessions"] == 0
+    assert at_floor["carries"] is True
+
+    verdict = _verdict([_pair(0.5, 0.02, sessions=(249, 300)), _pair(0.02, 0.04)])
+    assert verdict["n_without_sessions"] == 1
+    assert verdict["discovery_mean"] == pytest.approx(0.02)  # the first formula is out of discovery only
+    assert verdict["selection_mean"] == pytest.approx(0.03)
+
+
+def test_the_verdict_reports_each_windows_session_counts_over_every_formula():
+    nan = float("nan")
+    verdict = _verdict(
+        [_pair(0.01, 0.01, sessions=(830, 300)), _pair(0.01, 0.01, sessions=(40, 500)), _pair(nan, 0.01)]
+    )
+    assert verdict["discovery_min_sessions_observed"] == 0
+    assert verdict["discovery_median_sessions"] == 40.0
+    assert verdict["selection_min_sessions_observed"] == 300
+    assert verdict["selection_median_sessions"] == 300.0
 
 
 async def test_nothing_touches_a_database(tmp_path, monkeypatch):
@@ -915,6 +992,7 @@ async def test_result_never_authorizes_promotion(tmp_path):
         assert result["status"] == status
         assert manifest["check"] == "ic_rescore"
         assert manifest["authorizes_promotion"] is False
+        assert manifest["edge_tolerance"] == 1e-9
         assert result["authorizes_promotion"] is False
         assert "started_at" in manifest
         assert "started_at" not in result
@@ -941,6 +1019,10 @@ async def test_summary_reports_t_mean_and_sd_over_covered_pairs(tmp_path):
         assert summary[window]["n_t"] == ts.size
         assert summary[window]["t_mean"] == pytest.approx(ts.mean())
         assert summary[window]["t_sd"] == pytest.approx(ts.std(ddof=1))
+        placebo = np.array([row[window]["placebo_t"] for row in rows])
+        assert summary[window]["n_placebo_t"] == placebo.size
+        assert summary[window]["placebo_t_mean"] == pytest.approx(placebo.mean())
+        assert summary[window]["placebo_t_sd"] == pytest.approx(placebo.std(ddof=1))
     assert summary["edge_statistic_reference"] == {"t_mean": -0.06, "t_sd": 1.25}
     known = summary["known_families"]
     assert [entry["family"] for entry in known] == ["reversal_5"]
@@ -989,3 +1071,174 @@ async def test_each_batchs_frames_are_freed_before_the_next_build(tmp_path):
     result = await _run(scene, tmp_path / "out", builders={"first": first, "second": second})
     assert result["status"] == "completed"
     assert seen_at_second_build == [(True, 0)]
+
+
+def _expected_placebos(scene: Scene, rows: list[dict], first_pair: int) -> list[dict[str, float]]:
+    """Each row's placebo ``t`` per window, by hand: the pair's own permutation, through the same statistic."""
+    world = labelled_world()
+    protocol = load_campaign_protocol(scene.protocol_path()).protocol
+    discovery, selection = protocol.windows.discovery, protocol.windows.selection
+    groups = scene.sectors.groups(world.build.cube.symbols)
+    arrays = build_ic_arrays(world.build, world.spy, groups, (discovery[0], selection[1]), horizons=(20,))
+    stop = arrays.offset + len(arrays.sessions)
+    book = score_book(protocol, world.build)
+    masks = {
+        name: np.array([low <= day <= high for day in arrays.sessions])
+        for name, (low, high) in (("discovery", discovery), ("selection", selection))
+    }
+    expected = []
+    for pair_index, row in enumerate(rows, start=first_pair):
+        scores = book.panel(row["expression"])[arrays.offset : stop]
+        order = fixed_permutation(arrays.groups, np.random.default_rng(PLACEBO_SEED + pair_index))
+        ic = rank_ic_series(scores[:, order], arrays.residuals[20], arrays.eligible)
+        expected.append({name: ic_inference(ic[keep], 20, draws=100, seed=3)["t"] for name, keep in masks.items()})
+    return expected
+
+
+def _assert_placebos(rows: list[dict], expected: list[dict[str, float]]) -> None:
+    assert len(rows) == len(expected)
+    for row, placebo in zip(rows, expected, strict=True):
+        for window in ("discovery", "selection"):
+            assert row[window]["placebo_t"] == pytest.approx(placebo[window], abs=1e-12)
+            assert row[window]["placebo_t"] != row[window]["t"]
+
+
+async def test_each_pair_has_its_own_fixed_placebo_on_each_window(tmp_path):
+    scene = _scene(tmp_path / "scene", [Spec(id="first"), Spec(id="second")])
+    output = tmp_path / "out"
+    assert (await _run(scene, output))["status"] == "completed"
+    rows = _pairs(output)
+    assert len(rows) == 2 * len(DAILY_FAMILIES)
+    _assert_placebos(rows, _expected_placebos(scene, rows, 0))
+    # The same formula in another batch is another pair, with another permutation.
+    assert rows[0]["expression"] == rows[len(DAILY_FAMILIES)]["expression"]
+    assert rows[0]["discovery"]["placebo_t"] != rows[len(DAILY_FAMILIES)]["discovery"]["placebo_t"]
+
+
+async def test_a_batch_that_did_not_reproduce_still_holds_its_pair_indices(tmp_path):
+    scene = _scene(tmp_path / "scene", [Spec(id="drifted", tamper=_drifted), Spec(id="steady")])
+    output = tmp_path / "out"
+    assert (await _run(scene, output))["batches_not_reproduced"] == ["drifted"]
+    rows = _pairs(output)
+    assert {row["batch"] for row in rows} == {"steady"}
+    _assert_placebos(rows, _expected_placebos(scene, rows, len(DAILY_FAMILIES)))
+
+
+async def _no_build():
+    raise AssertionError("a refused run builds nothing")
+
+
+async def test_a_missing_input_under_the_research_root_is_refused_before_any_build(tmp_path, monkeypatch):
+    spec = Spec(inputs=(("corporate_actions", "actions/actions.json"), ("short_volume", "shorts")))
+    scene = _scene(tmp_path / "scene", [spec])
+    (scene.root / "shorts").mkdir()
+    _forbid_ic(monkeypatch)
+    output = tmp_path / "out"
+    result = await _run(scene, output, builders={"daily": _no_build})
+    assert result["status"] == "refused"
+    assert "daily: input corporate_actions actions/actions.json" in result["reason"]
+    assert "short_volume" not in result["reason"]
+    assert str(tmp_path) not in result["reason"]
+    assert _json(output / "result.json")["status"] == "refused"
+    assert not (output / "pairs.jsonl").exists()
+
+
+async def test_a_batch_with_its_inputs_and_cube_present_goes_on_to_its_build(tmp_path):
+    scene = _scene(tmp_path / "scene", [Spec(inputs=(("corporate_actions", "actions/actions.json"),))])
+    target = scene.root / "actions" / "actions.json"
+    target.parent.mkdir()
+    target.write_text("{}")
+    result = await _run(scene, tmp_path / "out", builders={"daily": _no_build})
+    assert result["status"] == "partial"  # it got as far as the build, which this test refuses to run
+    assert result["batches_failed"] == ["daily"]
+
+
+async def test_a_missing_cached_cube_is_refused_before_any_build(tmp_path, monkeypatch):
+    scene = _scene(tmp_path / "scene")
+    scene.cube_files["daily"].unlink()
+    _forbid_ic(monkeypatch)
+    output = tmp_path / "out"
+    result = await _run(scene, output, builders={"daily": _no_build})
+    assert result["status"] == "refused"
+    assert f"daily: cached cube {scene.cube_files['daily'].name}" in result["reason"]
+    assert str(tmp_path) not in result["reason"]
+    assert not (output / "pairs.jsonl").exists()
+
+
+async def test_one_batchs_missing_input_refuses_the_whole_run(tmp_path):
+    scene = _scene(tmp_path / "scene", [Spec(id="first"), Spec(id="second", inputs=(("short_volume", "shorts"),))])
+    result = await _run(scene, tmp_path / "out", builders={"first": _no_build, "second": _no_build})
+    assert result["status"] == "refused"
+    assert "second: input short_volume" in result["reason"]
+
+
+def test_the_command_finds_the_cube_where_the_build_looks_and_refuses_when_it_is_gone(tmp_path, command):
+    scene = _scene(tmp_path / "scene", write_sectors=True)
+    command.setattr(alpha_ic, "_rescore_builders", lambda *_args: {"daily": _no_build})
+    scene.cube_files["daily"].unlink()
+    output = tmp_path / "out"
+    result = CliRunner().invoke(ic_group, _rescore_args(scene, output))
+    assert result.exit_code != 0
+    assert "refused" in result.output
+    assert scene.cube_files["daily"].name in result.output
+
+
+def test_the_command_refuses_a_missing_cache_directory(tmp_path, command):
+    scene = _scene(tmp_path / "scene", write_sectors=True)
+    scene.cube_files["daily"].unlink()
+    (scene.root / "cache").rmdir()
+    output = tmp_path / "out"
+    result = CliRunner().invoke(ic_group, _rescore_args(scene, output))
+    assert result.exit_code != 0
+    assert "does not exist" in result.output
+    assert not output.exists()
+
+
+def _batch_fields(**overrides) -> dict:
+    return {
+        "id": "x",
+        "protocol": "config/p.json",
+        "protocol_sha256": "a" * 64,
+        "campaign_dir": "campaign",
+        "formulas_sha256": "b" * 64,
+        "score": "daily",
+        "entry_delay": 0,
+        **overrides,
+    }
+
+
+@pytest.mark.parametrize("path", ["/etc/passwd", "../outside", "a/../../outside", "a/.."])
+@pytest.mark.parametrize("field", ["protocol", "campaign_dir"])
+def test_a_batch_path_outside_its_root_is_invalid(field, path):
+    with pytest.raises(ValidationError, match="relative to its root"):
+        RescoreBatch(**_batch_fields(**{field: path}))
+
+
+@pytest.mark.parametrize("path", ["/etc/passwd", "../outside", "a/../../outside"])
+@pytest.mark.parametrize("field", ["earnings_pages", "corporate_actions", "short_volume"])
+def test_an_input_path_outside_the_research_root_is_invalid(field, path):
+    with pytest.raises(ValidationError, match="relative to its root"):
+        RescoreBatch(**_batch_fields(inputs={field: path}))
+
+
+def test_a_relative_path_with_dots_in_a_name_is_valid():
+    batch = RescoreBatch(**_batch_fields(campaign_dir="a..b/c.d", inputs={"short_volume": "short..volume/x"}))
+    assert batch.campaign_dir == "a..b/c.d"
+    assert batch.inputs.short_volume == "short..volume/x"
+
+
+def test_the_shipped_files_paths_all_stay_under_their_roots():
+    for batch in load_rescore(SHIPPED).protocol.batches:
+        for path in (batch.protocol, batch.campaign_dir, *batch.inputs.model_dump(exclude_none=True).values()):
+            assert not Path(path).is_absolute()
+            assert ".." not in Path(path).parts
+
+
+@pytest.mark.parametrize("extra", ["min_sessions", "placebo_seed"])
+def test_a_rescore_file_needs_both_new_fields(tmp_path, extra):
+    document = _json(SHIPPED)
+    del document[extra]
+    path = tmp_path / "rescore.json"
+    path.write_text(json.dumps(document))
+    with pytest.raises(ValidationError, match=extra):
+        load_rescore(path)

@@ -2,6 +2,7 @@ import json
 
 import numpy as np
 import pytest
+from scipy.stats import norm
 
 from agentic_trader.research.ic import checks, statistic
 from agentic_trader.research.ic.arrays import build_ic_arrays
@@ -13,6 +14,7 @@ from agentic_trader.research.ic.checks import (
     fixed_permutation,
     gate_read,
     planted_score,
+    power_at,
     require_checks,
     session_shuffle,
 )
@@ -81,6 +83,7 @@ def test_gate_read_applies_the_protocols_rule_and_bootstrap():
     assert {key: read[key] for key in expected} == expected  # the two descriptions change nothing in the rule
     assert read["min_detectable_ic"] == 2.0 * read["se"]
     assert read["median_pairs_per_session"] == 60.0
+    assert read["power_at"] == power_at(read["se"], 2.0)
 
 
 def test_gate_read_counts_pairs_over_evaluated_sessions_only():
@@ -103,6 +106,24 @@ def test_a_read_with_no_evaluated_session_reports_no_detectable_effect():
     assert np.isnan(read["min_detectable_ic"])
     assert np.isnan(read["median_pairs_per_session"])
     assert read["passes"] is False
+    assert set(read["power_at"]) == {"0.02", "0.03"}
+    assert all(np.isnan(value) for value in read["power_at"].values())
+
+
+@pytest.mark.parametrize(
+    ("se", "at_002", "at_003"),
+    [(0.0105, 0.462, 0.804), (0.016, 0.227, 0.450), (0.015, norm.cdf(0.02 / 0.015 - 2.0), 0.5)],
+)
+def test_power_at_is_the_chance_a_true_ic_reaches_the_gates_t(se, at_002, at_003):
+    power = power_at(se, 2.0)
+    assert list(power) == ["0.02", "0.03"]
+    assert power["0.02"] == pytest.approx(at_002, abs=1e-3)
+    assert power["0.03"] == pytest.approx(at_003, abs=1e-3)
+
+
+@pytest.mark.parametrize("se", [float("nan"), float("inf"), 0.0])
+def test_power_at_is_nan_without_a_usable_se(se):
+    assert all(np.isnan(value) for value in power_at(se, 2.0).values())
 
 
 def test_fixed_permutation_stays_within_sector_and_is_constant_over_time():
@@ -167,6 +188,32 @@ def test_c_ic_passes_on_a_null_panel_and_reports_both_controls():
     assert out["fixed_permutation"]["sessions_evaluated"] == 1000
     assert out["fixed_permutation"]["median_pairs_per_session"] == 60.0
     assert out["session_shuffle"]["median_pairs_per_session"] == 60.0
+
+
+def test_every_arm_reports_the_mean_and_sd_of_its_replicates_t(monkeypatch):
+    composite, target, mask, groups = _panel(s=120, n=60, phi=0.5)
+    protocol = shrunk(PROTOCOL, c_replicates=3, shuffle_replicates=2, a_replicates=3, draws=20)
+    real = checks.gate_read
+    reads: list[dict] = []
+
+    def spy(*args, **kwargs):
+        reads.append(real(*args, **kwargs))
+        return reads[-1]
+
+    monkeypatch.setattr(checks, "gate_read", spy)
+    c_out = c_ic(protocol, composite, target, mask, groups)
+    for name, arm in (("fixed_permutation", reads[:3]), ("session_shuffle", reads[3:5])):
+        ts = [read["t"] for read in arm]
+        assert c_out[name]["t_mean"] == pytest.approx(np.mean(ts))
+        assert c_out[name]["t_sd"] == pytest.approx(np.std(ts, ddof=1))
+
+    reads.clear()
+    a_out = a_ic(protocol, composite, target, mask, groups)
+    for name, position in (("fixed_permutation", 0), ("ar1", 1)):  # one lambda, each replicate reads the two bases
+        ts = [read["t"] for read in reads[position::2]]
+        row = a_out[name]["0.03"]
+        assert row["t_mean"] == pytest.approx(np.mean(ts))
+        assert row["t_sd"] == pytest.approx(np.std(ts, ddof=1))
 
 
 def test_c_ic_fails_when_the_statistic_is_broken(monkeypatch):

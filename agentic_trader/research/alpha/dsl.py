@@ -116,7 +116,7 @@ def compile_expression(expression: str) -> CompiledExpression:
         if isinstance(node, ast.Name) and node.id.lower() in FIELD_UNITS:
             name = node.id.lower()
             fields.add(name)
-            return FIELD_UNITS[name], 1 if name in ("returns", "open_gap") else 0
+            return FIELD_UNITS[name], 1 if name in ("returns", "open_gap", "mkt_ret") else 0
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
             return visit(node.operand, depth + 1)
         if isinstance(node, ast.BinOp) and type(node.op) in BINARY_OPERATORS:

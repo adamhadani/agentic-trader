@@ -114,6 +114,8 @@ async def acquire_sectors(
     progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Map each symbol to ``{cik, sic, group}``; a failed name goes to ``failures`` as an error type name."""
+    if client.follow_redirects:
+        raise ValueError("a client that follows redirects can leave the SEC allow-list")
     ciks = _ticker_ciks(await _request(client, TICKERS_URL, pace))
     found: dict[str, dict[str, Any]] = {}
     failures: dict[str, str] = {}

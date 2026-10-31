@@ -3,7 +3,14 @@ import pytest
 
 from agentic_trader.research.ic import composite as composite_module
 from agentic_trader.research.ic.arrays import build_ic_arrays
-from agentic_trader.research.ic.composite import composite_panel, member_panel
+from agentic_trader.research.ic.composite import (
+    LOW_RISK_THEME,
+    combine_members,
+    composite_panel,
+    ex_low_risk_panel,
+    member_panel,
+    theme_panel,
+)
 from tests.research.ic.world import LONG_DAYS, long_world, poisoned_world, shipped_composite, stub_arrays
 
 
@@ -184,3 +191,61 @@ def test_composite_does_not_change_when_bars_from_d_on_change():
     moved = composite_panel(protocol, arrays)
     np.testing.assert_array_equal(moved[:position], before[:position])
     assert not np.array_equal(moved[position], before[position], equal_nan=True)
+
+
+def _member_values(seed=2) -> dict[str, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    return {member.id: rng.normal(size=(S, N)) for member in MEMBERS}
+
+
+def test_the_frozen_composite_has_the_low_risk_theme_with_its_one_member():
+    low_risk = next(theme for theme in PROTOCOL.themes if theme.theme == LOW_RISK_THEME)
+    assert [member.id for member in low_risk.members] == ["ivol_capm_252d"]
+
+
+def test_ex_low_risk_panel_has_no_dependence_on_the_low_risk_member():
+    panels = _member_values()
+    out = ex_low_risk_panel(PROTOCOL, panels)
+    assert not np.allclose(out, combine_members(PROTOCOL, panels))  # it does leave something out
+    for other in (np.full((S, N), np.nan), np.full((S, N), 1e9), -panels["ivol_capm_252d"]):
+        np.testing.assert_array_equal(out, ex_low_risk_panel(PROTOCOL, panels | {"ivol_capm_252d": other}))
+    remaining = {key: value for key, value in panels.items() if key != "ivol_capm_252d"}
+    np.testing.assert_array_equal(out, ex_low_risk_panel(PROTOCOL, remaining))
+
+
+def test_ex_low_risk_panel_is_the_combine_of_the_remaining_themes():
+    panels = _member_values()
+    momentum = np.mean([panels[member] for member in ("ret_3_1", "ret_6_1", "ret_9_1", "ret_12_1")], axis=0)
+    np.testing.assert_allclose(ex_low_risk_panel(PROTOCOL, panels), (momentum + panels["ret_1_0"]) / 2.0, atol=1e-12)
+
+
+def test_ex_low_risk_panel_applies_the_minimum_share_to_the_remaining_members():
+    panels = _member_values()
+    for member in ("ret_6_1", "ret_9_1"):
+        panels[member][:, 0] = np.nan  # name 0 keeps 3 of the remaining 5: 60%
+    for member in ("ret_6_1", "ret_9_1", "ret_12_1"):
+        panels[member][:, 1] = np.nan  # name 1 keeps 2 of the remaining 5: 40%
+    panels["ivol_capm_252d"][:, 0] = np.nan  # name 0 keeps 3 of all 6: 50%, too few for the composite
+    assert np.isfinite(ex_low_risk_panel(PROTOCOL, panels)[:, 0]).all()
+    assert np.isnan(ex_low_risk_panel(PROTOCOL, panels)[:, 1]).all()
+    assert np.isnan(combine_members(PROTOCOL, panels)[:, 0]).all()
+
+
+def test_ex_low_risk_panel_refuses_a_composite_without_the_theme():
+    kept = tuple(theme for theme in PROTOCOL.themes if theme.theme != LOW_RISK_THEME)
+    with pytest.raises(ValueError, match=LOW_RISK_THEME):
+        ex_low_risk_panel(PROTOCOL.model_copy(update={"themes": kept}), _member_values())
+
+
+def test_theme_panel_reads_only_its_own_members_with_the_share_over_them():
+    panels = _member_values()
+    momentum, reversal, low_risk = PROTOCOL.themes
+    assert (momentum.theme, reversal.theme, low_risk.theme) == ("momentum", "short_term_reversal", LOW_RISK_THEME)
+    np.testing.assert_array_equal(theme_panel(PROTOCOL, low_risk, panels), panels["ivol_capm_252d"])
+    expected = np.mean([panels[member.id] for member in momentum.members], axis=0)
+    np.testing.assert_allclose(theme_panel(PROTOCOL, momentum, panels), expected, atol=1e-12)
+    panels["ret_6_1"][:, 0] = np.nan  # 3 of 4 is enough, 2 of 4 is not
+    panels["ret_6_1"][:, 1] = np.nan
+    panels["ret_9_1"][:, 1] = np.nan
+    out = theme_panel(PROTOCOL, momentum, panels)
+    assert np.isfinite(out[:, 0]).all() and np.isnan(out[:, 1]).all()

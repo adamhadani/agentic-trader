@@ -17,10 +17,20 @@ import pandas as pd
 
 from agentic_trader.research.alpha.panel import cross_sectional_regress_out, cross_sectional_zscore, group_zscore
 from agentic_trader.research.ic.arrays import ICArrays
-from agentic_trader.research.ic.protocol import CompositeProtocol, Member
+from agentic_trader.research.ic.protocol import CompositeProtocol, Member, Theme
 
 
-__all__ = ["combine_members", "composite_panel", "member_panel"]
+__all__ = [
+    "LOW_RISK_THEME",
+    "combine_members",
+    "composite_panel",
+    "ex_low_risk_panel",
+    "member_panel",
+    "member_panels",
+    "theme_panel",
+]
+
+LOW_RISK_THEME = "low_risk"
 
 
 def _frame(values: np.ndarray, symbols: tuple[str, ...]) -> pd.DataFrame:
@@ -63,6 +73,29 @@ def combine_members(protocol: CompositeProtocol, panels: Mapping[str, np.ndarray
     return np.where(share >= protocol.construction.min_member_fraction, _mean_of_finite(themes), np.nan)
 
 
+def member_panels(protocol: CompositeProtocol, arrays: ICArrays) -> dict[str, np.ndarray]:
+    return {member.id: member_panel(member, protocol, arrays) for member in protocol.members}
+
+
 def composite_panel(protocol: CompositeProtocol, arrays: ICArrays) -> np.ndarray:
     """``[S, N]`` composite scores."""
-    return combine_members(protocol, {member.id: member_panel(member, protocol, arrays) for member in protocol.members})
+    return combine_members(protocol, member_panels(protocol, arrays))
+
+
+def _combine_themes(
+    protocol: CompositeProtocol, themes: tuple[Theme, ...], panels: Mapping[str, np.ndarray]
+) -> np.ndarray:
+    """``combine_members`` over these themes alone, so the minimum share counts only their members."""
+    return combine_members(protocol.model_copy(update={"themes": themes}), panels)
+
+
+def theme_panel(protocol: CompositeProtocol, theme: Theme, panels: Mapping[str, np.ndarray]) -> np.ndarray:
+    return _combine_themes(protocol, (theme,), panels)
+
+
+def ex_low_risk_panel(protocol: CompositeProtocol, panels: Mapping[str, np.ndarray]) -> np.ndarray:
+    """The composite recombined without the low-risk theme; its member's panel is never read."""
+    kept = tuple(theme for theme in protocol.themes if theme.theme != LOW_RISK_THEME)
+    if len(kept) == len(protocol.themes):
+        raise ValueError(f"the composite has no {LOW_RISK_THEME} theme to leave out")
+    return _combine_themes(protocol, kept, panels)

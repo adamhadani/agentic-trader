@@ -1,15 +1,17 @@
 {
   "id": "ic-rescore",
   "version": 1,
-  "rationale": "A zero-trial re-score of the eight fixed sets run so far, read by rank IC. The formulas and windows were already spent, so this charges nothing and journals nothing. Each batch first reproduces its campaign's recorded discovery edges; one that does not gets no IC read and no verdict. A batch carries only if its mean IC is above zero on discovery and on selection, which is not a pass: it only makes a member eligible for a later spec that tests incremental IC over the composite. The insider sets never ran, so they are out. Paths under batches are relative to the research root, except protocol, which is relative to the repository. Bootstrap draws and seed and min_names are the composite's.",
+  "rationale": "A zero-trial re-score of the eight fixed sets run so far, read by rank IC. The formulas and their discovery window were already spent, and selection is new for 63 of the 64 pairs but is development data (ledger W1), so this charges nothing and journals nothing. Each batch first reproduces its campaign's recorded discovery edges; one that does not gets no IC read and no verdict. A batch carries only if its mean IC is above zero on discovery and on selection, which is not a pass: it only makes a member eligible for a later spec that tests incremental IC over the composite. The insider sets never ran, so they are out. Paths under batches are relative to the research root, except protocol, which is relative to the repository. Bootstrap draws and seed and min_names are the composite's.",
   "sectors_path": "config/research/ic/sectors-v1.json",
   "sectors_sha256": "56bc70fb52ce541aa2e4292673e81ebbc42df18bcf53484e6907cb52d4689574",
   "horizon": 20,
   "min_names": 30,
+  "min_sessions": 250,
   "bootstrap": {
     "draws": 2000,
     "seed": 20261103
   },
+  "placebo_seed": 20261201,
   "edge_statistic_reference": {
     "t_mean": -0.06,
     "t_sd": 1.25

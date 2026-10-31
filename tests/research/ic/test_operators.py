@@ -73,6 +73,21 @@ def test_ts_beta_units_refuse_mixed_arguments():
         compile_expression("ts_beta(close, volume, 60)")
 
 
+@pytest.mark.parametrize(
+    ("expression", "lookback"),
+    [
+        ("mkt_ret", 1),
+        ("returns", 1),
+        ("delay(mkt_ret, 5)", 6),
+        ("ts_mean(mkt_ret, 20)", 20),
+        ("ts_beta(mkt_ret, mkt_ret, 60)", 60),
+        ("ts_beta(returns, mkt_ret, 60)", 60),
+    ],
+)
+def test_mkt_ret_needs_one_prior_bar(expression, lookback):
+    assert compile_expression(expression).lookback == lookback
+
+
 def test_mkt_ret_is_refused_on_a_frame_without_it():
     _, x, _ = _fields()
     with pytest.raises(ValueError, match="mkt_ret"):
