@@ -46,8 +46,8 @@ code changes; file and symbol names are the stable reference.
   first.
 - **Direction 3, IC machinery and one mechanically chosen composite ($0 beyond Sharadar).** Adds
   cross-sectional operators, residual returns and rank IC, then confirms one mechanical JKP composite on
-  the era. The composite becomes the yardstick every new data source must beat. Status: built, reads pending
-  ([IC lane](../alpha-ic-lane.md), ledger L40–L42, development window only).
+  the era. The composite becomes the yardstick every new data source must beat. Status: closed 2026-10-31.
+  The composite failed its development gate ([results](../alpha-ic-lane-results-2026-10-31.md)), so the era is not read for it; the [IC tools](../alpha-ic-lane.md) stay.
 - **Direction 4, options.** Deferred to a feed check.
 - **Cut:** residual reversal, TSMOM, intraday SPY/QQQ and `veto-v1`.
 - **No** vectorbt PRO, no GPU work in this program, no social/congress/estimate feeds.

@@ -8,8 +8,8 @@ file is the contract the commands implement, with the limits stated.
 
 ## 1. Status and what a result means
 
-**Built, reads pending.** No rank IC has been computed on this machinery, on any data. The result slots
-below are pending and the result doc will be `alpha-ic-lane-results-YYYY-MM-DD.md`.
+**Reads done 2026-10-31: `composite-ic-v1` failed its gate and is closed** ([results](alpha-ic-lane-results-2026-10-31.md)). The tools stay.
+A re-run is a declared second look.
 
 - **Research only.** No card, probe, registry entry, shadow or promotion credit, broker order or account
   access, Telegram or database access, schema or migration. Nothing runs in the daemon. **Nothing here
@@ -331,10 +331,10 @@ read is a declared second look.** The rows are in the ledger (L40-L42) before th
 
 | Slot | Value |
 | --- | --- |
-| Alignment spot check | pending |
-| A-IC | pending |
-| C-IC | pending |
-| Re-score (64 pairs, both windows) | pending |
-| Gate, cohort v3 `e_20` | pending |
-| Cohort v2, reported | pending |
-| Result doc | pending |
+| Alignment spot check | Passed: 200 cells, no mismatch |
+| A-IC | Passed, as a plumbing check (power 100%, overstated by construction) |
+| C-IC | Passed: 3.0% accepted (limit 10%), `t` sd 1.13 |
+| Re-score (64 pairs, both windows) | All eight sets reproduced; 2 of 8 batches carry, the chance rate; no pair reaches `t >= 2` in both windows |
+| Gate, cohort v3 `e_20` | **Fail:** mean IC +0.0116, `t` 1.53, 3 of 4 blocks; power at IC 0.03 is 97.5% |
+| Cohort v2, reported | Mean IC +0.0148, `t` 1.50, 4 of 4 blocks |
+| Result doc | [2026-10-31](alpha-ic-lane-results-2026-10-31.md) |
