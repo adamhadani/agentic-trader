@@ -207,7 +207,7 @@ Both run on the gate's own cohort, target and window, through the gate's code pa
 
 - **Pass:** at `λ = 0.03` the gate rule accepts at least 70% of replicates. IC 0.03 is about where a card nears break-even by the report's arithmetic, and 70% is the low end of the report's own power range.
 - **Reported:** power at `λ = 0.02`, the report's figure, and at `0.04`, plus the same for the report's literal base, a pure AR(1) score with `φ = 0.97` per name. An i.i.d.-noise base understates daily IC variance, because it has no factor exposure, so it would overstate power *(my call)*.
-- This check also catches pipeline faults: a misaligned target gives planted IC near zero and fails.
+- This check exercises the gate's code path end to end, but it is **not** an alignment check. The plant and the read share one target array, so a misdated array is invisible to it, and on an overlapping 20-session target a shift of up to about ten sessions still passes. Alignment rests on the exact-formula tests in the arrays task and on a spot check of real cells against raw bars before the read.
 
 **If A-IC fails, the gate does not run.** The result doc then says the window cannot decide this question. If C-IC fails, the statistic is wrong, and it is fixed and re-run before anything else.
 
