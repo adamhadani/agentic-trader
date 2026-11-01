@@ -1,0 +1,139 @@
+{
+  "id": "composite-ic",
+  "version": 1,
+  "rationale": "Six members from the earliest-published paper of each JKP price theme that the bars can compute: momentum (four Jegadeesh and Titman formation windows, skipping the latest month), short-term reversal (one month, sign reversed) and low risk (one-year CAPM idiosyncratic volatility, sign reversed), taken from the published tables of bkelly-lab/ReplicationCrisis for member selection only. Each member is z-scored, z-scored within its Fama-French 12 sector, residualised on beta_60 and log dollar volume and z-scored again; members average within a theme, themes average with equal weight, and nothing is fitted. No IC had been computed on this machinery when the file was frozen. A change is a new version.",
+  "source": {
+    "repository": "bkelly-lab/ReplicationCrisis",
+    "cluster_labels_sha256": "22c7fdd214218d1210ab9922efed59bf607538098cc06b6f2c5f326d2e6cf64b",
+    "factor_details_sha256": "4c579e4dcb93eed0897941d8f5f84e9cc784a2d3fc696be68a29a24e68206141"
+  },
+  "themes": [
+    {
+      "theme": "momentum",
+      "members": [
+        {
+          "id": "ret_3_1",
+          "expression": "roc(delay(close, 21), 42)",
+          "sign": 1,
+          "citation": "Jegadeesh and Titman (1993)"
+        },
+        {
+          "id": "ret_6_1",
+          "expression": "roc(delay(close, 21), 105)",
+          "sign": 1,
+          "citation": "Jegadeesh and Titman (1993)"
+        },
+        {
+          "id": "ret_9_1",
+          "expression": "roc(delay(close, 21), 168)",
+          "sign": 1,
+          "citation": "Jegadeesh and Titman (1993)"
+        },
+        {
+          "id": "ret_12_1",
+          "expression": "roc(delay(close, 21), 231)",
+          "sign": 1,
+          "citation": "Jegadeesh and Titman (1993)"
+        }
+      ]
+    },
+    {
+      "theme": "short_term_reversal",
+      "members": [
+        {
+          "id": "ret_1_0",
+          "expression": "roc(close, 21)",
+          "sign": -1,
+          "citation": "Jegadeesh (1990)"
+        }
+      ]
+    },
+    {
+      "theme": "low_risk",
+      "members": [
+        {
+          "id": "ivol_capm_252d",
+          "expression": "ts_resid_std(returns, mkt_ret, 252)",
+          "sign": -1,
+          "citation": "Ali, Hwang and Trombley (2003)"
+        }
+      ]
+    }
+  ],
+  "skipped": [
+    {
+      "id": "beta_60m",
+      "citation": "Fama and MacBeth (1973)",
+      "reason": "not computable: needs 60 months of bars; the cache starts 2016-01"
+    },
+    {
+      "id": "beta_dimson_21d",
+      "citation": "Dimson (1979)",
+      "reason": "a beta: construction regresses out beta_60"
+    },
+    {
+      "id": "turnover_126d",
+      "citation": "Datar, Naik and Radcliffe (1998)",
+      "reason": "not computable: needs shares outstanding"
+    }
+  ],
+  "construction": {
+    "winsorize_z": 3.0,
+    "min_sector_names": 5,
+    "min_regression_rows": 30,
+    "min_member_fraction": 0.6
+  },
+  "sectors": {
+    "path": "config/research/ic/sectors-v1.json",
+    "sha256": "56bc70fb52ce541aa2e4292673e81ebbc42df18bcf53484e6907cb52d4689574",
+    "min_mapped_fraction": 0.9
+  },
+  "decisive": {
+    "protocol": "config/research/pooled/cohort3-daily-v1.json",
+    "sha256": "002b0ac27e2912105d8020495aabdf3e879c6bbc8bfa77665de45e297f290574"
+  },
+  "secondary": {
+    "protocol": "config/research/pooled/campaign-v4.json",
+    "sha256": "a72f2e65378f2f49e9c6d7b6c38079fbbed1f673017ebcbbd074874a96270f0d"
+  },
+  "window": [
+    "2016-08-01",
+    "2023-12-29"
+  ],
+  "horizon": 20,
+  "reported_horizons": [
+    1,
+    5,
+    20,
+    60
+  ],
+  "min_names": 30,
+  "bootstrap": {
+    "draws": 2000,
+    "seed": 20261103
+  },
+  "gate": {
+    "min_t": 2.0,
+    "blocks": 4,
+    "min_positive_blocks": 3
+  },
+  "checks": {
+    "c_ic": {
+      "replicates": 200,
+      "max_acceptance": 0.1,
+      "seed": 20261101,
+      "session_shuffle_replicates": 100
+    },
+    "a_ic": {
+      "replicates": 50,
+      "decisive_lambda": 0.03,
+      "min_power": 0.7,
+      "reported_lambdas": [
+        0.02,
+        0.04
+      ],
+      "ar1_phi": 0.97,
+      "seed": 20271102
+    }
+  }
+}

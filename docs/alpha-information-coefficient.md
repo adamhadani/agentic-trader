@@ -1,5 +1,8 @@
 # Information coefficient: interpretation and next measurement contract
 
+The pooled-cube implementation (next-open residual targets, block-bootstrap inference, checks and the
+`composite-ic-v1` development gate) is the [IC lane](alpha-ic-lane.md); this file keeps the definitions.
+
 Reviewed September 17, 2026 after operator input. These are research reference
 points and a documented implementation gap, **not new promotion thresholds**.
 Frozen studies, historical metrics and current acceptance policies are unchanged.
