@@ -20,6 +20,10 @@ def make(tallies, opens, failure_seconds=120):
     )
 
 
+def incident(component, phase=IncidentPhase.OPEN, *, detail="", ready_now=False, failed_since=FAILED):
+    return OpenIncident(component=component, phase=phase, failed_since=failed_since, detail=detail, ready_now=ready_now)
+
+
 def test_summary_copy():
     text = format_quiet_hours_summary(
         make(
@@ -27,7 +31,7 @@ def test_summary_copy():
                 ComponentTally(component="accounting", opened=2, recovered=2),
                 ComponentTally(component="scan", opened=1, recovered=0),
             ],
-            [OpenIncident(component="scan", phase=IncidentPhase.OPEN, failed_since=FAILED, detail="age <limit>")],
+            [incident("scan", detail="age <limit>")],
         )
     )
     lines = text.split("\n")
@@ -37,7 +41,7 @@ def test_summary_copy():
     assert "• scan: 1 opened" in lines
     assert "Still open:" in lines
     assert "• scan (open since Mon 22:20 ET): age &lt;limit&gt;" in lines
-    assert "Each incident still failing 2 min into alert hours sends its own alert." in lines
+    assert "An incident still failing 2 min after this summary sends its own alert." in lines
     assert "Incidents that open and recover overnight usually mean the host slept (<code>pmset -g log</code>)." in lines
     assert lines[-1] == "Inspect <code>copilot doctor --readiness</code> and <code>copilot db incidents</code>."
 
@@ -45,21 +49,40 @@ def test_summary_copy():
 def test_summary_caps_long_lists():
     tallies = [ComponentTally(component=f"c{i:02d}", opened=1, recovered=0) for i in range(13)]
     opens = [
-        OpenIncident(
-            component=f"o{i:02d}", phase=IncidentPhase.RECOVERING, failed_since=FAILED + timedelta(minutes=i), detail=""
-        )
-        for i in range(11)
+        incident(f"o{i:02d}", IncidentPhase.RECOVERING, failed_since=FAILED + timedelta(minutes=i)) for i in range(11)
     ]
     text = format_quiet_hours_summary(make(tallies, opens, failure_seconds=90))
-    assert "… +1 more components" in text and "\n… +1 more\n" in text
+    assert "\n… +1 more component\n" in text and "\n… +1 more\n" in text
     assert text.count("• c") == 12 and text.count("• o") == 10
-    assert "(recovering since" in text and "ET)\n" in text
-    assert "failing 90 s into" in text
+    assert "• o00 (recovering; failing since Mon 22:20 ET)\n" in text
+    assert "failing 90 s after this summary" in text
+    more = [ComponentTally(component=f"c{i:02d}", opened=1, recovered=0) for i in range(14)]
+    assert "\n… +2 more components\n" in format_quiet_hours_summary(make(more, []))
 
 
 def test_empty_tallies_copy():
-    text = format_quiet_hours_summary(
-        make([], [OpenIncident(component="scan", phase=IncidentPhase.OPEN, failed_since=FAILED, detail="")])
-    )
+    text = format_quiet_hours_summary(make([], [incident("scan")]))
     assert "no alerts held." in text and "pmset" not in text
     assert "• scan (open since Mon 22:20 ET)\n" in text
+
+
+def test_still_open_lines_show_this_pass_readiness_without_contradicting_detail():
+    fresh = "Observation age: 5s; limit: 18000s"
+    stale = "Observation age: 40000s; limit: 18000s"
+    text = format_quiet_hours_summary(
+        make(
+            [],
+            [
+                incident("scan", detail=fresh, ready_now=True),
+                incident("accounting", detail=stale),
+                incident("telegram", IncidentPhase.RECOVERING, detail=fresh, ready_now=True),
+                incident("worker", IncidentPhase.RECOVERING, detail=stale),
+            ],
+        )
+    )
+    lines = text.split("\n")
+    assert "• scan (open since Mon 22:20 ET; ready now)" in lines
+    assert f"• accounting (open since Mon 22:20 ET): {stale}" in lines
+    assert "• telegram (recovering; failing since Mon 22:20 ET)" in lines
+    assert f"• worker (recovering; failing since Mon 22:20 ET): {stale}" in lines
+    assert "5s" not in text

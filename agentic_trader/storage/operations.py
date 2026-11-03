@@ -1,18 +1,19 @@
 """Transactional incident projection and existing notification outbox integration."""
 
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agentic_trader.config import OperationsConfig
+from agentic_trader.config import TRADING_HALT_CHECK, OperationsConfig
 from agentic_trader.diagnostics.incidents import (
     ComponentTally,
     IncidentPhase,
     IncidentState,
+    NoticeKind,
     OpenIncident,
     OperationalNotice,
     QuietHoursSummary,
@@ -23,6 +24,14 @@ from agentic_trader.execution.durable import EventKind, NotificationKind, WorkSt
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.storage.models import DomainEventRecord, IncidentProjectionRecord, WorkItemRecord
 from agentic_trader.storage.workflow import WorkflowStore, encode
+
+
+MAX_SUMMARY_DETAIL = 120
+
+
+def summary_key(window_start: datetime) -> str:
+    """Event and outbox key of the summary decided at the start of an alert window."""
+    return f"operations-summary/{window_start.astimezone(ET_TZ).date().isoformat()}"
 
 
 class OperationsStore:
@@ -102,52 +111,56 @@ class OperationsStore:
         period_end: datetime,
         observed_at: datetime,
         details: Mapping[str, str],
+        ready_now: Collection[str],
         policy: OperationsConfig,
     ) -> QuietHoursSummary | None:
         """Queue the one morning summary of a quiet period; None when already queued or nothing to say."""
-        key = f"operations-summary/{period_end.astimezone(ET_TZ).date().isoformat()}"
+        key = summary_key(period_end)
         # The first pass of each alert window decides once; a decided window costs one indexed read.
         async with self.store.db.session_factory() as session:
-            if await self._summary_decided(session, key):
+            if await self._summary_decision(session, key) is not None:
                 return None
         async with self.store.db.session_factory() as session, session.begin():
             await self.store.lock(session)
-            if await self._summary_decided(session, key):
+            if await self._summary_decision(session, key) is not None:
                 return None
-            margin = timedelta(hours=1)
-            events = await session.scalars(
-                select(DomainEventRecord).where(
-                    DomainEventRecord.scope == self.scope,
-                    DomainEventRecord.stream >= "incident/",
-                    DomainEventRecord.stream < "incident0",
-                    DomainEventRecord.kind == EventKind.INCIDENT_CHANGED,
-                    DomainEventRecord.recorded_at >= period_start - margin,
-                    DomainEventRecord.recorded_at <= period_end + margin,
+            # Every component that ever journaled an incident has a projection row, so its streams bound the read.
+            projections = list(
+                await session.scalars(
+                    select(IncidentProjectionRecord).where(IncidentProjectionRecord.scope == self.scope)
                 )
             )
             counts: dict[str, list[int]] = {}
-            for event in events:
-                payload = json.loads(event.payload)
-                withheld = payload.get("withheld")
-                if not withheld or withheld.get("reason") != WithheldReason.QUIET_HOURS:
-                    continue
-                if not period_start <= datetime.fromisoformat(payload["observed_at"]) < period_end:
-                    continue
-                tally = counts.setdefault(payload["component"], [0, 0])
-                if withheld.get("kind") == "opened":
-                    tally[0] += 1
-                elif withheld.get("kind") == "recovered":
-                    tally[1] += 1
+            if projections:
+                margin = timedelta(hours=1)
+                events = await session.scalars(
+                    select(DomainEventRecord).where(
+                        DomainEventRecord.scope == self.scope,
+                        DomainEventRecord.stream.in_([f"incident/{row.component}" for row in projections]),
+                        DomainEventRecord.kind == EventKind.INCIDENT_CHANGED,
+                        DomainEventRecord.recorded_at >= period_start - margin,
+                        DomainEventRecord.recorded_at <= period_end + margin,
+                    )
+                )
+                for event in events:
+                    payload = json.loads(event.payload)
+                    withheld = payload.get("withheld")
+                    if not withheld or withheld.get("reason") != WithheldReason.QUIET_HOURS:
+                        continue
+                    if not period_start <= datetime.fromisoformat(payload["observed_at"]) < period_end:
+                        continue
+                    tally = counts.setdefault(payload["component"], [0, 0])
+                    if withheld.get("kind") == NoticeKind.OPENED:
+                        tally[0] += 1
+                    elif withheld.get("kind") == NoticeKind.RECOVERED:
+                        tally[1] += 1
             tallies = [
                 ComponentTally(component=name, opened=o, recovered=r)
                 for name, (o, r) in sorted(counts.items(), key=lambda kv: (-sum(kv[1]), kv[0]))
                 if o + r
             ]
             open_incidents = []
-            rows = await session.scalars(
-                select(IncidentProjectionRecord).where(IncidentProjectionRecord.scope == self.scope)
-            )
-            for row in rows:
+            for row in projections:
                 state = IncidentState.model_validate_json(row.payload)
                 if state.phase in (IncidentPhase.OPEN, IncidentPhase.RECOVERING) and state.failed_since:
                     open_incidents.append(
@@ -155,10 +168,11 @@ class OperationsStore:
                             component=row.component,
                             phase=state.phase,
                             failed_since=state.failed_since,
-                            detail=details.get(row.component, "")[:120],
+                            detail=details.get(row.component, "")[:MAX_SUMMARY_DETAIL],
+                            ready_now=row.component in ready_now,
                         )
                     )
-            open_incidents.sort(key=lambda i: (i.component != "trading_halt", i.failed_since, i.component))
+            open_incidents.sort(key=lambda i: (i.component != TRADING_HALT_CHECK, i.failed_since, i.component))
             summary = None
             if tallies or open_incidents:
                 summary = QuietHoursSummary(
@@ -186,14 +200,15 @@ class OperationsStore:
             )
             return summary
 
-    async def _summary_decided(self, session: AsyncSession, key: str) -> bool:
-        return (
-            await session.scalar(
-                select(DomainEventRecord.id).where(
-                    DomainEventRecord.scope == self.scope, DomainEventRecord.event_key == key
-                )
-            )
-            is not None
+    async def summary_decided_at(self, window_start: datetime) -> datetime | None:
+        """The pass time that decided this alert window's summary: the window's first pass, or None if undecided."""
+        async with self.store.db.session_factory() as session:
+            decision = await self._summary_decision(session, summary_key(window_start))
+        return datetime.fromisoformat(json.loads(decision.payload)["observed_at"]) if decision else None
+
+    async def _summary_decision(self, session: AsyncSession, key: str) -> DomainEventRecord | None:
+        return await session.scalar(
+            select(DomainEventRecord).where(DomainEventRecord.scope == self.scope, DomainEventRecord.event_key == key)
         )
 
     async def incidents(self) -> list[dict[str, Any]]:

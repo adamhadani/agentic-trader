@@ -136,7 +136,15 @@ async def quiet_cycle(store, policy, component, at, *, recover=True):
 
 
 def summary_kwargs(policy, **extra):
-    return {"period_start": START, "period_end": END, "observed_at": END, "details": {}, "policy": policy, **extra}
+    return {
+        "period_start": START,
+        "period_end": END,
+        "observed_at": END,
+        "details": {},
+        "ready_now": (),
+        "policy": policy,
+        **extra,
+    }
 
 
 async def test_summary_tallies_withheld_notices_and_lists_open_incidents(desk):
@@ -154,6 +162,7 @@ async def test_summary_tallies_withheld_notices_and_lists_open_incidents(desk):
     ]
     assert [i.component for i in summary.open_incidents] == ["scan"]
     assert summary.open_incidents[0].detail == detail
+    assert summary.open_incidents[0].ready_now is False
     items = await store.store.list_work(WorkKind.NOTIFICATION)
     assert [i.payload["kind"] for i in items] == ["operations_summary"]
     async with store.store.db.session_factory() as session:
@@ -222,3 +231,23 @@ async def test_summary_lists_trading_halt_first(desk):
     summary = await store.queue_quiet_summary(**summary_kwargs(policy))
     assert summary is not None
     assert [i.component for i in summary.open_incidents] == ["trading_halt", "scan"]
+
+
+async def test_summary_decided_at_reads_the_first_pass_of_the_window(desk):
+    store, policy, _ = desk
+    assert await store.summary_decided_at(END) is None
+    first = END + timedelta(minutes=75)
+    await store.queue_quiet_summary(**summary_kwargs(policy, observed_at=first))
+    await store.queue_quiet_summary(**summary_kwargs(policy, observed_at=first + timedelta(minutes=1)))
+    assert await store.summary_decided_at(END) == first
+    assert await store.summary_decided_at(END + timedelta(days=1)) is None
+
+
+async def test_summary_marks_open_incidents_whose_check_is_ready_now(desk):
+    store, policy, _ = desk
+    await quiet_cycle(store, policy, "scan", START + timedelta(hours=1), recover=False)
+    await quiet_cycle(store, policy, "accounting", START + timedelta(hours=2), recover=False)
+    await backdate_events(store)
+    summary = await store.queue_quiet_summary(**summary_kwargs(policy, ready_now={"scan"}))
+    assert summary is not None
+    assert [(i.component, i.ready_now) for i in summary.open_incidents] == [("scan", True), ("accounting", False)]

@@ -22,7 +22,8 @@ are the point of the Telegram channel, and teaches the operator to ignore alerts
 - At the start of the next alert window, send at most one summary of what was held and what is still open.
 - At the window start, do not page on staleness that clears within the normal debounce, such as a host that has
   just woken.
-- Keep broker-work checks paging at every hour.
+- Keep broker-work checks paging at every hour, together with the checks whose failure hides them (`endpoint`,
+  `storage`).
 
 ## Non-goals and anti-goals
 
@@ -53,17 +54,27 @@ other moment is quiet time.
 | Setting | Code default | Shipped `config.yaml` | Meaning |
 | --- | --- | --- | --- |
 | `enabled` | `false` | `true` | Hold ordinary incident notices outside the alert window |
-| `alert_start_et` | `09:15` | — | Start of the alert window, New York time |
-| `alert_end_et` | `16:30` | — | End of the alert window (exclusive) |
-| `exempt_components` | `[entry_recovery, entry_cancellation, close_recovery]` | — | Checks that page at any hour |
+| `alert_start_et` | `"09:15"` | — | Start of the alert window, New York time |
+| `alert_end_et` | `"16:30"` | — | End of the alert window (exclusive) |
+| `exempt_components` | `[entry_recovery, entry_cancellation, close_recovery, endpoint, storage]` | — | Checks that page at any hour |
 
 - **Validation:** `alert_start_et < alert_end_et`. Every exempt name must be a known readiness check name: the
   `HealthComponent` values, the computed checks in `ReadinessService.report` (`daemon_started`, `alpha_registry`,
   `entry_recovery`, `entry_cancellation`, `outbox`, `close_recovery`, `trading_halt`, `broker_stream`,
   `macro_calendar`, `event_loop`, `storage`), and the monitor's `endpoint`. The set is one constant in `config.py`,
   and a test pins it against `HealthComponent` and a fully enabled readiness report.
+- **Broker-work checks are required:** `exempt_components` replaces the default list, so config load fails unless it
+  still contains `entry_recovery`, `entry_cancellation` and `close_recovery` ("broker-work checks always page").
+  `endpoint` and `storage` may be removed deliberately.
+- **Quoted times:** the times must be strings such as `"09:15"` (or `datetime.time`). YAML 1.1 reads an unquoted
+  `10:00` as the integer 600, which pydantic would turn into `00:10+00:00` and so mute market hours; config load
+  rejects numbers and any time with a UTC offset, with a message to quote the time.
 - **Defaults:** the code default is off, following the repo's pattern of conservative code defaults with policy in
   config. `config.yaml` ships it on.
+- **`endpoint` and `storage` are exempt (Claude's call, final review).** When the daemon is unreachable the report
+  holds only `endpoint`, and when the readiness store raises it holds `storage` in place of the broker-work checks,
+  so muting either would hide unresolved broker work all night. Neither has sent a notice since 2026-10-20 and
+  `/readyz` is computed per request, so exempting them adds no sleep noise.
 - **`trading_halt` is not exempt (Claude's call).** A halt is sticky: it stays open until `/resume` and reminds
   hourly. If it were exempt, the halt reminders would run all night, as they did through the 10-26 → 10-29 halt. The
   morning summary lists an open halt first.
@@ -73,19 +84,31 @@ other moment is quiet time.
 ### Withheld notices
 
 The monitor computes `muted = enabled and component not exempt and observed_at not in an alert window`. It passes
-this to the state machine together with `alert_since`, the start of the alert window containing `observed_at`
-(`None` in quiet time or when quiet hours are disabled).
+this to the state machine together with `alert_since`, the **alert clock** (`None` in quiet time, when quiet hours
+are disabled, and always for an exempt component, which is never held and so keeps today's debounce).
+
+**The alert clock starts at the first pass inside the window** (final review). launchd does not wake a sleeping
+host, so the first pass can come long after 09:15; measured from 09:15, every held incident would page at once on
+that pass and send `recovered` a minute later. Once per pass the monitor:
+
+1. Takes `since`, the start of the alert window containing `observed_at`.
+2. If `since` is set and notifications are enabled, runs the fail-open summary decision (below), then, in its own
+   fail-open `try`, reads `OperationsStore.summary_decided_at(since)`: the payload `observed_at` of that window's
+   `operations_summary` decision event, which is the first pass's time. If it is set, `since = max(since, decided)`.
+3. If the summary build or the read fails, or notifications are disabled, `since` stays at the window start. That
+   never mutes; at worst a held incident pages early.
 
 The state machine (`diagnostics/incidents.py:advance`) is unchanged in how phases move. Only the notice decision
 changes, in the following order:
 
 1. Compute the would-be notice exactly as today.
-2. If the notice is `opened` for an incident that was never announced (`last_notified_at is None`, phase stays
-   `open`), it is due only once `observed_at − max(failed_since, alert_since) ≥ failure_seconds`. With
-   `alert_since = None` this is today's behaviour, because the incident has already been failing for at least
-   `failure_seconds`. An incident that opens while quiet and is still failing at the window start therefore pages
-   only if it is still failing `failure_seconds` (120 s) into the window. An incident that is still pending at the
-   start is handled by the normal PENDING → OPEN debounce.
+2. An `opened` notice is due only once `observed_at − max(failed_since, alert_since) ≥ failure_seconds`. This
+   applies both to an incident that was never announced (`last_notified_at is None`, phase stays `open`) and to the
+   PENDING → OPEN move. The phase still moves to `open` on the plain debounce; if the notice is not due yet, the
+   incident is `open` and unannounced, and the unannounced-`open` rule announces it later. With
+   `alert_since = None`, or `failed_since ≥ alert_since`, this is today's behaviour. An incident that opens (or goes
+   pending) while quiet and is still failing at the window's first pass therefore pages only if it is still failing
+   `failure_seconds` (120 s) after that pass.
 3. A `recovered` notice for an incident that was never announced is withheld, with reason `not_announced`. A
    recovery is news only when there was an opening.
 4. Otherwise, if `muted`, withhold the notice with reason `quiet_hours`. If notifications are disabled, withhold it
@@ -107,15 +130,19 @@ while muted and recovered before any failing observation used to send `recovered
 ### Morning summary
 
 On every pass, before observing components, the monitor asks the store for the summary of the quiet period that
-ended at `alert_since` (when quiet hours are enabled, notifications are enabled and `alert_since` is set). The
+ended at the start of the current alert window (when quiet hours are enabled, notifications are enabled and the
+pass is inside a window). It passes this pass's details and `ready_now`, the components whose check is ready. The
 store, under the scope lock and in one transaction:
 
-1. Returns early if a decision for the window exists: a `DomainEventRecord` with event key `operations-summary/{alert_since New York date}`, checked once before the lock (a plain indexed read) and again under it.
-2. Reads the `incident_changed` events in the scope whose stream starts with `incident/`. SQL bounds the read by
-   the stream range (index `ix_domain_event_stream`) and by `recorded_at` within one hour either side of the
-   period; one read of that shape measured 3.7 ms on production. Python then keeps exactly the events whose
-   payload `observed_at` falls in `[period_start, period_end)` and whose `withheld.reason` is `"quiet_hours"`.
-3. Reads the current projections whose phase is `open` or `recovering`.
+1. Returns early if a decision for the window exists: a `DomainEventRecord` with event key `operations-summary/{window start New York date}` (one key helper, shared with `summary_decided_at`), checked once before the lock (a plain indexed read) and again under it.
+2. Reads the scope's `incident_projections` rows. Every component that ever journaled an incident has one, so
+   their names give the complete list of `incident/{component}` streams.
+3. Reads the `incident_changed` events in those streams. SQL bounds the read by `stream IN (…)` (index
+   `ix_domain_event_stream`; unlike a `'incident/' ≤ stream < 'incident0'` range it does not depend on the
+   database collation) and by `recorded_at` within one hour either side of the period; one read of that shape
+   measured 3.7 ms on production. Python then keeps exactly the events whose payload `observed_at` falls in
+   `[period_start, period_end)` and whose `withheld.reason` is `"quiet_hours"`. The open incidents are the
+   projections whose phase is `open` or `recovering`.
 4. If both reads are empty, it queues nothing. Either way it appends one `operations_summary` event (stream
    `operations/summary`, that key, payload `queued`) in the same transaction, so the first pass of each alert window
    decides once and an empty decision is final for that window. A build failure rolls back and the next pass retries.
@@ -127,8 +154,12 @@ The summary contains:
 - `period_start`, `period_end` and `observed_at` (the pass time).
 - Per component, the counts of withheld `opened` and `recovered` notices. These are sorted by total, then name, and
   capped at 12 lines with "+N more components".
-- The open incidents: component, phase, `failed_since` and detail, truncated to 120 characters. `trading_halt`
-  comes first, then the rest by `failed_since`, capped at 10 with "+N more".
+- The open incidents: component, phase, `failed_since`, `ready_now` and detail, truncated to 120 characters.
+  `trading_halt` comes first, then the rest by `failed_since`, capped at 10 with "+N more". The phase comes from
+  the projection before this pass, while `ready_now` (the component's check is ready on this pass) and the detail
+  come from this pass. An open incident that is ready now renders as `(open since … ET; ready now)` without its
+  detail; a recovering one renders as `(recovering; failing since … ET)`, with its detail only when it is not ready
+  now. The tally overflow line reads "+1 more component" or "+N more components".
 
 The rendered text (`presentation/operations.py`) uses type and component names only, the same as today's notices.
 New York times are written like `Mon 16:30`.
@@ -141,7 +172,9 @@ Quiet hours Mon 16:30 → Tue 09:15 ET: 14 alerts and 13 recoveries held across 
 Still open:
 • trading_halt (open since Tue 03:00 ET): …
 • scan (open since Mon 22:20 ET): Observation age …
-Each incident still failing 2 min into alert hours sends its own alert.
+• accounting (open since Mon 23:05 ET; ready now)
+• telegram (recovering; failing since Tue 01:10 ET)
+An incident still failing 2 min after this summary sends its own alert.
 Incidents that open and recover overnight usually mean the host slept (pmset -g log).
 Inspect copilot doctor --readiness and copilot db incidents.
 ```
@@ -151,8 +184,9 @@ Inspect copilot doctor --readiness and copilot db incidents.
 - **Duplicates and failures:** concurrent supervisors are deduplicated by the outbox key. A summary that fails to
   build raises in `monitor_once`, as any store failure does today. The watchdog logs it, and incident observation
   for that pass is lost exactly as a store outage loses it. **Claude's call:** build the summary inside a
-  `try`/`except Exception` that logs and continues, so a summary bug can never stop the component observations
-  that follow it.
+  `try`/`except Exception` that logs (`quiet_summary_failed`) and continues, so a summary bug can never stop the
+  component observations that follow it. The decision read has its own `try` and logs `quiet_summary_read_failed`;
+  either failure leaves the alert clock at the window start.
 
 ### Unchanged
 
@@ -165,9 +199,10 @@ Inspect copilot doctor --readiness and copilot db incidents.
 
 - `docs/operational-monitoring.md`: a "Quiet hours" section and config rows.
 - `docs/production.md`: one line that the alert window should stay aligned with `scripts/awake.sh`.
-- `CLAUDE.md` contract 8: one sentence, saying that outside the configured alert window (weekdays 09:15–16:30 ET)
-  ordinary incident notices are withheld and journaled, then summarized once at the next window start, while
-  `entry_recovery`, `entry_cancellation` and `close_recovery` page at any hour.
+- `CLAUDE.md` contract 8: one sentence, saying that outside the `operations.quiet_hours` alert window (NYSE
+  weekdays 09:15–16:30 ET) ordinary incident notices are withheld and journaled, then summarized once by the
+  window's first pass, which also starts the alert clock, while `entry_recovery`, `entry_cancellation`,
+  `close_recovery`, `endpoint` and `storage` page at any hour.
 
 ## What is left to the builder
 

@@ -4,7 +4,13 @@ import html
 from datetime import UTC, datetime
 
 from agentic_trader.constants import APP_DISPLAY_NAME
-from agentic_trader.diagnostics.incidents import NoticeKind, OperationalNotice, QuietHoursSummary
+from agentic_trader.diagnostics.incidents import (
+    IncidentPhase,
+    NoticeKind,
+    OpenIncident,
+    OperationalNotice,
+    QuietHoursSummary,
+)
 from agentic_trader.market.session import ET_TZ
 
 
@@ -40,6 +46,19 @@ def _plural(n: int, singular: str, plural: str) -> str:
     return singular if n == 1 else plural
 
 
+def _open_line(incident: OpenIncident) -> str:
+    """Phase from the projection before this pass; readiness and detail from this pass's check."""
+    since = _et(incident.failed_since)
+    if incident.phase == IncidentPhase.RECOVERING:
+        status = f"recovering; failing since {since} ET"
+    elif incident.ready_now:
+        status = f"{incident.phase} since {since} ET; ready now"
+    else:
+        status = f"{incident.phase} since {since} ET"
+    detail = f": {html.escape(incident.detail)}" if incident.detail and not incident.ready_now else ""
+    return f"• {html.escape(incident.component)} ({status}){detail}"
+
+
 def format_quiet_hours_summary(summary: QuietHoursSummary) -> str:
     span = f"Quiet hours {_et(summary.period_start)} → {_et(summary.period_end)} ET"
     lines = [f"<b>{APP_DISPLAY_NAME}: Overnight operations summary</b>"]
@@ -58,19 +77,16 @@ def format_quiet_hours_summary(summary: QuietHoursSummary) -> str:
         parts = [f"{n} {word}" for n, word in ((tally.opened, "opened"), (tally.recovered, "recovered")) if n]
         lines.append(f"• {html.escape(tally.component)}: {', '.join(parts)}")
     if len(summary.tallies) > MAX_SUMMARY_TALLIES:
-        lines.append(f"… +{len(summary.tallies) - MAX_SUMMARY_TALLIES} more components")
+        more = len(summary.tallies) - MAX_SUMMARY_TALLIES
+        lines.append(f"… +{more} more {_plural(more, 'component', 'components')}")
     if summary.open_incidents:
         lines.append("Still open:")
-        for incident in summary.open_incidents[:MAX_SUMMARY_OPEN]:
-            detail = f": {html.escape(incident.detail)}" if incident.detail else ""
-            lines.append(
-                f"• {html.escape(incident.component)} ({incident.phase} since {_et(incident.failed_since)} ET){detail}"
-            )
+        lines.extend(_open_line(incident) for incident in summary.open_incidents[:MAX_SUMMARY_OPEN])
         if len(summary.open_incidents) > MAX_SUMMARY_OPEN:
             lines.append(f"… +{len(summary.open_incidents) - MAX_SUMMARY_OPEN} more")
         seconds = summary.failure_seconds
         wait = f"{seconds / 60:g} min" if seconds % 60 == 0 else f"{seconds:g} s"
-        lines.append(f"Each incident still failing {wait} into alert hours sends its own alert.")
+        lines.append(f"An incident still failing {wait} after this summary sends its own alert.")
     if summary.tallies:
         lines.append(
             "Incidents that open and recover overnight usually mean the host slept (<code>pmset -g log</code>)."

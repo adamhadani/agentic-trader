@@ -62,6 +62,7 @@ class OpenIncident(BaseModel):
     phase: IncidentPhase
     failed_since: datetime
     detail: str
+    ready_now: bool
 
 
 class QuietHoursSummary(BaseModel):
@@ -71,6 +72,14 @@ class QuietHoursSummary(BaseModel):
     failure_seconds: float
     tallies: list[ComponentTally]
     open_incidents: list[OpenIncident]
+
+
+def _opening_due(
+    failed_since: datetime, observed_at: datetime, policy: OperationsConfig, alert_since: datetime | None
+) -> bool:
+    """An opening is due once the incident has failed for ``failure_seconds`` of alert-clock time."""
+    since = max(failed_since, alert_since) if alert_since else failed_since
+    return (observed_at - since).total_seconds() >= policy.failure_seconds
 
 
 def advance(
@@ -106,11 +115,13 @@ def advance(
         and state.failed_since is not None
         and (observed_at - state.failed_since).total_seconds() >= policy.failure_seconds
     ):
-        state.phase, notice = IncidentPhase.OPEN, NoticeKind.OPENED
+        # The phase opens on the debounce; the notice waits for the alert clock (announced later when not due yet).
+        state.phase = IncidentPhase.OPEN
+        if _opening_due(state.failed_since, observed_at, policy, alert_since):
+            notice = NoticeKind.OPENED
     elif state.phase == IncidentPhase.OPEN and state.last_notified_at is None:
         assert state.failed_since is not None
-        since = max(state.failed_since, alert_since) if alert_since else state.failed_since
-        if (observed_at - since).total_seconds() >= policy.failure_seconds:
+        if _opening_due(state.failed_since, observed_at, policy, alert_since):
             notice = NoticeKind.OPENED
     elif (
         state.phase == IncidentPhase.OPEN

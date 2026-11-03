@@ -142,3 +142,25 @@ def test_muted_reminder_keeps_last_notified_at(policy):
     state, notice, withheld = step(state, policy, 200, False, muted=True)
     assert notice is None and withheld.kind == "reminder"
     assert state.last_notified_at == EPOCH + timedelta(seconds=10)
+
+
+def test_pending_incident_from_before_the_alert_clock_opens_unannounced(policy):
+    state, _, _ = step(IncidentState(), policy, 0, False, muted=True)
+    assert state.phase == "pending"
+    since = EPOCH + timedelta(seconds=1000)
+    state, notice, withheld = step(state, policy, 1000, False, alert_since=since)
+    assert state.phase == "open" and state.last_notified_at is None
+    assert (notice, withheld) == (None, None)
+    state, notice, _ = step(state, policy, 1009, False, alert_since=since)
+    assert state.phase == "open" and notice is None
+    state, notice, _ = step(state, policy, 1010, False, alert_since=since)
+    assert state.phase == "open" and notice == "opened"
+
+
+def test_pending_incident_inside_the_alert_clock_debounces_as_before(policy):
+    since = EPOCH
+    state, _, _ = step(IncidentState(), policy, 5, False, alert_since=since)
+    state, notice, _ = step(state, policy, 14, False, alert_since=since)
+    assert state.phase == "pending" and notice is None
+    state, notice, _ = step(state, policy, 15, False, alert_since=since)
+    assert state.phase == "open" and notice == "opened"

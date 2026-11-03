@@ -122,9 +122,11 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    `doctor --monitor` persists debounced incidents and uses the existing outbox;
    it never polls Telegram or consumes entry work. Degraded readiness alerts; it
    does not blindly restart or automatically change the trading halt.
-   Outside `operations.quiet_hours` (weekdays 09:15–16:30 ET) ordinary incident notices
-   are withheld and journaled (`withheld`), then summarized once at the next window start (`operations-summary/{et_date}`);
-   `entry_recovery`, `entry_cancellation` and `close_recovery` page at any hour.
+   Outside the `operations.quiet_hours` alert window (NYSE weekdays 09:15–16:30 ET) ordinary incident notices
+   are withheld and journaled (`withheld`), then summarized once by the window's first pass (`operations-summary/{et_date}`),
+   which also starts the alert clock for held incidents (window start if the summary fails; never muted);
+   `entry_recovery`, `entry_cancellation`, `close_recovery`, `endpoint` and `storage` page at any hour, and the
+   three broker-work checks can never be removed from `exempt_components`.
    Suggestion scans run at configured New York times and spend a derived per-session
    card budget (signals table, ET trading day); `PENDING` cards reserve no capacity;
    the intraday job scans only `non_universe_contracts`; `setup_quality` orders cards
