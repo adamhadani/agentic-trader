@@ -30,6 +30,7 @@ LEDGER_LOCK = "ledger"
 
 
 class EventKind(StrEnum):
+    OPERATIONS_SUMMARY = "operations_summary"
     ENTRY_CANCEL_REQUESTED = "entry_cancel_requested"
     ENTRY_CANCEL_RESOLVED = "entry_cancel_resolved"
     LIFETIME_REVIEW = "lifetime_review"

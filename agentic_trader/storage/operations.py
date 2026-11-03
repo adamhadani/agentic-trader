@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentic_trader.config import OperationsConfig
 from agentic_trader.diagnostics.incidents import (
@@ -18,7 +19,7 @@ from agentic_trader.diagnostics.incidents import (
     WithheldReason,
     advance,
 )
-from agentic_trader.execution.durable import EventKind, NotificationKind, WorkKind, WorkStatus
+from agentic_trader.execution.durable import EventKind, NotificationKind, WorkStatus
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.storage.models import DomainEventRecord, IncidentProjectionRecord, WorkItemRecord
 from agentic_trader.storage.workflow import WorkflowStore, encode
@@ -105,16 +106,13 @@ class OperationsStore:
     ) -> QuietHoursSummary | None:
         """Queue the one morning summary of a quiet period; None when already queued or nothing to say."""
         key = f"operations-summary/{period_end.astimezone(ET_TZ).date().isoformat()}"
+        # The first pass of each alert window decides once; a decided window costs one indexed read.
+        async with self.store.db.session_factory() as session:
+            if await self._summary_decided(session, key):
+                return None
         async with self.store.db.session_factory() as session, session.begin():
             await self.store.lock(session)
-            existing = await session.scalar(
-                select(WorkItemRecord.id).where(
-                    WorkItemRecord.scope == self.scope,
-                    WorkItemRecord.kind == WorkKind.NOTIFICATION,
-                    WorkItemRecord.dedup_key == key,
-                )
-            )
-            if existing:
+            if await self._summary_decided(session, key):
                 return None
             margin = timedelta(hours=1)
             events = await session.scalars(
@@ -161,20 +159,42 @@ class OperationsStore:
                         )
                     )
             open_incidents.sort(key=lambda i: (i.component != "trading_halt", i.failed_since, i.component))
-            if not tallies and not open_incidents:
-                return None
-            summary = QuietHoursSummary(
-                period_start=period_start,
-                period_end=period_end,
-                observed_at=observed_at,
-                failure_seconds=policy.failure_seconds,
-                tallies=tallies,
-                open_incidents=open_incidents,
-            )
-            await self.store.add_notification(
-                session, key, NotificationKind.OPERATIONS_SUMMARY, summary.model_dump(mode="json")
+            summary = None
+            if tallies or open_incidents:
+                summary = QuietHoursSummary(
+                    period_start=period_start,
+                    period_end=period_end,
+                    observed_at=observed_at,
+                    failure_seconds=policy.failure_seconds,
+                    tallies=tallies,
+                    open_incidents=open_incidents,
+                )
+                await self.store.add_notification(
+                    session, key, NotificationKind.OPERATIONS_SUMMARY, summary.model_dump(mode="json")
+                )
+            await self.store.append(
+                session,
+                stream="operations/summary",
+                kind=EventKind.OPERATIONS_SUMMARY,
+                key=key,
+                payload={
+                    "period_start": period_start.isoformat(),
+                    "period_end": period_end.isoformat(),
+                    "observed_at": observed_at.isoformat(),
+                    "queued": summary is not None,
+                },
             )
             return summary
+
+    async def _summary_decided(self, session: AsyncSession, key: str) -> bool:
+        return (
+            await session.scalar(
+                select(DomainEventRecord.id).where(
+                    DomainEventRecord.scope == self.scope, DomainEventRecord.event_key == key
+                )
+            )
+            is not None
+        )
 
     async def incidents(self) -> list[dict[str, Any]]:
         async with self.store.db.session_factory() as session:

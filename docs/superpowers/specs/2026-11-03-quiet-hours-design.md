@@ -110,15 +110,16 @@ On every pass, before observing components, the monitor asks the store for the s
 ended at `alert_since` (when quiet hours are enabled, notifications are enabled and `alert_since` is set). The
 store, under the scope lock and in one transaction:
 
-1. Returns early if the dedup key `operations-summary/{alert_since New York date}` already exists.
+1. Returns early if a decision for the window exists: a `DomainEventRecord` with event key `operations-summary/{alert_since New York date}`, checked once before the lock (a plain indexed read) and again under it.
 2. Reads the `incident_changed` events in the scope whose stream starts with `incident/`. SQL bounds the read by
    the stream range (index `ix_domain_event_stream`) and by `recorded_at` within one hour either side of the
    period; one read of that shape measured 3.7 ms on production. Python then keeps exactly the events whose
    payload `observed_at` falls in `[period_start, period_end)` and whose `withheld.reason` is `"quiet_hours"`.
 3. Reads the current projections whose phase is `open` or `recovering`.
-4. If both reads are empty, it queues nothing. It returns, and the check runs again on the next pass, which is
-   cheap.
-5. Otherwise it queues one `NotificationKind.OPERATIONS_SUMMARY` work item carrying a typed `QuietHoursSummary`
+4. If both reads are empty, it queues nothing. Either way it appends one `operations_summary` event (stream
+   `operations/summary`, that key, payload `queued`) in the same transaction, so the first pass of each alert window
+   decides once and an empty decision is final for that window. A build failure rolls back and the next pass retries.
+5. Otherwise it also queues one `NotificationKind.OPERATIONS_SUMMARY` work item carrying a typed `QuietHoursSummary`
    payload.
 
 The summary contains:

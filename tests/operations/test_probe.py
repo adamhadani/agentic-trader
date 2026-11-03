@@ -113,7 +113,6 @@ async def backdate(store):
 
 async def test_summary_precedes_the_first_alert_of_the_window(temp_db):
     store, monitor = await held_scan(temp_db)
-    await backdate(store)
     opening = datetime(2026, 11, 3, 14, 15, tzinfo=UTC)
     for at in (opening, opening + timedelta(minutes=2)):
         await monitor.observe(quiet_report(at, scan={"ready": False, "detail": "stale"}))
@@ -133,3 +132,40 @@ async def test_summary_failure_does_not_stop_observations(temp_db, monkeypatch):
     await monitor.observe(quiet_report(opening, scan={"ready": False}))
     notices = await monitor.observe(quiet_report(opening + timedelta(minutes=2), scan={"ready": False}))
     assert [(n.component, n.kind) for n in notices] == [("scan", "opened")]
+
+
+async def test_quiet_night_then_in_window_incident_sends_no_summary(temp_db):
+    store = OperationsStore(temp_db.workflows)
+    monitor = OperationsMonitor(
+        store, OperationsConfig(failure_seconds=120, quiet_hours=QuietHoursConfig(enabled=True))
+    )
+    opening = datetime(2026, 11, 3, 14, 15, tzinfo=UTC)
+    assert await monitor.observe(quiet_report(opening, scan={"ready": True})) == []
+    assert not await store.store.list_work(WorkKind.NOTIFICATION)
+    assert [e["payload"]["queued"] for e in await store.store.events("operations/summary")] == [False]
+    failing = datetime(2026, 11, 3, 15, 0, tzinfo=UTC)
+    await monitor.observe(quiet_report(failing, scan={"ready": False}))
+    notices = await monitor.observe(quiet_report(failing + timedelta(minutes=2), scan={"ready": False}))
+    assert [(n.component, n.kind) for n in notices] == [("scan", "opened")]
+    await monitor.observe(quiet_report(failing + timedelta(minutes=5), scan={"ready": False}))
+    items = await store.store.list_work(WorkKind.NOTIFICATION)
+    assert [i.payload["kind"] for i in items] == ["operational"]
+
+
+async def test_summary_build_failure_appends_nothing_and_is_retried(temp_db, monkeypatch):
+    store, monitor = await held_scan(temp_db)
+    await backdate(store)
+    real = store.queue_quiet_summary
+
+    async def boom(**_):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(store, "queue_quiet_summary", boom)
+    opening = datetime(2026, 11, 3, 14, 15, tzinfo=UTC)
+    await monitor.observe(quiet_report(opening, scan={"ready": False}))
+    assert not await store.store.events("operations/summary")
+    monkeypatch.setattr(store, "queue_quiet_summary", real)
+    await monitor.observe(quiet_report(opening + timedelta(minutes=1), scan={"ready": False}))
+    items = await store.store.list_work(WorkKind.NOTIFICATION)
+    assert [i.payload["kind"] for i in items] == ["operations_summary"]
+    assert [e["payload"]["queued"] for e in await store.store.events("operations/summary")] == [True]

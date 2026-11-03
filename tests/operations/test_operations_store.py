@@ -168,6 +168,30 @@ async def test_summary_is_queued_once_per_window(desk):
     assert await store.queue_quiet_summary(**summary_kwargs(policy)) is not None
     assert await store.queue_quiet_summary(**summary_kwargs(policy)) is None
     assert len(await store.store.list_work(WorkKind.NOTIFICATION)) == 1
+    decisions = await store.store.events("operations/summary")
+    assert [e["payload"]["queued"] for e in decisions] == [True]
+
+
+async def test_empty_decision_is_final_for_the_window(desk):
+    store, policy, _ = desk
+    assert await store.queue_quiet_summary(**summary_kwargs(policy)) is None
+    decisions = await store.store.events("operations/summary")
+    assert [e["payload"]["queued"] for e in decisions] == [False]
+    for seconds in (45 * 60, 45 * 60 + 130):
+        await store.observe("scan", ready=False, observed_at=END + timedelta(seconds=seconds), detail="", policy=policy)
+    assert await store.queue_quiet_summary(**summary_kwargs(policy)) is None
+    items = await store.store.list_work(WorkKind.NOTIFICATION)
+    assert [i.payload["kind"] for i in items] == ["operational"]
+    assert len(await store.store.events("operations/summary")) == 1
+
+
+async def test_summary_counts_an_event_exactly_at_period_start(desk):
+    store, policy, _ = desk
+    await quiet_cycle(store, policy, "scan", START - timedelta(seconds=10), recover=False)  # opens at START
+    await backdate_events(store)
+    summary = await store.queue_quiet_summary(**summary_kwargs(policy))
+    assert summary is not None
+    assert summary.tallies == [ComponentTally(component="scan", opened=1, recovered=0)]
 
 
 async def test_summary_ignores_events_outside_the_period_and_other_reasons(desk):

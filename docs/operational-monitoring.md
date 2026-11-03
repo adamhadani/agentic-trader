@@ -146,13 +146,16 @@ after 09:15 and one that clears early in the window stays silent. A recovery who
 incident was never announced is silent too; this also applies after re-enabling
 notifications, where a previously muted incident no longer sends a recovery notice.
 
-At the first observation of each alert window, `doctor --monitor` queues one
-`operations_summary` notification for the preceding quiet period (dedup key
-`operations-summary/{ET date}`): per-component opened/recovered counts of withheld
-notices and the incidents still open. It is built before the component loop, so it
-precedes that window's first alert, and a failure to build it is logged
-(`quiet_summary_failed`) and skipped; observations still run. It is not queued when
-there is nothing to report or when notifications are disabled.
+The first `doctor --monitor` pass of each alert window decides the summary of the
+preceding quiet period once. It journals an `operations_summary` event (stream
+`operations/summary`, key `operations-summary/{ET date}`, payload `queued`) and, when
+there is something to report, queues one `operations_summary` notification in the same
+transaction (per-component opened/recovered counts of withheld notices and the incidents
+still open). An empty decision is final for that window: an incident that first fails
+during the window alerts live and never appears in a later summary. The summary is built
+before the component loop, so it precedes that window's first alert. A build failure is
+logged (`quiet_summary_failed`), appends nothing and is retried on the next pass;
+observations still run. Nothing is decided when notifications are disabled.
 
 ## Configuration
 
