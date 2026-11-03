@@ -18,7 +18,15 @@ class OperationsStore:
         self.store, self.scope = store, store.scope
 
     async def observe(
-        self, component: str, *, ready: bool, observed_at: datetime, detail: str, policy: OperationsConfig
+        self,
+        component: str,
+        *,
+        ready: bool,
+        observed_at: datetime,
+        detail: str,
+        policy: OperationsConfig,
+        muted: bool = False,
+        alert_since: datetime | None = None,
     ) -> OperationalNotice | None:
         async with self.store.db.session_factory() as session, session.begin():
             await self.store.lock(session)
@@ -27,12 +35,14 @@ class OperationsStore:
                 return None
             previous = IncidentState.model_validate_json(row.payload) if row else IncidentState()
             delivery = await session.get(WorkItemRecord, previous.notification_id) if previous.notification_id else None
-            state, kind = advance(
+            state, kind, withheld = advance(
                 previous,
                 ready=ready,
                 observed_at=observed_at,
                 policy=policy,
                 delivery_complete=bool(delivery and delivery.status == WorkStatus.DELIVERED),
+                muted=muted,
+                alert_since=alert_since,
             )
             notice = None
             if kind:
@@ -66,6 +76,7 @@ class OperationsStore:
                         "observed_at": observed_at.isoformat(),
                         "state": state.model_dump(mode="json"),
                         "notice": notice.model_dump(mode="json") if notice else None,
+                        "withheld": withheld.model_dump(mode="json") if withheld else None,
                     },
                 )
                 row.event_id = event.id

@@ -71,3 +71,36 @@ async def test_reenabling_notifications_reports_existing_open_incident(desk):
         await store.observe("worker", ready=False, observed_at=now + timedelta(seconds=12), detail="", policy=policy)
         is None
     )
+
+
+async def test_muted_opening_journals_withheld_and_queues_nothing(desk):
+    store, policy, now = desk
+    for seconds in (0, 10):
+        await store.observe(
+            "scan", ready=False, observed_at=now + timedelta(seconds=seconds), detail="", policy=policy, muted=True
+        )
+    assert not await store.store.list_work(WorkKind.NOTIFICATION)
+    events = await store.store.events("incident/scan")
+    assert events[-1]["payload"]["withheld"] == {"kind": "opened", "reason": "quiet_hours"}
+    before = await store.incidents()
+    await store.rebuild()
+    assert await store.incidents() == before
+
+
+async def test_unmuted_transition_journals_null_withheld(desk):
+    store, policy, now = desk
+    for seconds in (0, 10):
+        await store.observe("scan", ready=False, observed_at=now + timedelta(seconds=seconds), detail="", policy=policy)
+    events = await store.store.events("incident/scan")
+    assert events[-1]["payload"]["withheld"] is None
+
+
+async def test_reenabled_notifications_do_not_send_recovery_for_unannounced_incident(desk):
+    store, policy, now = desk
+    policy.notifications_enabled = False
+    for seconds in (0, 10):
+        await store.observe("scan", ready=False, observed_at=now + timedelta(seconds=seconds), detail="", policy=policy)
+    policy.notifications_enabled = True
+    for seconds in (11, 16):
+        await store.observe("scan", ready=True, observed_at=now + timedelta(seconds=seconds), detail="", policy=policy)
+    assert not await store.store.list_work(WorkKind.NOTIFICATION)
