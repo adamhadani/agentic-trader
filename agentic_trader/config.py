@@ -2,7 +2,7 @@ import io
 import os
 import re
 from collections.abc import Mapping
-from datetime import date
+from datetime import date, time
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
@@ -661,6 +661,56 @@ class PositionSizingConfig(BaseModel):
         return self
 
 
+# Every readiness check name an incident can carry. Spelled out because config must not import diagnostics;
+# a test pins it against HealthComponent and the computed readiness checks.
+READINESS_CHECK_NAMES = frozenset(
+    {
+        "reconciliation",
+        "worker",
+        "scan",
+        "telegram",
+        "delivery",
+        "accounting",
+        "alpha_observer",
+        "alpha_decisions",
+        "alpha_daily_panel",
+        "card_stats",
+        "corporate_actions",
+        "insider_capture",
+        "daemon_started",
+        "alpha_registry",
+        "entry_recovery",
+        "entry_cancellation",
+        "outbox",
+        "close_recovery",
+        "trading_halt",
+        "broker_stream",
+        "macro_calendar",
+        "event_loop",
+        "storage",
+        "endpoint",
+    }
+)
+
+
+class QuietHoursConfig(BaseModel):
+    enabled: bool = False
+    alert_start_et: time = time(9, 15)
+    alert_end_et: time = time(16, 30)
+    exempt_components: list[str] = Field(
+        default_factory=lambda: ["entry_recovery", "entry_cancellation", "close_recovery"]
+    )
+
+    @model_validator(mode="after")
+    def validate_window(self):
+        if self.alert_start_et >= self.alert_end_et:
+            raise ValueError("Quiet hours alert_start_et must be before alert_end_et")
+        unknown = [name for name in self.exempt_components if name not in READINESS_CHECK_NAMES]
+        if unknown:
+            raise ValueError(f"Unknown quiet-hours exempt components: {', '.join(unknown)}")
+        return self
+
+
 class OperationsConfig(BaseModel):
     notifications_enabled: bool = True
     startup_grace_seconds: float = Field(default=120, ge=0, allow_inf_nan=False)
@@ -672,6 +722,7 @@ class OperationsConfig(BaseModel):
     healthy_observation_days: int = Field(default=30, ge=1)
     retention_interval_seconds: float = Field(default=3600, gt=0, allow_inf_nan=False)
     retention_batch_size: int = Field(default=1000, ge=1, le=10000)
+    quiet_hours: QuietHoursConfig = Field(default_factory=QuietHoursConfig)
 
 
 class AccountingConfig(BaseModel):
