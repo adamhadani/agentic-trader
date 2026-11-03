@@ -14,7 +14,7 @@ from sqlalchemy import update
 from agentic_trader.agent.scan_journal import append_scan_journal, regime_unavailable_notice
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.constants import CloseRequestStatus
-from agentic_trader.diagnostics.incidents import IncidentPhase
+from agentic_trader.diagnostics.incidents import ComponentTally, IncidentPhase
 from agentic_trader.execution.durable import EventKind, NotificationKind, ScanTrigger, WorkKind, WorkStatus
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.storage.db import SignalDatabase
@@ -468,6 +468,48 @@ async def test_postgres_incidents_and_retention_between_independent_clients(post
             await first.workflows.lock(session, resource="retention")
             async with second.session_factory() as other, other.begin():
                 await asyncio.wait_for(second.workflows.lock(other), timeout=2)
+    finally:
+        await first.engine.dispose()
+        await second.engine.dispose()
+
+
+async def test_postgres_quiet_summary_is_decided_once_between_independent_clients(postgres_test_db, app_config):
+    first = SignalDatabase(db_url=postgres_test_db)
+    second = SignalDatabase(db_url=postgres_test_db)
+    try:
+        await first.init_db()
+        a, b = OperationsStore(first.workflows), OperationsStore(second.workflows)
+        policy = app_config.operations
+        end = datetime.now(UTC).replace(microsecond=0)
+        start = end - timedelta(hours=2)
+        opened = start + timedelta(minutes=30)
+        for seconds in (0, policy.failure_seconds):
+            await a.observe(
+                "scan",
+                ready=False,
+                observed_at=opened + timedelta(seconds=seconds),
+                detail="",
+                policy=policy,
+                muted=True,
+            )
+        kwargs = {
+            "period_start": start,
+            "period_end": end,
+            "observed_at": end,
+            "details": {"scan": "stale"},
+            "ready_now": (),
+            "policy": policy,
+        }
+        summaries = await asyncio.gather(*(store.queue_quiet_summary(**kwargs) for store in (a, b, a, b)))
+        assert sum(summary is not None for summary in summaries) == 1
+        winner = next(summary for summary in summaries if summary is not None)
+        assert winner.tallies == [ComponentTally(component="scan", opened=1, recovered=0)]
+        assert [i.component for i in winner.open_incidents] == ["scan"]
+        items = await first.workflows.list_work(WorkKind.NOTIFICATION)
+        assert [item.payload["kind"] for item in items] == [NotificationKind.OPERATIONS_SUMMARY]
+        decisions = await second.workflows.events("operations/summary")
+        assert [event["payload"]["queued"] for event in decisions] == [True]
+        assert await b.summary_decided_at(end) == end
     finally:
         await first.engine.dispose()
         await second.engine.dispose()

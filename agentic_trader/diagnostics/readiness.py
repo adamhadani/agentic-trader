@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from agentic_trader.config import AppConfig
+from agentic_trader.config import TRADING_HALT_CHECK, AppConfig
 from agentic_trader.constants import CloseRequestStatus, SystemStateKey
 from agentic_trader.execution.durable import WorkKind, WorkStatus
 from agentic_trader.runtime import RUN_ID
@@ -171,7 +171,7 @@ class ReadinessService:
                 "unresolved": len(unresolved_closes),
                 "active": len(closes),
             }
-            checks["trading_halt"] = {
+            checks[TRADING_HALT_CHECK] = {
                 "ready": await self.store.db.get_state(SystemStateKey.TRADING_HALTED) not in ("true", "1", "yes")
             }
             if self.stream_connected is not None:

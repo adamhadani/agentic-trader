@@ -192,3 +192,10 @@ def test_shipped_pead_base_rate_matches_config():
     assert re.fullmatch(r"[0-9a-f]{64}", apriori.pead_base_rate_sha256)
     rate = load_pead_base_rate(apriori.pead_base_rate_path, apriori.pead_base_rate_sha256)
     assert rate.version == "pead-base-rate-v1"
+
+
+def test_shipped_quiet_hours_reach_app_config():
+    quiet = load_config(str(SHIPPED), environ=PRODUCTION).operations.quiet_hours
+
+    assert quiet.enabled is True
+    assert "enabled" in quiet.model_fields_set

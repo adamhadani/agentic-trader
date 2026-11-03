@@ -30,6 +30,7 @@ LEDGER_LOCK = "ledger"
 
 
 class EventKind(StrEnum):
+    OPERATIONS_SUMMARY = "operations_summary"
     ENTRY_CANCEL_REQUESTED = "entry_cancel_requested"
     ENTRY_CANCEL_RESOLVED = "entry_cancel_resolved"
     LIFETIME_REVIEW = "lifetime_review"
@@ -128,6 +129,7 @@ class NotificationKind(StrEnum):
     STOP = "stop"
     CARD_EXPIRED = "card_expired"
     CARD_AUTO_ENTERED = "card_auto_entered"
+    OPERATIONS_SUMMARY = "operations_summary"
 
 
 @dataclass(frozen=True)

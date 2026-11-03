@@ -128,6 +128,50 @@ the same fencing/retry protocol and Telegram transport. It does not call
 If the host, PostgreSQL or Telegram is unavailable, this mechanism cannot guarantee
 notification; an independent external monitor/destination remains recommended.
 
+### Quiet hours
+
+`operations.quiet_hours` (shipped `enabled: true`; code default off) confines ordinary
+incident alerts to the **alert window**: weekdays 09:15-16:30 New York time, excluding
+equity market holidays. Outside it, an incident's notice is withheld, not dropped: the
+state machine still advances and the `incident_changed` event carries
+`"withheld": {"kind": ..., "reason": ...}` (`null` when a notice was queued). The reasons
+are `quiet_hours` (muted by the window), `notifications_disabled` (`notifications_enabled:
+false`) and `not_announced` (a recovery for an incident that never sent an opening
+notice). `exempt_components` page at any hour: the broker-work checks `entry_recovery`,
+`entry_cancellation` and `close_recovery`, which the list must always include (config
+load fails otherwise), plus `endpoint` and `storage`, which are exempt by default because
+while either fails the broker-work checks go unobserved; those two may be removed
+deliberately. Write the window times as quoted strings (`"09:15"`): YAML reads an
+unquoted `10:00` as the integer 600, so config load rejects numbers and times with a UTC
+offset.
+
+An incident that opened (or went pending) while quiet is announced only once it has been
+failing for `failure_seconds` of **alert-clock** time. The alert clock starts at the
+window's first `doctor --monitor` pass, the pass that decides the summary below, not at
+09:15: a host that slept until 10:30 starts it at 10:30. An overnight failure therefore
+pages about two minutes after the summary, and one that clears in that time stays silent.
+If the summary cannot be built or its decision cannot be read, the clock stays at the
+window start, so a held incident can page early but is never muted. Exempt components
+keep the plain debounce at every hour. A recovery whose incident was never announced is
+silent too; this also applies after re-enabling notifications, where a previously muted
+incident no longer sends a recovery notice.
+
+The first `doctor --monitor` pass of each alert window decides the summary of the
+preceding quiet period once. It journals an `operations_summary` event (stream
+`operations/summary`, key `operations-summary/{ET date}`, payload `queued`) and, when
+there is something to report, queues one `operations_summary` notification in the same
+transaction (per-component opened/recovered counts of withheld notices and the incidents
+still open). It reads the `incident_changed` events of the scope's incident streams,
+named from its `incident_projections` rows. An open incident whose check is ready on that
+pass is listed as `ready now`, without its detail, and a recovering one as `recovering;
+failing since …`. Below that list it says "An incident still failing 2 min after this
+summary sends its own alert." (the configured `failure_seconds`). An empty decision is final for that window: an incident
+that first fails during the window alerts live and never appears in a later summary. The
+summary is built before the component loop, so it precedes that window's first alert. A
+build failure is logged (`quiet_summary_failed`), appends nothing and is retried on the
+next pass; a failed decision read is logged as `quiet_summary_read_failed`. Observations
+still run in both cases. Nothing is decided when notifications are disabled.
+
 ## Configuration
 
 All policy below is under `operations` in YAML; omitted values use validated defaults.
@@ -145,6 +189,10 @@ The installed launchd sampling interval is separately defined by its plist.
 | `healthy_observation_days` | `30` | Age before redundant healthy samples qualify for compaction |
 | `retention_interval_seconds` | `3600` | Minimum interval between automatic sweeps |
 | `retention_batch_size` | `1000` | Maximum health events deleted per sweep (max 10000) |
+| `quiet_hours.enabled` | `false` (ships `true`) | Withhold ordinary notices outside the alert window |
+| `quiet_hours.alert_start_et` | `"09:15"` | Alert window start, New York time (quoted) |
+| `quiet_hours.alert_end_et` | `"16:30"` | Alert window end, New York time (quoted) |
+| `quiet_hours.exempt_components` | `entry_recovery`, `entry_cancellation`, `close_recovery`, `endpoint`, `storage` | Components that page at any hour; the three broker-work checks are required |
 
 The debounce clock begins with the first failed sample. With 60-second polling and
 120-second failure debounce, alert creation normally needs three failing samples.

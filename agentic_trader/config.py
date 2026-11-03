@@ -2,7 +2,7 @@ import io
 import os
 import re
 from collections.abc import Mapping
-from datetime import date
+from datetime import date, time
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
@@ -661,6 +661,90 @@ class PositionSizingConfig(BaseModel):
         return self
 
 
+# The computed readiness check for the operator's trading halt; the quiet-hours summary lists it first.
+TRADING_HALT_CHECK = "trading_halt"
+# Readiness checks for unresolved broker work: quiet hours can never mute them.
+BROKER_WORK_CHECKS = ("entry_recovery", "entry_cancellation", "close_recovery")
+
+# Every readiness check name an incident can carry. Spelled out because config must not import diagnostics;
+# a test pins it against HealthComponent and the computed readiness checks.
+READINESS_CHECK_NAMES = frozenset(
+    {
+        "reconciliation",
+        "worker",
+        "scan",
+        "telegram",
+        "delivery",
+        "accounting",
+        "alpha_observer",
+        "alpha_decisions",
+        "alpha_daily_panel",
+        "card_stats",
+        "corporate_actions",
+        "insider_capture",
+        "daemon_started",
+        "alpha_registry",
+        "entry_recovery",
+        "entry_cancellation",
+        "outbox",
+        "close_recovery",
+        TRADING_HALT_CHECK,
+        "broker_stream",
+        "macro_calendar",
+        "event_loop",
+        "storage",
+        "endpoint",
+    }
+)
+
+
+QUIET_HOURS_TIME_HINT = 'quote the time, e.g. "09:15"'
+
+
+class QuietHoursConfig(BaseModel):
+    enabled: bool = False
+    alert_start_et: time = time(9, 15)
+    alert_end_et: time = time(16, 30)
+    # endpoint and storage are exempt by default: while either fails, the broker-work checks go unobserved.
+    exempt_components: list[str] = Field(default_factory=lambda: [*BROKER_WORK_CHECKS, "endpoint", "storage"])
+
+    @field_validator("alert_start_et", "alert_end_et", mode="before")
+    @classmethod
+    def require_quoted_time(cls, value: Any) -> Any:
+        # YAML 1.1 reads an unquoted 10:00 as the integer 600, which pydantic would turn into 00:10 UTC.
+        # ValueError, not TypeError: pydantic reports only ValueError as a ValidationError.
+        if not isinstance(value, str | time):
+            raise ValueError(  # noqa: TRY004
+                f"Quiet hours times must be New York wall-clock strings, not {type(value).__name__}; "
+                f"{QUIET_HOURS_TIME_HINT}"
+            )
+        return value
+
+    @field_validator("alert_start_et", "alert_end_et")
+    @classmethod
+    def require_wall_clock_time(cls, value: time) -> time:
+        if value.tzinfo is not None:
+            raise ValueError(
+                f"Quiet hours times are New York wall-clock and take no UTC offset; {QUIET_HOURS_TIME_HINT}"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def validate_window(self):
+        if self.alert_start_et >= self.alert_end_et:
+            raise ValueError("Quiet hours alert_start_et must be before alert_end_et")
+        unknown = [name for name in self.exempt_components if name not in READINESS_CHECK_NAMES]
+        if unknown:
+            raise ValueError(f"Unknown quiet-hours exempt components: {', '.join(unknown)}")
+        missing = [name for name in BROKER_WORK_CHECKS if name not in self.exempt_components]
+        if missing:
+            raise ValueError(
+                "Quiet hours exempt_components must list every broker-work check; "
+                f"broker-work checks always page: missing {', '.join(missing)}"
+            )
+        return self
+
+
 class OperationsConfig(BaseModel):
     notifications_enabled: bool = True
     startup_grace_seconds: float = Field(default=120, ge=0, allow_inf_nan=False)
@@ -672,6 +756,7 @@ class OperationsConfig(BaseModel):
     healthy_observation_days: int = Field(default=30, ge=1)
     retention_interval_seconds: float = Field(default=3600, gt=0, allow_inf_nan=False)
     retention_batch_size: int = Field(default=1000, ge=1, le=10000)
+    quiet_hours: QuietHoursConfig = Field(default_factory=QuietHoursConfig)
 
 
 class AccountingConfig(BaseModel):
