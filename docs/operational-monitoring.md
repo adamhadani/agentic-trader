@@ -128,6 +128,32 @@ the same fencing/retry protocol and Telegram transport. It does not call
 If the host, PostgreSQL or Telegram is unavailable, this mechanism cannot guarantee
 notification; an independent external monitor/destination remains recommended.
 
+### Quiet hours
+
+`operations.quiet_hours` (shipped `enabled: true`; code default off) confines ordinary
+incident alerts to the **alert window**: weekdays 09:15-16:30 New York time, excluding
+equity market holidays. Outside it, an incident's notice is withheld, not dropped: the
+state machine still advances and the `incident_changed` event carries
+`"withheld": {"kind": ..., "reason": ...}` (`null` when a notice was queued). The reasons
+are `quiet_hours` (muted by the window), `notifications_disabled` (`notifications_enabled:
+false`) and `not_announced` (a recovery for an incident that never sent an opening
+notice). `entry_recovery`, `entry_cancellation` and `close_recovery`
+(`exempt_components`) page at any hour.
+
+An incident that opened while quiet is announced only once it has been failing for
+`failure_seconds` **inside** the window, so an overnight failure pages about two minutes
+after 09:15 and one that clears early in the window stays silent. A recovery whose
+incident was never announced is silent too; this also applies after re-enabling
+notifications, where a previously muted incident no longer sends a recovery notice.
+
+At the first observation of each alert window, `doctor --monitor` queues one
+`operations_summary` notification for the preceding quiet period (dedup key
+`operations-summary/{ET date}`): per-component opened/recovered counts of withheld
+notices and the incidents still open. It is built before the component loop, so it
+precedes that window's first alert, and a failure to build it is logged
+(`quiet_summary_failed`) and skipped; observations still run. It is not queued when
+there is nothing to report or when notifications are disabled.
+
 ## Configuration
 
 All policy below is under `operations` in YAML; omitted values use validated defaults.
@@ -145,6 +171,10 @@ The installed launchd sampling interval is separately defined by its plist.
 | `healthy_observation_days` | `30` | Age before redundant healthy samples qualify for compaction |
 | `retention_interval_seconds` | `3600` | Minimum interval between automatic sweeps |
 | `retention_batch_size` | `1000` | Maximum health events deleted per sweep (max 10000) |
+| `quiet_hours.enabled` | `false` (ships `true`) | Withhold ordinary notices outside the alert window |
+| `quiet_hours.alert_start_et` | `09:15` | Alert window start, New York time |
+| `quiet_hours.alert_end_et` | `16:30` | Alert window end, New York time |
+| `quiet_hours.exempt_components` | `entry_recovery`, `entry_cancellation`, `close_recovery` | Components that page at any hour |
 
 The debounce clock begins with the first failed sample. With 60-second polling and
 120-second failure debounce, alert creation normally needs three failing samples.

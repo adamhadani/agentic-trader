@@ -128,6 +128,7 @@ class NotificationKind(StrEnum):
     STOP = "stop"
     CARD_EXPIRED = "card_expired"
     CARD_AUTO_ENTERED = "card_auto_entered"
+    OPERATIONS_SUMMARY = "operations_summary"
 
 
 @dataclass(frozen=True)

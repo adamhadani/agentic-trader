@@ -1,12 +1,13 @@
 """External supervisor application service; no broker or trading dependency."""
 
+import logging
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
 from agentic_trader.config import OperationsConfig
 from agentic_trader.diagnostics.incidents import OperationalNotice
-from agentic_trader.diagnostics.quiet_hours import alert_since, is_muted
+from agentic_trader.diagnostics.quiet_hours import alert_since, is_muted, quiet_period_before
 from agentic_trader.storage.operations import OperationsStore
 
 
@@ -41,6 +42,18 @@ class OperationsMonitor:
         )
         quiet = self.policy.quiet_hours
         since = alert_since(observed_at, quiet)
+        if self.policy.notifications_enabled and since is not None:
+            period_start, period_end = quiet_period_before(since, quiet)
+            try:
+                await self.store.queue_quiet_summary(
+                    period_start=period_start,
+                    period_end=period_end,
+                    observed_at=observed_at,
+                    details={name: incident_detail(check) for name, check in checks.items()},
+                    policy=self.policy,
+                )
+            except Exception as exc:  # deliberate fail-open: the summary must never block observations
+                logging.getLogger(__name__).warning("quiet_summary_failed: %s", type(exc).__name__)
         notices = []
         for component, check in checks.items():
             if grace and not check["ready"]:

@@ -1,14 +1,25 @@
 """Transactional incident projection and existing notification outbox integration."""
 
 import json
-from datetime import datetime
+from collections.abc import Mapping
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
 
 from agentic_trader.config import OperationsConfig
-from agentic_trader.diagnostics.incidents import IncidentState, OperationalNotice, advance
-from agentic_trader.execution.durable import EventKind, NotificationKind, WorkStatus
+from agentic_trader.diagnostics.incidents import (
+    ComponentTally,
+    IncidentPhase,
+    IncidentState,
+    OpenIncident,
+    OperationalNotice,
+    QuietHoursSummary,
+    WithheldReason,
+    advance,
+)
+from agentic_trader.execution.durable import EventKind, NotificationKind, WorkKind, WorkStatus
+from agentic_trader.market.session import ET_TZ
 from agentic_trader.storage.models import DomainEventRecord, IncidentProjectionRecord, WorkItemRecord
 from agentic_trader.storage.workflow import WorkflowStore, encode
 
@@ -82,6 +93,88 @@ class OperationsStore:
                 row.event_id = event.id
             row.payload, row.observed_at = state.model_dump_json(), observed_at
             return notice
+
+    async def queue_quiet_summary(
+        self,
+        *,
+        period_start: datetime,
+        period_end: datetime,
+        observed_at: datetime,
+        details: Mapping[str, str],
+        policy: OperationsConfig,
+    ) -> QuietHoursSummary | None:
+        """Queue the one morning summary of a quiet period; None when already queued or nothing to say."""
+        key = f"operations-summary/{period_end.astimezone(ET_TZ).date().isoformat()}"
+        async with self.store.db.session_factory() as session, session.begin():
+            await self.store.lock(session)
+            existing = await session.scalar(
+                select(WorkItemRecord.id).where(
+                    WorkItemRecord.scope == self.scope,
+                    WorkItemRecord.kind == WorkKind.NOTIFICATION,
+                    WorkItemRecord.dedup_key == key,
+                )
+            )
+            if existing:
+                return None
+            margin = timedelta(hours=1)
+            events = await session.scalars(
+                select(DomainEventRecord).where(
+                    DomainEventRecord.scope == self.scope,
+                    DomainEventRecord.stream >= "incident/",
+                    DomainEventRecord.stream < "incident0",
+                    DomainEventRecord.kind == EventKind.INCIDENT_CHANGED,
+                    DomainEventRecord.recorded_at >= period_start - margin,
+                    DomainEventRecord.recorded_at <= period_end + margin,
+                )
+            )
+            counts: dict[str, list[int]] = {}
+            for event in events:
+                payload = json.loads(event.payload)
+                withheld = payload.get("withheld")
+                if not withheld or withheld.get("reason") != WithheldReason.QUIET_HOURS:
+                    continue
+                if not period_start <= datetime.fromisoformat(payload["observed_at"]) < period_end:
+                    continue
+                tally = counts.setdefault(payload["component"], [0, 0])
+                if withheld.get("kind") == "opened":
+                    tally[0] += 1
+                elif withheld.get("kind") == "recovered":
+                    tally[1] += 1
+            tallies = [
+                ComponentTally(component=name, opened=o, recovered=r)
+                for name, (o, r) in sorted(counts.items(), key=lambda kv: (-sum(kv[1]), kv[0]))
+                if o + r
+            ]
+            open_incidents = []
+            rows = await session.scalars(
+                select(IncidentProjectionRecord).where(IncidentProjectionRecord.scope == self.scope)
+            )
+            for row in rows:
+                state = IncidentState.model_validate_json(row.payload)
+                if state.phase in (IncidentPhase.OPEN, IncidentPhase.RECOVERING) and state.failed_since:
+                    open_incidents.append(
+                        OpenIncident(
+                            component=row.component,
+                            phase=state.phase,
+                            failed_since=state.failed_since,
+                            detail=details.get(row.component, "")[:120],
+                        )
+                    )
+            open_incidents.sort(key=lambda i: (i.component != "trading_halt", i.failed_since, i.component))
+            if not tallies and not open_incidents:
+                return None
+            summary = QuietHoursSummary(
+                period_start=period_start,
+                period_end=period_end,
+                observed_at=observed_at,
+                failure_seconds=policy.failure_seconds,
+                tallies=tallies,
+                open_incidents=open_incidents,
+            )
+            await self.store.add_notification(
+                session, key, NotificationKind.OPERATIONS_SUMMARY, summary.model_dump(mode="json")
+            )
+            return summary
 
     async def incidents(self) -> list[dict[str, Any]]:
         async with self.store.db.session_factory() as session:

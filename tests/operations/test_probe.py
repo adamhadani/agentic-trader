@@ -2,11 +2,13 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+from sqlalchemy import update
 
 from agentic_trader.config import OperationsConfig, QuietHoursConfig
 from agentic_trader.diagnostics.monitor import OperationsMonitor
 from agentic_trader.diagnostics.probe import probe_readiness
 from agentic_trader.execution.durable import WorkKind
+from agentic_trader.storage.models import DomainEventRecord
 from agentic_trader.storage.operations import OperationsStore
 
 
@@ -98,5 +100,36 @@ async def test_held_incident_that_clears_early_in_the_window_stays_silent(temp_d
     assert await monitor.observe(quiet_report(opening, scan={"ready": False})) == []
     for minute in (1, 2):
         assert await monitor.observe(quiet_report(opening + timedelta(minutes=minute), scan={"ready": True})) == []
-    assert not await store.store.list_work(WorkKind.NOTIFICATION)
+    items = await store.store.list_work(WorkKind.NOTIFICATION)
+    assert [i.payload["kind"] for i in items] == ["operations_summary"]
     assert [i["phase"] for i in await store.incidents() if i["component"] == "scan"] == ["healthy"]
+
+
+async def backdate(store):
+    """Events record wall-clock time; place the overnight ones inside the summary's read bounds."""
+    async with store.store.db.session_factory() as session, session.begin():
+        await session.execute(update(DomainEventRecord).values(recorded_at=datetime(2026, 11, 3, 8, 5, tzinfo=UTC)))
+
+
+async def test_summary_precedes_the_first_alert_of_the_window(temp_db):
+    store, monitor = await held_scan(temp_db)
+    await backdate(store)
+    opening = datetime(2026, 11, 3, 14, 15, tzinfo=UTC)
+    for at in (opening, opening + timedelta(minutes=2)):
+        await monitor.observe(quiet_report(at, scan={"ready": False, "detail": "stale"}))
+    items = await store.store.list_work(WorkKind.NOTIFICATION)
+    assert [i.payload["kind"] for i in items] == ["operations_summary", "operational"]
+    assert items[1].payload["arguments"]["kind"] == "opened"
+
+
+async def test_summary_failure_does_not_stop_observations(temp_db, monkeypatch):
+    store, monitor = await held_scan(temp_db)
+
+    async def boom(**_):
+        raise RuntimeError("summary down")
+
+    monkeypatch.setattr(store, "queue_quiet_summary", boom)
+    opening = datetime(2026, 11, 3, 14, 15, tzinfo=UTC)
+    await monitor.observe(quiet_report(opening, scan={"ready": False}))
+    notices = await monitor.observe(quiet_report(opening + timedelta(minutes=2), scan={"ready": False}))
+    assert [(n.component, n.kind) for n in notices] == [("scan", "opened")]

@@ -51,6 +51,28 @@ class OperationalNotice(BaseModel):
     detail: str
 
 
+class ComponentTally(BaseModel):
+    component: str
+    opened: int
+    recovered: int
+
+
+class OpenIncident(BaseModel):
+    component: str
+    phase: IncidentPhase
+    failed_since: datetime
+    detail: str
+
+
+class QuietHoursSummary(BaseModel):
+    period_start: datetime
+    period_end: datetime
+    observed_at: datetime
+    failure_seconds: float
+    tallies: list[ComponentTally]
+    open_incidents: list[OpenIncident]
+
+
 def advance(
     state: IncidentState,
     *,

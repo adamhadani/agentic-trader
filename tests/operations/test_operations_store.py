@@ -1,10 +1,14 @@
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 
 from agentic_trader.config import OperationsConfig
+from agentic_trader.diagnostics.incidents import ComponentTally
 from agentic_trader.execution.durable import WorkKind
+from agentic_trader.storage.models import DomainEventRecord, WorkItemRecord
 from agentic_trader.storage.operations import OperationsStore
 
 
@@ -104,3 +108,93 @@ async def test_reenabled_notifications_do_not_send_recovery_for_unannounced_inci
     for seconds in (11, 16):
         await store.observe("scan", ready=True, observed_at=now + timedelta(seconds=seconds), detail="", policy=policy)
     assert not await store.store.list_work(WorkKind.NOTIFICATION)
+
+
+START = datetime(2026, 11, 2, 21, 30, tzinfo=UTC)
+END = datetime(2026, 11, 3, 14, 15, tzinfo=UTC)
+
+
+async def backdate_events(store):
+    """Events record wall-clock time; align it with the injected observation instants."""
+    async with store.store.db.session_factory() as session, session.begin():
+        for row in await session.scalars(select(DomainEventRecord)):
+            row.recorded_at = datetime.fromisoformat(json.loads(row.payload)["observed_at"])
+
+
+async def quiet_cycle(store, policy, component, at, *, recover=True):
+    """Open (withheld) at ``at``; recover (withheld) after it when ``recover``."""
+    steps = [(False, 0), (False, 10)] + ([(True, 11), (True, 16)] if recover else [])
+    for ready, seconds in steps:
+        await store.observe(
+            component,
+            ready=ready,
+            observed_at=at + timedelta(seconds=seconds),
+            detail="",
+            policy=policy,
+            muted=True,
+        )
+
+
+def summary_kwargs(policy, **extra):
+    return {"period_start": START, "period_end": END, "observed_at": END, "details": {}, "policy": policy, **extra}
+
+
+async def test_summary_tallies_withheld_notices_and_lists_open_incidents(desk):
+    store, policy, _ = desk
+    await quiet_cycle(store, policy, "accounting", START + timedelta(hours=1))
+    await quiet_cycle(store, policy, "accounting", START + timedelta(hours=2))
+    await quiet_cycle(store, policy, "scan", START + timedelta(hours=3), recover=False)
+    await backdate_events(store)
+    detail = "Observation age: 40000s; limit: 18000s"
+    summary = await store.queue_quiet_summary(**summary_kwargs(policy, details={"scan": detail}))
+    assert summary is not None
+    assert summary.tallies == [
+        ComponentTally(component="accounting", opened=2, recovered=2),
+        ComponentTally(component="scan", opened=1, recovered=0),
+    ]
+    assert [i.component for i in summary.open_incidents] == ["scan"]
+    assert summary.open_incidents[0].detail == detail
+    items = await store.store.list_work(WorkKind.NOTIFICATION)
+    assert [i.payload["kind"] for i in items] == ["operations_summary"]
+    async with store.store.db.session_factory() as session:
+        keys = list(await session.scalars(select(WorkItemRecord.dedup_key).where(WorkItemRecord.id == items[0].id)))
+    assert keys == ["operations-summary/2026-11-03"]
+
+
+async def test_summary_is_queued_once_per_window(desk):
+    store, policy, _ = desk
+    await quiet_cycle(store, policy, "scan", START + timedelta(hours=1), recover=False)
+    await backdate_events(store)
+    assert await store.queue_quiet_summary(**summary_kwargs(policy)) is not None
+    assert await store.queue_quiet_summary(**summary_kwargs(policy)) is None
+    assert len(await store.store.list_work(WorkKind.NOTIFICATION)) == 1
+
+
+async def test_summary_ignores_events_outside_the_period_and_other_reasons(desk):
+    store, policy, _ = desk
+    await quiet_cycle(store, policy, "scan", START - timedelta(minutes=1))
+    await quiet_cycle(store, policy, "worker", END)
+    policy.notifications_enabled = False
+    inside = START + timedelta(hours=2)
+    for seconds in (0, 10):
+        await store.observe(
+            "accounting", ready=False, observed_at=inside + timedelta(seconds=seconds), detail="", policy=policy
+        )
+    policy.notifications_enabled = True
+    for seconds in (11, 16):
+        await store.observe(
+            "accounting", ready=True, observed_at=inside + timedelta(seconds=seconds), detail="", policy=policy
+        )
+    await backdate_events(store)
+    assert await store.queue_quiet_summary(**summary_kwargs(policy)) is None
+    assert not await store.store.list_work(WorkKind.NOTIFICATION)
+
+
+async def test_summary_lists_trading_halt_first(desk):
+    store, policy, _ = desk
+    await quiet_cycle(store, policy, "scan", START + timedelta(hours=1), recover=False)
+    await quiet_cycle(store, policy, "trading_halt", START + timedelta(hours=2), recover=False)
+    await backdate_events(store)
+    summary = await store.queue_quiet_summary(**summary_kwargs(policy))
+    assert summary is not None
+    assert [i.component for i in summary.open_incidents] == ["trading_halt", "scan"]
