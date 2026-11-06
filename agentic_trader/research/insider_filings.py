@@ -32,6 +32,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from agentic_trader.data.edgar_filings import normalize_ticker
 from agentic_trader.research.short_volume import write_private
 
 
@@ -582,7 +583,7 @@ def symbol_ciks(
     wanted = set(symbols)
     cik_of: dict[str, int] = {}
     for entry in tickers.values():
-        symbol = str(entry["ticker"]).upper().replace("-", ".")
+        symbol = normalize_ticker(entry["ticker"])
         if symbol not in wanted:
             continue
         cik = int(entry["cik_str"])
