@@ -8,7 +8,9 @@ missed earlier slot is skipped, and no pass runs inside a suggestion-scan window
 two requests stops the pass and journals nothing). A pass reads the SEC ticker map once, then
 ``filings.recent`` of each mapped symbol's CIK, at two requests per second with one retry after 5 seconds on a
 transport error, HTTP 429 or 5xx. Each symbol is ``covered``, ``unmapped`` (absent from the map, or under two
-CIKs) or ``failed`` (its HTTP status or exception type name). A covered symbol's veto-category filings dated
+CIKs) or ``failed`` (its HTTP status or exception type name). A failed ticker map, or ``MAX_CONSECUTIVE_FAILURES``
+CIKs failing in a row (an EDGAR outage), aborts the pass: nothing is journaled and the next poll retries the
+slot. A covered symbol's veto-category filings dated
 within the widest window are journaled with the pass (``filings/capture/<ET date>/<slot>``, once per slot); a
 covered symbol with none has an empty list, which is the evidence of "no filing". Raw bodies are not kept.
 
@@ -59,6 +61,7 @@ __all__ = [
     "CAPTURE_AFTER_ET",
     "COVERAGE_READY_FRACTION",
     "FILINGS_STREAM",
+    "MAX_CONSECUTIVE_FAILURES",
     "POLL_SECONDS",
     "SUBMISSIONS_URL_TEMPLATE",
     "TICKERS_URL",
@@ -82,6 +85,8 @@ CAPTURE_AFTER_ET = time(6, 0)
 POLL_SECONDS = 300
 # A pass is a readiness pass when it covered at least this fraction of its mapped symbols.
 COVERAGE_READY_FRACTION = 0.9
+# This many CIKs failing in a row abort the pass (an outage, not a few bad symbols); a success resets the count.
+MAX_CONSECUTIVE_FAILURES = 5
 # A malformed ticker map can surface as any of these (``ticker_ciks`` indexes the decoded JSON directly).
 _TICKER_MAP_ERRORS = (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError, AttributeError)
 # A symbol's own failure: its request (after the retry), the body budget, or its submissions payload.
@@ -92,7 +97,8 @@ WorkerStatus = Literal["weekend", "scan_window", "waiting", "present", "captured
 
 
 class FilingsCaptureFailed(RuntimeError):
-    """The ticker map could not be read: the pass records nothing. ``reason`` is an HTTP status or a type name."""
+    """The pass records nothing: the ticker map could not be read (``reason`` is its HTTP status or type name),
+    or ``MAX_CONSECUTIVE_FAILURES`` CIKs failed in a row (``consecutive_failures``)."""
 
     def __init__(self, reason: str):
         super().__init__(reason)
@@ -125,9 +131,15 @@ def capture_slots(scan_times_et: Sequence[str], pre_scan_minutes: int) -> list[t
 
 
 def coverage_ready(payload: Mapping[str, Any]) -> bool:
-    """At least ``COVERAGE_READY_FRACTION`` of the pass's mapped (requested, not unmapped) symbols were covered."""
+    """At least one symbol, and ``COVERAGE_READY_FRACTION`` of the pass's mapped (requested, not unmapped) ones,
+    were covered: a pass that covers nothing (nothing requested or nothing mapped) is never ready."""
     mapped = len(payload["requested"]) - len(payload["unmapped"])
-    return len(payload["covered"]) >= COVERAGE_READY_FRACTION * mapped
+    covered = len(payload["covered"])
+    return covered > 0 and covered >= COVERAGE_READY_FRACTION * mapped
+
+
+def _map_tickers(body: bytes, requested: Sequence[str]) -> tuple[dict[str, int], list[str]]:
+    return ticker_ciks(json.loads(body), requested)
 
 
 def _parse(body: bytes, symbols: Sequence[str], since: date) -> dict[str, list[dict[str, Any]]]:
@@ -149,14 +161,15 @@ async def capture_filings(
     """One pass over ``symbols``: the journal payload, or ``None`` once ``stop()`` is true between requests.
 
     ``fetch`` is one unpaced GET; every attempt here is paced, and one retry follows a transport error, an
-    HTTP 429 or a 5xx after 5 seconds. A failed ticker map raises ``FilingsCaptureFailed``; a symbol's own
-    failure lands in ``failed`` and the pass continues. Symbols sharing a CIK share its one request.
+    HTTP 429 or a 5xx after 5 seconds. A failed ticker map, or ``MAX_CONSECUTIVE_FAILURES`` failed CIKs in a
+    row, raises ``FilingsCaptureFailed``; otherwise a symbol's own failure lands in ``failed`` and the pass
+    continues. Symbols sharing a CIK share its one request. JSON bodies are parsed in worker threads.
     """
     fetched_at = (clock or (lambda: datetime.now(UTC)))()
     requested = sorted({symbol.strip().upper() for symbol in symbols if symbol.strip()})
     try:
         tickers = await retrying(partial(fetch, TICKERS_URL), pace, retry=TRANSIENT_RETRY, sleep=sleep)
-        ciks, unmapped = ticker_ciks(json.loads(tickers), requested)
+        ciks, unmapped = await asyncio.to_thread(_map_tickers, tickers, requested)
     except _TICKER_MAP_ERRORS as exc:
         raise FilingsCaptureFailed(failure_reason(exc)) from None
     by_cik: dict[int, list[str]] = {}
@@ -165,6 +178,7 @@ async def capture_filings(
     since = today - timedelta(days=lookback_days)
     filings: dict[str, list[dict[str, Any]]] = {}
     failed: dict[str, str] = {}
+    consecutive = 0
     for cik, cik_symbols in by_cik.items():
         if stop is not None and stop():
             return None
@@ -174,6 +188,11 @@ async def capture_filings(
             filings |= await asyncio.to_thread(_parse, body, cik_symbols, since)  # a large body parses off the loop
         except _SYMBOL_ERRORS as exc:
             failed |= dict.fromkeys(cik_symbols, failure_reason(exc))
+            consecutive += 1
+            if consecutive >= MAX_CONSECUTIVE_FAILURES:
+                raise FilingsCaptureFailed("consecutive_failures") from None
+        else:
+            consecutive = 0
     return {
         "requested": requested,
         "covered": sorted(filings),

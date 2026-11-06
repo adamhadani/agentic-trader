@@ -21,6 +21,7 @@ from agentic_trader.data.edgar_filings import FilingCategory, MatchedFiling
 from agentic_trader.data.filings_capture import (
     COVERAGE_READY_FRACTION,
     FILINGS_STREAM,
+    MAX_CONSECUTIVE_FAILURES,
     SUBMISSIONS_URL_TEMPLATE,
     TICKERS_URL,
     FilingsCaptureFailed,
@@ -29,6 +30,7 @@ from agentic_trader.data.filings_capture import (
     FilingsLookup,
     capture_filings,
     capture_slots,
+    coverage_ready,
     run_filings_capture_worker,
 )
 from agentic_trader.diagnostics.readiness import FILINGS_CAPTURE_MAX_AGE_SECONDS
@@ -245,6 +247,33 @@ async def test_a_stop_between_requests_returns_nothing():
     fake = _fake()
     payload = await _capture(fake, ["AAA", "BBB", "CCC"], stop=lambda: len(fake.calls) >= 2)
     assert payload is None and fake.calls == [TICKERS_URL, url(101)]
+
+
+def _breaker_fake(outcomes: str) -> tuple[FakeFetch, list[str]]:
+    """One symbol per CIK in sorted order; ``outcomes`` is ``f`` (a 404) or ``s`` (a clean body) per CIK."""
+    symbols = [f"S{i:02d}" for i in range(len(outcomes))]
+    tickers = {str(i): {"cik_str": 1000 + i, "ticker": symbol} for i, symbol in enumerate(symbols)}
+    responses: dict[str, list[bytes | Exception]] = {TICKERS_URL: [json.dumps(tickers).encode()]}
+    for i, outcome in enumerate(outcomes):
+        responses[url(1000 + i)] = [status_error(404) if outcome == "f" else submissions()]
+    return FakeFetch(responses), symbols
+
+
+async def test_consecutive_failed_ciks_abort_the_pass():
+    assert MAX_CONSECUTIVE_FAILURES == 5
+    fake, symbols = _breaker_fake("fffffs")
+    with pytest.raises(FilingsCaptureFailed) as caught:
+        await _capture(fake, symbols)
+    assert caught.value.reason == "consecutive_failures"
+    assert fake.calls == [TICKERS_URL, *(url(1000 + i) for i in range(5))]  # the sixth CIK is never requested
+
+
+async def test_a_success_resets_the_consecutive_failure_count():
+    fake, symbols = _breaker_fake("ffffsffff")
+    payload = await _capture(fake, symbols)
+    assert payload is not None
+    assert payload["covered"] == ["S04"]
+    assert payload["failed"] == {symbol: "http_404" for symbol in symbols if symbol != "S04"}
 
 
 # --- the journal --------------------------------------------------------------------------------
@@ -482,8 +511,27 @@ async def _symbols(*names: str) -> list[str]:
 # --- readiness ----------------------------------------------------------------------------------
 
 
-def test_the_coverage_rule_counts_mapped_symbols_only():
+def _counts(requested: int, unmapped: int, covered: int) -> dict:
+    names = [f"S{i:02d}" for i in range(requested)]
+    return {"requested": names, "unmapped": names[requested - unmapped :], "covered": names[:covered]}
+
+
+@pytest.mark.parametrize(
+    ("requested", "unmapped", "covered", "ready"),
+    [
+        (10, 0, 9, True),  # exactly 90%
+        (10, 0, 8, False),
+        (20, 10, 9, True),  # unmapped symbols are not in the denominator
+        (20, 10, 8, False),
+        (1, 0, 1, True),
+        (1, 0, 0, False),
+        (3, 3, 0, False),  # nothing mapped: covers nothing
+        (0, 0, 0, False),  # nothing requested
+    ],
+)
+def test_the_coverage_rule_counts_mapped_symbols_and_needs_one_covered(requested, unmapped, covered, ready):
     assert COVERAGE_READY_FRACTION == 0.9
+    assert coverage_ready(_counts(requested, unmapped, covered)) is ready
 
 
 async def test_freshness_needs_a_recent_pass_covering_ninety_percent_of_mapped_symbols(store):
@@ -512,12 +560,24 @@ async def test_freshness_needs_a_recent_pass_covering_ninety_percent_of_mapped_s
     assert not ready and detail.startswith("stale: latest pass")
 
 
-async def test_a_pass_with_no_mapped_symbols_is_not_a_coverage_failure(store):
+async def test_a_pass_with_no_mapped_symbols_is_not_ready(store):
     worker = _worker(FakeSec(), store)
     vacuous = _pass(at(FRIDAY, 6, 1), requested=3, unmapped=3, covered=0, failed=0)
     await store.record(f"{FILINGS_STREAM}/2026-11-06/open", vacuous)
-    ready, _ = await worker.freshness(at(FRIDAY, 7), "present")
-    assert ready
+    ready, detail = await worker.freshness(at(FRIDAY, 7), "present")
+    assert not ready and detail.startswith("low coverage: latest pass")
+
+
+async def test_an_aborted_pass_journals_nothing_and_its_slot_runs_again(store):
+    tickers = {str(i): {"cik_str": 1000 + i, "ticker": f"S{i:02d}"} for i in range(6)}
+    sec = FakeSec({TICKERS_URL: json.dumps(tickers).encode()})  # every submissions request is a 404
+    worker = _worker(sec, store, symbols=[f"S{i:02d}" for i in range(6)])
+    with pytest.raises(FilingsCaptureFailed, match="consecutive_failures"):
+        await worker.run_once(at(FRIDAY, 6, 1))
+    assert await store.latest() is None
+    sec.bodies |= {url(1000 + i): submissions() for i in range(6)}
+    assert await worker.run_once(at(FRIDAY, 6, 6)) == "captured"
+    assert (await store.latest())["covered"] == [f"S{i:02d}" for i in range(6)]
 
 
 def test_readiness_duplicates_the_default_age_limit():
