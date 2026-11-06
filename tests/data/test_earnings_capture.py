@@ -10,12 +10,14 @@ import gzip
 import hashlib
 import json
 import logging
+import types
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
 import pytest
 
 from agentic_trader.config import AppConfig
+from agentic_trader.data import earnings_capture
 from agentic_trader.data.earnings_capture import (
     CAPTURE_MAX_AGE_SECONDS,
     CAPTURE_STREAM,
@@ -156,6 +158,7 @@ async def _failing_pass(store, responses, *, targets=2):
                 client,
                 FRIDAY,
                 days,
+                horizon_days=28,
                 clock=lambda: et(FRIDAY, 6, 1),
                 pace=_no_pace,
                 sleep=_no_sleep,
@@ -164,6 +167,41 @@ async def _failing_pass(store, responses, *, targets=2):
     assert await store.workflows.events(CAPTURE_STREAM) == []
     assert not store.directory.exists()
     return fake, caught.value
+
+
+async def test_payload_horizon_is_the_argument(store):
+    fake = FakeNasdaq()
+    days = capture_targets(FRIDAY, 28)[:2]
+    async with fake.client() as client:
+        payload, _ = await capture_calendar(
+            client,
+            FRIDAY,
+            days,
+            horizon_days=21,
+            clock=lambda: et(FRIDAY, 6, 1),
+            pace=_no_pace,
+            sleep=_no_sleep,
+            stop=lambda: False,
+        )
+    assert payload is not None and payload["horizon_days"] == 21
+
+
+async def test_default_pacer_spaces_requests(monkeypatch):
+    now = [100.0]
+    waits: list[float] = []
+
+    async def record_sleep(seconds: float) -> None:
+        waits.append(seconds)
+        now[0] += seconds
+
+    monkeypatch.setattr(earnings_capture, "monotonic_time", types.SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(earnings_capture.asyncio, "sleep", record_sleep)
+    pace = earnings_capture._spacer()
+    await pace()
+    assert waits == []
+    now[0] += 0.25
+    await pace()
+    assert waits == [pytest.approx(earnings_capture.REQUEST_INTERVAL_SECONDS - 0.25)]
 
 
 async def test_retry_once_on_503_then_success(store):
@@ -176,7 +214,14 @@ async def test_retry_once_on_503_then_success(store):
 
     async with fake.client() as client:
         payload, bodies = await capture_calendar(
-            client, FRIDAY, days, clock=lambda: et(FRIDAY, 6, 1), pace=_no_pace, sleep=sleep, stop=lambda: False
+            client,
+            FRIDAY,
+            days,
+            horizon_days=28,
+            clock=lambda: et(FRIDAY, 6, 1),
+            pace=_no_pace,
+            sleep=sleep,
+            stop=lambda: False,
         )
     assert payload is not None and set(bodies) == set(days)
     assert fake.requests == ["2026-11-06", "2026-11-06", "2026-11-09"]
@@ -218,6 +263,7 @@ async def test_transport_error_reason_is_the_type_name(store):
                 client,
                 FRIDAY,
                 [FRIDAY],
+                horizon_days=28,
                 clock=lambda: et(FRIDAY, 6),
                 pace=_no_pace,
                 sleep=_no_sleep,
@@ -253,6 +299,7 @@ async def test_failed_pass_then_success_records_once(store):
     with pytest.raises(CaptureIncomplete):
         await worker.run_once()
     assert await store.workflows.events(CAPTURE_STREAM) == []
+    assert not store.directory.exists() or not [p for p in store.directory.rglob("*") if p.is_file()]
     assert await worker.run_once() == "captured"
     assert await worker.run_once() == "present"
     assert len(await store.workflows.events(CAPTURE_STREAM)) == 1
@@ -309,7 +356,23 @@ async def test_failed_poll_observes_freshness(store, caplog):
         observed = await _poll_failing(store)
     ready, detail = observed[0]
     assert ready and detail.startswith("failed: CaptureIncomplete")
-    assert any(r.__dict__.get("event") == "earnings_capture_failed" for r in caplog.records)
+    (record,) = [r for r in caplog.records if r.__dict__.get("event") == "earnings_capture_failed"]
+    assert record.__dict__["reason"] == "CaptureIncomplete"
+    assert record.__dict__["target"] == "2026-11-06"
+    assert record.__dict__["detail"] == "HTTP 503"
+
+
+async def test_other_exception_logs_type_name_only(store, caplog, monkeypatch):
+    async def boom(capture_date):
+        raise RuntimeError("secret detail")
+
+    monkeypatch.setattr(store, "recorded", boom)
+    with caplog.at_level(logging.WARNING, logger="copilot"):
+        await _poll_failing(store)
+    (record,) = [r for r in caplog.records if r.__dict__.get("event") == "earnings_capture_failed"][:1]
+    assert record.__dict__["reason"] == "RuntimeError"
+    assert "target" not in record.__dict__ and "detail" not in record.__dict__
+    assert "secret" not in repr(record.__dict__) and "secret" not in record.getMessage()
 
 
 async def test_failed_poll_without_capture_is_not_ready(store):

@@ -244,6 +244,7 @@ async def capture_calendar(
     capture_date: date,
     targets: Sequence[date],
     *,
+    horizon_days: int,
     clock: Callable[[], datetime],
     pace: Callable[[], Awaitable[None]],
     sleep: Callable[[float], Awaitable[None]],
@@ -279,7 +280,7 @@ async def capture_calendar(
         "started_at": started_at.isoformat(),
         "completed_at": clock().isoformat(),
         "source": SOURCE,
-        "horizon_days": (targets[-1] - capture_date).days if targets else 0,
+        "horizon_days": horizon_days,
         "columns": list(COLUMNS),
         "pages": pages,
         "rows": rows,
@@ -331,6 +332,7 @@ class EarningsCaptureWorker:
             self.client,
             today,
             capture_targets(today, self.config.earnings_capture.horizon_days),
+            horizon_days=self.config.earnings_capture.horizon_days,
             clock=self._clock,
             pace=self._pace,
             sleep=self._sleep,
@@ -338,7 +340,6 @@ class EarningsCaptureWorker:
         )
         if payload is None:
             return "scan_window"
-        payload["horizon_days"] = self.config.earnings_capture.horizon_days
         await self.store.record(payload, bodies)
         self._done = today
         return "captured"
@@ -402,10 +403,10 @@ async def run_earnings_capture_worker(
                 status = await worker.run_once()
             except Exception as exc:
                 status = f"failed: {type(exc).__name__}"
-                logger.warning(
-                    "Earnings capture failed",
-                    extra={"event": "earnings_capture_failed", "reason": type(exc).__name__},
-                )
+                extra: dict[str, str] = {"event": "earnings_capture_failed", "reason": type(exc).__name__}
+                if isinstance(exc, CaptureIncomplete):
+                    extra |= {"target": exc.target.isoformat(), "detail": exc.reason}
+                logger.warning("Earnings capture failed", extra=extra)
             try:
                 ready, detail = await worker.freshness(now(), status)
                 await _observe_safely(observe, ready, f"{status}; {detail}")

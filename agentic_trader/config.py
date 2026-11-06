@@ -458,7 +458,7 @@ class LLMGateConfig(BaseModel):
 class EarningsCaptureConfig(BaseModel):
     """Dated earnings-calendar capture (docs/superpowers/specs/2026-11-06-earnings-capture-design.md).
 
-    The daemon captures the Nasdaq forward earnings calendar once per New York date for the next
+    The daemon captures the Nasdaq forward earnings calendar once per New York weekday for the next
     ``horizon_days`` calendar days and journals it. Research and context only.
     """
 

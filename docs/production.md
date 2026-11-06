@@ -1521,8 +1521,9 @@ that each season's forward dates are kept as they were published.
 - **Schedule.** On each New York weekday after 06:00, outside the suggestion-scan windows (which are never
   delayed), it takes one capture dated that day. A poll runs every 30 minutes until one is journaled.
 - **Targets.** One Nasdaq calendar page per weekday from today through `earnings_capture.horizon_days` (28)
-  ahead, one request per second, each retried once.
-- **All or nothing.** If any page is still unaccepted after its retry, nothing is journaled and the next poll
+  ahead, one request per second. A page is retried once, only after a transport error, HTTP 429 or a 5xx; any other
+  unaccepted response fails the pass at once.
+- **All or nothing.** If any page is still unaccepted (after its retry, where one applies), nothing is journaled and the next poll
   tries again. A scan window that opens between two requests stops the pass quietly.
 - **Journal and files.** One `earnings/calendar/<capture date>` event on stream `earnings/calendar` holds every
   forward row and each page's body digest. The compressed raw bodies are private files under
@@ -1534,8 +1535,10 @@ that each season's forward dates are kept as they were published.
   a pass has run in this process. It is not a data-quality check.
 - **Runbook.** Inspect with `uv run copilot doctor --readiness` and
   `uv run copilot db events --stream earnings/calendar --limit 1`. A not-ready component means no capture in
-  4 days: check Nasdaq reachability and the daemon log (`earnings_capture_failed`, exception type only). A
-  missed day cannot be recovered afterwards, because the page shows only dates that have not yet passed. To
+  4 days: check Nasdaq reachability and the daemon log (`earnings_capture_failed`: for an incomplete capture the log names the
+  target date and the reason, an HTTP status, `rCode`, fixed string or exception type name; for any other failure the
+  exception type only). A missed day cannot be recovered afterwards, because a later fetch shows the calendar as
+  revised since, not as it was published that day. To
   stop the worker, set `earnings_capture.enabled: false` and restart.
 
 ## Provider read and forecast hardening
