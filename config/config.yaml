@@ -594,6 +594,20 @@ insider_watch:
   backfill_from: 2026-10-01
   pooled_cache_dir: ~/agentic-trader-research/pooled-cache-v1
 
+# EDGAR negative-filing veto for long cards (docs/superpowers/specs/2026-11-06-release-exit-filing-veto-design.md).
+filing_veto:
+  capture: true
+  entry_block: "preview"   # preview since 2026-11-06; enforce is an operator decision on journaled evidence
+  late_filing_days: 30
+  adverse_8k_days: 60
+  offering_days: 7
+  pre_scan_minutes: 30
+
+# Release exit for open native longs ahead of a report (same spec).
+release_exit:
+  mode: "preview"   # preview since 2026-11-06; enforce is an operator decision on journaled evidence
+  minutes_before_close: 30
+
 # Dated capture of the Nasdaq forward earnings calendar (docs/superpowers/specs/2026-11-06-earnings-capture-design.md).
 earnings_capture:
   enabled: true

@@ -137,6 +137,7 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    `entry_recovery`, `entry_cancellation`, `close_recovery`, `endpoint` and `storage` page at any hour, and the
    three broker-work checks can never be removed from `exempt_components`.
    The daemon's earnings capture journals `earnings/calendar/<date>` once per New York weekday after 06:00 ET outside scan windows, all-or-nothing (`earnings_capture` readiness, stale after 4 days; nothing reads it yet, [production](docs/production.md#earnings-calendar-capture)).
+   The daemon's EDGAR filings capture (`filing_veto.capture`) journals dated NT-filing, adverse 8-K and offering evidence for the filing veto (`filings_capture` readiness, stale after `filing_veto.max_age_seconds`; stale or missing evidence never vetoes), and ships in `preview` with the release exit.
    Suggestion scans run at configured New York times and spend a derived per-session
    card budget (signals table, ET trading day); `PENDING` cards reserve no capacity;
    the intraday job scans only `non_universe_contracts`; `setup_quality` orders cards

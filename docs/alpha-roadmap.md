@@ -999,10 +999,13 @@ Research verdict on event-driven work that costs nothing to build.
   non-announcers. The planted check was detected (MDE 0.039R), so the null is powered
   ([result](apriori-runup-2026-11-06.md)). There will be no prospective read. The capture is kept for the
   veto layer, any later pre-event test and checking the earnings rule's dates.
-- **In preview: an EDGAR negative-filing veto layer for long cards** (NT 10-K/10-Q, 8-K Items
-  2.04/2.05/2.06/4.02/5.01, convertible pricing, lock-up expiry), **and a release exit for open native
+- **Built 2026-11-06, shipping in preview: an EDGAR negative-filing veto layer for long cards** (NT 10-K/10-Q,
+  8-K Items 2.04/2.05/2.06/4.02/5.01, convertible offering prospectuses), **and a release exit for open native
   longs.** The earnings blackout gates entries only, so a native long opened 8 or more calendar days ahead can
-  hold through a report.
+  hold through a report; the release exit closes it before the session of a report through the existing
+  close service. Both ship in `preview` (`filing_veto.entry_block`, `release_exit.mode`); enforce is the
+  operator's call on journaled evidence, which shows in the `cards outcomes` `filing_veto` and `release_exit`
+  blocks. Lock-up expiry and PDUFA dates stay out of v1.
 - **Later: analyst and investor days,** after an EDGAR count of announcements.
 - **Dropped:** the unconditional announcement premium; hold-through surprise bets (scheduling, seasonality,
   streaks, shorting, insider selling and news tone, which are vetoes at most); LLM backtests on historical

@@ -199,3 +199,16 @@ def test_shipped_quiet_hours_reach_app_config():
 
     assert quiet.enabled is True
     assert "enabled" in quiet.model_fields_set
+
+
+def test_the_shipped_filing_veto_and_release_exit_blocks_reach_app_config():
+    config = load_config(str(SHIPPED), environ=PRODUCTION)
+
+    # The code defaults are off; the fields set prove the YAML blocks were read.
+    assert config.filing_veto.capture is True
+    assert config.filing_veto.entry_block == "preview"
+    assert config.filing_veto.pre_scan_minutes == 30
+    assert {"capture", "entry_block", "pre_scan_minutes"} <= config.filing_veto.model_fields_set
+    assert config.release_exit.mode == "preview"
+    assert config.release_exit.minutes_before_close == 30
+    assert {"mode", "minutes_before_close"} <= config.release_exit.model_fields_set

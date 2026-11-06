@@ -499,6 +499,7 @@ async def test_the_lookback_is_the_widest_window(store):
         user_agent=UA,
         pace=_no_pace,
         sleep=_no_sleep,
+        clock=lambda: at(FRIDAY, 6, 1),
     )
     assert await worker.run_once(at(FRIDAY, 6, 1)) == "captured"
     assert (await store.latest())["lookback_days"] == 90
