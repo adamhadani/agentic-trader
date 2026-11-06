@@ -593,3 +593,8 @@ insider_watch:
   archive_dir: ~/agentic-trader-research/insider-filings-cache
   backfill_from: 2026-10-01
   pooled_cache_dir: ~/agentic-trader-research/pooled-cache-v1
+
+# Dated capture of the Nasdaq forward earnings calendar (docs/superpowers/specs/2026-11-06-earnings-capture-design.md).
+earnings_capture:
+  enabled: true
+  horizon_days: 28

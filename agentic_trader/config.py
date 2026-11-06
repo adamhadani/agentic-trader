@@ -455,6 +455,19 @@ class LLMGateConfig(BaseModel):
     timeout_seconds: float = Field(default=60.0, gt=0, le=180, allow_inf_nan=False)
 
 
+class EarningsCaptureConfig(BaseModel):
+    """Dated earnings-calendar capture (docs/superpowers/specs/2026-11-06-earnings-capture-design.md).
+
+    The daemon captures the Nasdaq forward earnings calendar once per New York date for the next
+    ``horizon_days`` calendar days and journals it. Research and context only.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = False
+    horizon_days: int = Field(default=28, ge=7, le=42)
+
+
 class InsiderWatchConfig(BaseModel):
     """Insider watch cards (docs/superpowers/specs/2026-10-23-insider-watch-cards-design.md).
 
@@ -1069,6 +1082,7 @@ class AppConfig(BaseModel):
     news: NewsConfig = Field(default_factory=NewsConfig)
     llm_gate: LLMGateConfig = Field(default_factory=LLMGateConfig)
     insider_watch: InsiderWatchConfig = Field(default_factory=InsiderWatchConfig)
+    earnings_capture: EarningsCaptureConfig = Field(default_factory=EarningsCaptureConfig)
     explicit_contracts: tuple[str, ...] | None = None
     risk: RiskConfig = Field(default_factory=RiskConfig)
     strategies: StrategyConfig = Field(default_factory=StrategyConfig)
@@ -1346,6 +1360,7 @@ def load_config(
         news=NewsConfig(**(cfg_dict.get("news") or {})),
         llm_gate=LLMGateConfig(**(cfg_dict.get("llm_gate") or {})),
         insider_watch=InsiderWatchConfig(**(cfg_dict.get("insider_watch") or {})),
+        earnings_capture=EarningsCaptureConfig(**(cfg_dict.get("earnings_capture") or {})),
         explicit_contracts=tuple(explicit_contracts),
         risk=RiskConfig(**cfg_dict.get("risk", {})),
         strategies=strategies_config,
