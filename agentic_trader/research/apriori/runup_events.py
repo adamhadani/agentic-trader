@@ -13,11 +13,14 @@ cohort symbol with report session ``E``, the decision session is ``D = E - lead_
   ``D``, ``rv`` from at least ``min_vol_returns`` finite log returns over the ``vol_window`` sessions
   ending ``D - 1``, ATR through ``D - 1`` and the 20-session return to ``D - 1``;
 - the event is a ``leg`` when its ``rv`` tercile among the cube-eligible names at ``D`` is the top one,
-  otherwise an ``announcer`` kept for descriptive statistics.
+  otherwise an ``announcer`` kept for descriptive statistics; every row also records ``archive_covered``
+  (an archive report of the symbol in the ``coverage_sessions`` sessions before its decision session, the
+  controls' coverage rule; descriptive only).
 
-Each leg draws one placebo session ``D'`` (``default_rng(placebo.seed)``, legs in ``event_id`` order) among
-the window's sessions within ``span_sessions`` of ``D`` with no report of the symbol in
-``[D' - lead, D' + 2 * lead]``; ``D'`` passes the same gates, top tercile included. Every exclusion is
+Each leg with a candidate session draws one placebo session ``D'`` (``default_rng(placebo.seed)``, legs in
+``event_id`` order) among the window's sessions within ``span_sessions`` of ``D`` with no report of the
+symbol in ``[D' - lead, D' + 2 * lead]``; a second draw of a ``(symbol, D')`` already drawn is dropped
+(``duplicate_session``), and ``D'`` passes the same gates, top tercile included. Every exclusion is
 counted by reason and year, never silently dropped. Sessions and positions are the observed trading days,
 never frame rows: a missing adjusted bar is ``NaN``. Research only: nothing here reads a database, a broker
 or the network.
@@ -69,6 +72,7 @@ RUNUP_EVENT_COLUMNS = (
     "bucket",
     "dv",
     "past_move",
+    "archive_covered",
     "year",
 )
 CONTROL_CANDIDATE_COLUMNS = ("pair_id", "role", "session", "control_symbols")
@@ -221,6 +225,7 @@ class _Gates:
         self._breaks = inputs.identity_breaks
         self._vol_window = entry.event.vol_window
         self._atr_window = entry.trade.atr_window
+        self._coverage = entry.control.coverage_sessions
         self._pad = timedelta(days=entry.event.structural_exclusion_days)
         self._structural: dict[str, list[CorporateAction]] = defaultdict(list)
         for action in inputs.actions:
@@ -261,6 +266,7 @@ class _Gates:
         ret20 = float(panel.ret20[d, col])
         if not np.isfinite(ret20):
             return "no_return"
+        covered_from = days[d - self._coverage] if d >= self._coverage else date.min
         return {
             "rv": rv,
             "tercile": int(panel.tercile(d)[col]),
@@ -269,6 +275,7 @@ class _Gates:
             "bucket": int(panel.bucket(d)[col]),
             "dv": float(panel.view.dollar_volume[row, col]),
             "past_move": panel.past_move(symbol, col, d),
+            "archive_covered": panel.reported(symbol, covered_from, days[d] - timedelta(days=1)),
         }
 
 
@@ -342,13 +349,17 @@ def _placebos(
     entry: RunupEntry,
     skip: _Tally,
 ) -> list[dict[str, Any]]:
-    """One pseudo-event per leg (spec section 7): a seeded quiet session, then the legs' gates and tercile."""
+    """One pseudo-event per leg (spec section 7): a seeded quiet session, then the legs' gates and tercile.
+
+    A second draw of a ``(symbol, D')`` already drawn (kept or not) is dropped as ``duplicate_session``.
+    """
     days = panel.days
     ordinals = np.array([day.toordinal() for day in days], dtype=np.int64)
     start, end = (day.toordinal() for day in entry.window.decisions)
     lead, span = entry.event.lead_sessions, entry.placebo.span_sessions
     rng = np.random.default_rng(entry.placebo.seed)
     rows: list[dict[str, Any]] = []
+    drawn_cells: set[tuple[str, int]] = set()
     for leg in sorted(legs, key=lambda row: row["event_id"]):
         symbol, d, year = leg["symbol"], panel.pos_of[leg["session"]], leg["session"].year
         q = np.arange(max(d - span, lead), min(d + span, len(days) - 1 - 2 * lead) + 1)
@@ -358,6 +369,10 @@ def _placebos(
             skip("placebo_no_session", year)
             continue
         drawn = int(candidates[int(rng.integers(len(candidates)))])
+        if (symbol, drawn) in drawn_cells:
+            skip("duplicate_session", year)
+            continue
+        drawn_cells.add((symbol, drawn))
         measured = gates.measure(symbol, drawn, drawn + lead)
         if isinstance(measured, str):
             skip(measured, year)
@@ -421,13 +436,16 @@ def match_controls(events: pd.DataFrame, inputs: RunupInputs, entry: RunupEntry)
     A candidate is cube-eligible at ``D``, in the row's dollar-volume bucket and the top ``rv`` tercile,
     not another row of the same role on ``D`` (a placebo's controls bar the placebos on ``D'``, a leg's
     the legs on ``D``; legs on ``D'`` already report inside the hold), has no archive report date in
-    ``[D, D + lead_sessions]`` and at least one in the ``coverage_sessions`` sessions before ``D``. The
+    ``[D - quiet_before_sessions, D + lead_sessions]`` (no release in its hold and the legs' clean recent
+    history, for legs' and placebos' controls alike) and at least one in the ``coverage_sessions`` sessions
+    before ``D``. The
     nearest by 20-session return to ``D - 1`` win, ties by the cube's ``tiebreak``; fewer candidates leave
     the row unpaired, counted by role and decision year.
     """
     panel = _Panel(inputs, entry)
     view, days = panel.view, panel.days
     k, lead, cover = entry.control.matched_controls, entry.event.lead_sessions, entry.control.coverage_sessions
+    quiet = entry.control.quiet_before_sessions
     records = [record for record in events.to_dict("records") if record["role"] in MATCHED_ROLES]
     treated: dict[tuple[str, date], set[str]] = defaultdict(set)
     for record in records:
@@ -446,12 +464,13 @@ def match_controls(events: pd.DataFrame, inputs: RunupInputs, entry: RunupEntry)
         bucket, tercile = panel.bucket(d), panel.tercile(d)
         mask = view.eligible[row] & (bucket == bucket[col]) & (tercile == _TOP) & np.isfinite(ret20)
         hold_end = days[d + lead] if d + lead < len(days) else date.max
+        quiet_from = days[d - quiet] if d >= quiet else date.min
         covered_from = days[d - cover] if d >= cover else date.min
         candidates = [
             c
             for c in np.flatnonzero(mask)
             if view.symbols[c] not in treated[(role, session)]
-            and not panel.reported(view.symbols[c], session, hold_end)
+            and not panel.reported(view.symbols[c], quiet_from, hold_end)
             and panel.reported(view.symbols[c], covered_from, session - timedelta(days=1))
         ]
         if bucket[col] < 0 or len(candidates) < k:

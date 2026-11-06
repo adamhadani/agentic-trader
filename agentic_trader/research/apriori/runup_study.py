@@ -10,34 +10,37 @@ labeller's own ``r - 2 c / 1e4 * fill / risk`` per cost).
 
 Exclusions are counted by reason, decision year and role: ``no_hourly_bars``, ``missing_session_bars`` (an
 observed session of ``[D, D + lead - 1]`` without a regular hourly bar), ``no_decision_price``,
-``degenerate_levels``, ``immature`` and, for rows with a report (legs and announcers),
-``exit_on_or_after_report`` (the walk ends on or after ``E``, for example when ``D`` has no regular bar after
-the decision and the fill moves to ``D + 1``).
+``degenerate_levels``, ``immature`` and ``hold_outside_window`` (the fill is not on ``D`` or the exit is after
+the close of ``D + lead - 1``, for example when ``D`` has no regular bar after the decision and the fill moves
+to ``D + 1``). The last applies to every cell, leg, announcer, placebo or control, so no labelled leg holds
+through its report and no control or placebo holds outside its report-free band.
 
 Control cells are labelled the same way on their own bars, with ATR through ``D - 1`` from their adjusted
 daily bars (``no_atr`` otherwise); each distinct ``(symbol, session)`` cell, event or control, is labelled
-once and shared. A labelled leg or placebo's control is the mean ``r_cost`` and ``net_excess_r`` of its
-``matched_controls`` cells; any failing cell leaves it unpaired, counted by role under the first failing
-cell's reason in nearest-first order (``no_candidates`` when ``match_controls`` found too few names). Every
-labelled cell gets ``net_excess_r_v1`` through ``pead_base_rate.add_net_excess`` (a missing input gives
-``NaN``, never a fill).
+once and shared. A labelled leg or placebo's control is the mean ``r_cost``, ``net_excess_r`` and ``beta`` of
+its ``matched_controls`` cells, whose own outcomes are returned too (``RUNUP_CONTROL_CELL_COLUMNS``); any
+failing cell leaves it unpaired, counted by role under the first failing cell's reason in nearest-first order
+(``no_candidates`` when ``match_controls`` found too few names). Every labelled cell gets ``net_excess_r_v1``
+through ``pead_base_rate.add_net_excess`` (a missing input gives ``NaN``, never a fill); every labelled event
+row gets ``hold_max_excess_rv``, its largest absolute daily excess return over the hold in units of ``rv``.
 
 Evaluation (spec section 7) reuses the shared session-block statistics, which read a column named
 ``r_cost``: each test passes its unit under that name and records it as ``unit``. P1 is ``mean_test`` on the
 legs' finite ``net_excess_r``; P2 is ``paired_test`` on the paired legs' ``r_cost`` against their control rows,
 keyed by session; P3 is the trimmed mean of the legs' finite ``net_excess_r`` and its plain mean from
-``recent_from``; P4 counts the legs with a finite ``net_excess_r`` overall and from ``recent_from``. The placebo
-runs the same P1 and P2 on ``role == "placebo"`` rows and their controls; its P2 holding fails the read. The
-planted check adds ``planted_return x decision_price / |entry - stop|`` to every paired placebo's ``r_cost``
-and ``net_excess_r`` (controls unchanged) and needs both P1 and P2 to hold, or the read is
-``inconclusive_underpowered``; it is computed before the legs' statistics. Diagnostics (spec section 8) decide
-nothing.
+``recent_from``; P4 counts the legs with a finite ``net_excess_r`` overall and from ``recent_from``; P5 is
+``difference_in_paired_test``, the legs' P2 difference minus the placebos', from one joint bootstrap over the
+union of their sessions. The placebo runs the same P1 and P2 on ``role == "placebo"`` rows and their controls;
+its P2 holding fails the read. The planted check adds ``planted_return x decision_price / |entry - stop|`` to
+every paired placebo's ``r_cost`` and ``net_excess_r`` (controls unchanged) and needs both P1 and P2 to hold,
+or the read is ``inconclusive_underpowered``; it also states the placebo P2's minimum detectable effect and
+is computed before the legs' statistics. Diagnostics (spec section 8) decide nothing.
 
 ``execute_runup_study`` writes ``protocol.json`` and ``manifest.json`` before ``build`` (the only provider
 access), hashes the cube it was given and refuses one whose SHA-256 differs from the entry's ``cube_sha256``
-(recording that digest in the result's ``inputs``), saves the frames, then ``planted.json`` before any placebo
-or leg criterion, then ``result.json``; any failure is ``status: failed``. Research only: nothing here reads a database, a broker or the network, and nothing
-authorizes promotion.
+(recording that digest in the result's ``inputs``), saves the frames (``control_cells`` included), then
+``planted.json`` before any leg statistic, then ``result.json``; any failure is ``status: failed``. Research
+only: nothing here reads a database, a broker or the network, and nothing authorizes promotion.
 """
 
 from __future__ import annotations
@@ -68,7 +71,12 @@ from agentic_trader.research.apriori.runup_events import (
     build_runup_events,
     match_controls,
 )
-from agentic_trader.research.apriori.statistics import mean_test, paired_test, trimmed_mean
+from agentic_trader.research.apriori.statistics import (
+    difference_in_paired_test,
+    mean_test,
+    paired_test,
+    trimmed_mean,
+)
 from agentic_trader.research.pooled.cube import _Hourly
 from agentic_trader.research.setups.labels import (
     BracketArm,
@@ -83,6 +91,7 @@ from agentic_trader.storage.artifacts import save_json_report
 
 __all__ = [
     "RUNUP_ARM",
+    "RUNUP_CONTROL_CELL_COLUMNS",
     "RUNUP_CONTROL_COLUMNS",
     "RunupDecision",
     "cost_column",
@@ -94,13 +103,16 @@ __all__ = [
 ]
 
 RUNUP_ARM = BracketArm(name="runup_time_exit", target_r=None, trail=None)
-RUNUP_CONTROL_COLUMNS = ("pair_id", "role", "session", "r_cost", "net_excess_r", "control_symbols")
+RUNUP_CONTROL_COLUMNS = ("pair_id", "role", "session", "r_cost", "net_excess_r", "beta", "control_symbols")
+RUNUP_CONTROL_CELL_COLUMNS = ("pair_id", "role", "session", "symbol", "r_cost", "net_excess_r", "beta")
 _ROLES = ("leg", "announcer", "placebo")
 _OUTCOME_COLUMNS = ("decision_price", "entry_price", "entry", "stop", "entry_time", "exit_time", "hit", "r", "r_cost")
 _NET_EXCESS_COLUMNS = ("beta", "name_cost_bps", "market_r", "net_excess_r")
 _NET_EXCESS_INPUTS = ("symbol", "session", "entry_price", "entry", "stop", "entry_time", "exit_time", "r")
 # ``SetupLevels`` needs a target above the entry; ``RUNUP_ARM`` drops it, so this one is never walked.
 _UNREACHABLE_TARGET_R = 1000.0
+_Z_ALPHA, _Z_POWER = 1.645, 0.84  # one-sided 5% and 80% power: the placebo P2's minimum detectable effect
+_JUMP_RV = 3.0  # a hold's daily excess move above this many rv flags a possibly misdated release
 
 _Cell = dict[str, Any] | str  # the labelled outcome of a cell, or the reason it failed
 
@@ -117,7 +129,12 @@ def runup_label_columns(entry: RunupEntry) -> tuple[str, ...]:
         "holding_sessions",
         *_NET_EXCESS_COLUMNS,
         "last_day_excess",
+        "hold_max_excess_rv",
     )
+
+
+def _ny_date(stamp: Any) -> date:
+    return pd.Timestamp(stamp).tz_convert(ET_TZ).date()
 
 
 class _Labeller:
@@ -212,6 +229,14 @@ class _Labeller:
             return "immature"
         r, fill = outcome.r, outcome.entry_price
         assert r is not None and fill is not None  # a resolved outcome has both
+        # Every role fills on D and exits by the close of D + lead - 1; anything else leaves the report-free band.
+        last = d + self._lead - 1
+        if (
+            last >= len(self._days)
+            or _ny_date(outcome.entry_time) != session
+            or _ny_date(outcome.exit_time) > self._days[last]
+        ):
+            return "hold_outside_window"
         risk_unit = abs(levels.entry - levels.stop)
         return {
             "decision_price": price,
@@ -273,6 +298,31 @@ def _last_day_excess(
     return value if math.isfinite(value) else math.nan
 
 
+def _hold_max_excess_rv(
+    labeller: _Labeller, market: pd.DataFrame | None, event: Mapping[str, Any], cell: Mapping[str, Any], beta: float
+) -> float:
+    """The largest ``|adjusted daily return - beta x SPY's|`` over the hold's sessions, divided by the row's ``rv``.
+
+    The hold's sessions run from ``D`` (its return is close ``D - 1`` to close ``D``) through the exit session;
+    a session with a missing close is skipped. ``NaN`` without ``rv``, beta or any usable session. Spec section
+    8's check for releases dated wrongly; it decides nothing.
+    """
+    rv = float(event["rv"])
+    if not (math.isfinite(rv) and rv > 0 and math.isfinite(beta)):
+        return math.nan
+    days, daily = labeller.days, labeller.daily(event["symbol"])
+    first = labeller.position(event["session"])
+    last = labeller.position(_ny_date(cell["exit_time"]))
+    moves = []
+    for p in range(max(first, 1), last + 1):
+        stock = _close(daily, days[p]) / _close(daily, days[p - 1]) - 1.0
+        spy = _close(market, days[p]) / _close(market, days[p - 1]) - 1.0
+        move = abs(stock - beta * spy)
+        if math.isfinite(move):
+            moves.append(move)
+    return max(moves) / rv if moves else math.nan
+
+
 class _Tally:
     def __init__(self) -> None:
         self.reasons: Counter[str] = Counter()
@@ -292,19 +342,14 @@ class _Tally:
         }
 
 
-def _report_exit(event: Mapping[str, Any], cell: Mapping[str, Any]) -> bool:
-    """Whether a row with a report (a leg or an announcer) exits on or after its report session."""
-    report = event["report_date"]
-    return isinstance(report, date) and pd.Timestamp(cell["exit_time"]).tz_convert(ET_TZ).date() >= report
-
-
 def label_runup(
     events: pd.DataFrame, candidates: pd.DataFrame, inputs: RunupInputs, entry: RunupEntry
-) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
-    """``(labels, controls, counts)``: one row per labelled event, one per paired leg or placebo, the funnel.
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
+    """``(labels, controls, control_cells, counts)``: labelled events, paired rows' controls, their cells, the funnel.
 
     ``labels`` has ``runup_label_columns(entry)``; ``controls`` has ``RUNUP_CONTROL_COLUMNS`` (the means over
-    the ``matched_controls`` cells of a labelled row); ``counts`` holds ``labelled`` by role, the event
+    the ``matched_controls`` cells of a labelled row); ``control_cells`` has ``RUNUP_CONTROL_CELL_COLUMNS``, one
+    row per cell of each paired row, nearest first; ``counts`` holds ``labelled`` by role, the event
     exclusions by reason, year and role, ``control_cells`` (distinct control cells labelled and failed by
     reason), and ``paired``/``unpaired`` by role (unpaired by reason and by decision year). The funnel adds
     up per matched role: ``labelled == paired + sum(unpaired)``; an event that fails its own label is an
@@ -321,8 +366,6 @@ def label_runup(
         cell = labeller.cell(event["symbol"], event["session"], float(event["atr"]))
         if isinstance(cell, str):
             skip(cell, event)
-        elif _report_exit(event, cell):
-            skip("exit_on_or_after_report", event)
         else:
             kept.append((event, cell))
 
@@ -362,9 +405,24 @@ def label_runup(
         extra = net[(event["symbol"], event["session"])]
         report = isinstance(event["report_date"], date)
         last_day = _last_day_excess(labeller, market, event, cell, extra["beta"]) if report else math.nan
-        rows.append({**event, **cell, **extra, "last_day_excess": last_day})
+        jump = _hold_max_excess_rv(labeller, market, event, cell, extra["beta"])
+        rows.append({**event, **cell, **extra, "last_day_excess": last_day, "hold_max_excess_rv": jump})
     labels = pd.DataFrame(rows, columns=list(runup_label_columns(entry)))
 
+    cell_rows = [
+        {
+            "pair_id": match["pair_id"],
+            "role": match["role"],
+            "session": match["session"],
+            "symbol": key[0],
+            "r_cost": labeller.outcome(key)["r_cost"],
+            "net_excess_r": net[key]["net_excess_r"],
+            "beta": net[key]["beta"],
+        }
+        for match, keys in paired
+        for key in keys
+    ]
+    control_cells = pd.DataFrame(cell_rows, columns=list(RUNUP_CONTROL_CELL_COLUMNS))
     control_rows = [
         {
             "pair_id": match["pair_id"],
@@ -372,6 +430,7 @@ def label_runup(
             "session": match["session"],
             "r_cost": float(np.mean([labeller.outcome(key)["r_cost"] for key in keys])),
             "net_excess_r": float(np.mean([net[key]["net_excess_r"] for key in keys])),
+            "beta": float(np.mean([net[key]["beta"] for key in keys])),
             "control_symbols": match["control_symbols"],
         }
         for match, keys in paired
@@ -390,7 +449,7 @@ def label_runup(
         "unpaired": {role: dict(sorted(reasons.items())) for role, reasons in unpaired.items()},
         "unpaired_by_year": {role: dict(sorted(years.items())) for role, years in unpaired_by_year.items()},
     }
-    return labels, controls, counts
+    return labels, controls, control_cells, counts
 
 
 # --- evaluation (spec section 7) -------------------------------------------------------------------
@@ -423,17 +482,40 @@ def _p1(rows: pd.DataFrame, entry: RunupEntry) -> dict:
     return {"unit": "net_excess_r", **mean_test(tested, entry.bootstrap)}
 
 
-def _p2(rows: pd.DataFrame, controls: pd.DataFrame, role: str, entry: RunupEntry) -> dict:
-    """``paired_test`` of the rows' ``r_cost`` against their ``role`` control rows (pairs by ``pair_id``)."""
+def _paired(rows: pd.DataFrame, controls: pd.DataFrame, role: str, column: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The rows and their ``role`` control rows with a finite ``column`` on both sides of a pair (``pair_id``)."""
     own = controls[controls["role"] == role]
-    own = own[np.isfinite(_numbers(own, "r_cost"))]
-    rows = rows[np.isfinite(_numbers(rows, "r_cost"))]
+    own = own[np.isfinite(_numbers(own, column))]
+    rows = rows[np.isfinite(_numbers(rows, column))]
     paired = set(rows["pair_id"]) & set(own["pair_id"])
-    if not paired:
-        return {"unit": "r_cost", "n_leg": 0, "n_control": 0, "mean_diff": math.nan, "holds": False}
-    leg = _as_r_cost(rows[rows["pair_id"].isin(paired)], "r_cost")
-    control = _as_r_cost(own[own["pair_id"].isin(paired)], "r_cost")
-    return {"unit": "r_cost", **paired_test(leg, control, entry.bootstrap)}
+    return _as_r_cost(rows[rows["pair_id"].isin(paired)], column), _as_r_cost(own[own["pair_id"].isin(paired)], column)
+
+
+def _p2(rows: pd.DataFrame, controls: pd.DataFrame, role: str, entry: RunupEntry, column: str = "r_cost") -> dict:
+    """``paired_test`` of the rows' ``column`` against their ``role`` control rows (pairs by ``pair_id``)."""
+    leg, control = _paired(rows, controls, role, column)
+    if leg.empty:
+        return {"unit": column, "n_leg": 0, "n_control": 0, "mean_diff": math.nan, "holds": False}
+    return {"unit": column, **paired_test(leg, control, entry.bootstrap)}
+
+
+def _p5(labels: pd.DataFrame, controls: pd.DataFrame, entry: RunupEntry) -> dict:
+    """P5: the legs' paired ``r_cost`` difference minus the placebos', from one joint session-block bootstrap."""
+    legs = _paired(labels[labels["role"] == "leg"], controls, "leg", "r_cost")
+    placebo = _paired(labels[labels["role"] == "placebo"], controls, "placebo", "r_cost")
+    return {"unit": "r_cost", **difference_in_paired_test(*legs, *placebo, entry.bootstrap)}
+
+
+def _mde(p2: Mapping[str, Any]) -> dict:
+    """``(z_alpha + z_power) x`` the P2's bootstrap standard deviation (``NaN`` without one)."""
+    sd = float(p2.get("boot_sd", math.nan))
+    return {
+        "unit": p2["unit"],
+        "z_alpha": _Z_ALPHA,
+        "z_power": _Z_POWER,
+        "boot_sd": sd,
+        "mde_r": (_Z_ALPHA + _Z_POWER) * sd,
+    }
 
 
 def _summary(values: pd.Series | np.ndarray) -> dict:
@@ -448,7 +530,8 @@ def planted_check(labels: pd.DataFrame, controls: pd.DataFrame, entry: RunupEntr
     Every paired placebo row (one with a ``placebo`` control row) gains ``planted_return x decision_price /
     |entry - stop|`` R in both ``r_cost`` and ``net_excess_r``; its controls are unchanged. P1 runs on the
     shifted rows with a finite ``net_excess_r``, P2 on the shifted ``r_cost`` against their controls;
-    ``detected`` needs both to hold.
+    ``detected`` needs both to hold. ``mde`` is the minimum detectable effect of the (unshifted) placebo P2,
+    ``(1.645 + 0.84) x`` the standard deviation of its bootstrap draws.
     """
     placebo = labels[labels["role"] == "placebo"]
     paired = placebo[placebo["pair_id"].isin(set(controls.loc[controls["role"] == "placebo", "pair_id"]))]
@@ -460,6 +543,7 @@ def planted_check(labels: pd.DataFrame, controls: pd.DataFrame, entry: RunupEntr
     )
     p1 = _p1(planted, entry)
     p2 = _p2(planted, controls, "placebo", entry)
+    mde = _mde(_p2(placebo, controls, "placebo", entry))
     shift_values = shift.to_numpy(float)
     return {
         "planted_return": entry.placebo.planted_return,
@@ -472,11 +556,12 @@ def planted_check(labels: pd.DataFrame, controls: pd.DataFrame, entry: RunupEntr
         "P1": p1,
         "P2": p2,
         "detected": bool(p1["holds"] and p2["holds"]),
+        "mde": mde,
     }
 
 
 def _criteria(legs: pd.DataFrame, controls: pd.DataFrame, entry: RunupEntry) -> dict:
-    """P1-P4 on the legs (spec section 7)."""
+    """P1-P4 on the legs (spec section 7); P5 needs the placebos too (``_p5``)."""
     finite = _as_r_cost(legs, "net_excess_r")
     recent_from = entry.window.recent_from
     recent = finite[np.array([session >= recent_from for session in finite["session"]], dtype=bool)]
@@ -556,8 +641,21 @@ def _past_move_terciles(legs: pd.DataFrame) -> dict:
     return {"n_missing": len(legs) - int(finite.size), "terciles": terciles}
 
 
+def _hold_jumps(rows: pd.DataFrame) -> dict:
+    """How many rows with a finite ``hold_max_excess_rv`` moved more than ``_JUMP_RV`` rv on a day of the hold."""
+    values = _numbers(rows, "hold_max_excess_rv")
+    finite = values[np.isfinite(values)]
+    above = int((finite > _JUMP_RV).sum())
+    return {"n": int(finite.size), "n_above": above, "share": above / finite.size if finite.size else math.nan}
+
+
 def _diagnostics(labels: pd.DataFrame, controls: pd.DataFrame, entry: RunupEntry) -> dict:
-    """Spec section 8; nothing here decides anything (the placebo's P1 is reported under ``placebo``)."""
+    """Spec section 8; nothing here decides anything (the placebo's P1 is reported under ``placebo``).
+
+    Beyond the splits: P2 on ``net_excess_r`` and the mean beta of the paired legs against their control rows,
+    the legs by ``archive_covered``, and the share of legs (placebos as a baseline) whose hold had a daily excess
+    move above ``_JUMP_RV`` rv, a check for releases dated wrongly.
+    """
     legs = labels[labels["role"] == "leg"]
     reports = labels[labels["role"].isin(("leg", "announcer"))]
     paired = set(controls.loc[controls["role"] == "leg", "pair_id"])
@@ -582,16 +680,32 @@ def _diagnostics(labels: pd.DataFrame, controls: pd.DataFrame, entry: RunupEntry
         "dispersion": _dispersion(legs),
         "last_day_excess": _summary(legs["last_day_excess"]),
         "past_move_terciles": _past_move_terciles(legs),
+        "net_excess_vs_controls": {
+            "P2": _p2(legs, controls, "leg", entry, column="net_excess_r"),
+            "beta": {
+                "legs": _summary(legs.loc[legs["pair_id"].isin(paired), "beta"]),
+                "controls": _summary(controls.loc[controls["role"] == "leg", "beta"]),
+            },
+        },
+        "by_archive_coverage": {
+            "covered": _both(legs[legs["archive_covered"].eq(True)]),
+            "uncovered": _both(legs[legs["archive_covered"].eq(False)]),
+        },
+        "hold_jumps": {
+            "threshold_rv": _JUMP_RV,
+            "legs": _hold_jumps(legs),
+            "placebo": _hold_jumps(labels[labels["role"] == "placebo"]),
+        },
     }
 
 
 def evaluate_runup(
     labels: pd.DataFrame, controls: pd.DataFrame, entry: RunupEntry, *, planted: dict | None = None
 ) -> dict:
-    """The planted check, the placebo, the frozen P1-P4 rule, the decision and the diagnostics (spec 7-8).
+    """The planted check, the placebo, the frozen P1-P5 rule, the decision and the diagnostics (spec 7-8).
 
     ``planted`` is the executor's already saved ``planted_check`` result; without it the check is computed
-    here, still before the placebo's and the legs' statistics.
+    here, still before the legs' statistics (its minimum detectable effect needs the placebo P2).
     """
     if planted is None:
         planted = planted_check(labels, controls, entry)
@@ -602,7 +716,7 @@ def evaluate_runup(
         "P2": placebo_p2,
         "negative_control_fails": bool(placebo_p2["holds"]),
     }
-    criteria = _criteria(labels[labels["role"] == "leg"], controls, entry)
+    criteria = {**_criteria(labels[labels["role"] == "leg"], controls, entry), "P5": _p5(labels, controls, entry)}
     return {
         "decision": _decision(planted, criteria, placebo).value,
         "criteria": criteria,
@@ -656,16 +770,19 @@ async def execute_runup_study(
             )
         events, event_counts = await asyncio.to_thread(build_runup_events, inputs, entry)
         candidates, matching_counts = await asyncio.to_thread(match_controls, events, inputs, entry)
-        labels, controls, label_counts = await asyncio.to_thread(label_runup, events, candidates, inputs, entry)
+        labelled = await asyncio.to_thread(label_runup, events, candidates, inputs, entry)
+        labels, controls, control_cells, label_counts = labelled
         frames = {
             "events": events,
             "labels": labels,
             "controls": controls,
+            "control_cells": control_cells,
             "placebo": labels[labels["role"] == "placebo"],
         }
         for name, frame in frames.items():
             await asyncio.to_thread(save_frame, frame, directory / f"{name}.csv.gz")
-        # Spec section 7: the planted check is computed and saved before any placebo or leg statistic.
+        # Spec section 7: the planted check (with the placebo P2's minimum detectable effect) is computed and
+        # saved before any leg statistic.
         planted = await asyncio.to_thread(planted_check, labels, controls, entry)
         save_json_report(_finite_json(planted), directory / "planted.json")
         evaluation = await asyncio.to_thread(evaluate_runup, labels, controls, entry, planted=planted)

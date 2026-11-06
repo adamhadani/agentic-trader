@@ -4,6 +4,12 @@ Date: 2026-11-06. Operator: "Go ahead" (2026-11-06) on the recommended first ste
 the dated earnings-calendar capture (its own PR) and a development read of the run-up rule (this spec).
 Design calls are mine under the operator's standing design trust.
 
+Amended 2026-11-06 after the final code review and **before any outcome was read**: the hold window is
+enforced for every role (`hold_outside_window`), controls need the legs' clean recent history (no report in
+`[D − 30, D + lead_sessions]`), P5 (legs beat their controls by more than the pseudo-events beat theirs)
+decides, duplicate pseudo-events are dropped, and section 8 gains four descriptive checks. The entry file is
+amended in place because no read has used it.
+
 ## 1. Why, and what this read can decide
 
 The one pre-earnings bet the 2026-11-06 research found testable with free data is to buy high-uncertainty
@@ -90,7 +96,9 @@ session, which is `E − 1` for a leg. Costs 5, 15 and 25 bp per side; 15 bp dec
 
 Exclusions while labelling, by reason and year: `no_hourly_bars`, `missing_session_bars` (any observed
 session of the hold without a regular hourly bar), `no_decision_price`, `degenerate_levels`, `immature`, and
-`exit_on_or_after_report` (a leg whose walk ends on or after `E`).
+`hold_outside_window` (any row, leg, control cell or placebo, whose fill is not on `D` or whose exit is after
+the close of the `lead_sessions`-th session `D + lead_sessions − 1`; for a leg that session is `E − 1`, so no
+labelled leg holds through its report and no control holds outside its report-free band).
 
 Every labelled row also gets `net_excess_r_v1` through the same helpers as the PEAD base rate
 (`trailing_beta`, `name_cost_bps`, `market_r` on SPY hourly bars over the row's own hold, `net_excess_r`);
@@ -101,13 +109,16 @@ a missing input gives `NaN`, never a fill.
 For each leg, 5 controls on the same session `D`, each a cohort name that is:
 
 - cube-eligible at `D`, in the leg's dollar-volume tercile and also in the top `rv` tercile at `D`;
-- not a leg on `D`, with no archive report date in `[D, D + lead_sessions]` (no release inside its own hold);
+- not a leg on `D`, with no archive report date in `[D − 30, D + lead_sessions]`: no release inside its own
+  hold, and the same clean recent history the legs have (a leg has no other report in the 40 sessions
+  before `E`, which is `[D − 30, E)`), so freshly reported names never serve as controls;
 - covered by the archive: at least one report date in the 130 sessions before `D`, so "no report" is not
   missing data;
 
 nearest in 20-session return to the leg, ties by the cube's `tiebreak`. Each control is labelled with the
 leg's bracket on its own bars (exit at the close of the `lead_sessions`-th session). Fewer than 5 candidates
-leaves the leg unpaired (counted by year). The control row is the mean of the 5.
+leaves the leg unpaired (counted by year). The control row is the mean of the 5; the per-cell control
+outcomes are saved too (`control_cells.csv.gz`).
 
 ## 7. Pass rule, negative control and planted effect
 
@@ -119,20 +130,26 @@ Stationary session-block bootstrap over decision sessions (the existing `statist
   ci90 lower bound > 0, pairs keyed by `D`.
 - **P3**: the 1%-trimmed mean of `net_excess_r_v1` > 0, and its mean over decisions from 2023-01-01 > 0.
 - **P4**: at least 1,000 legs with a finite `net_excess_r_v1`, at least 300 of them from 2023-01-01.
+- **P5**: the legs' paired difference (P2's statistic) minus the placebos' paired difference > 0, with the
+  ci90 lower bound > 0 from one joint session-block bootstrap over the union of their decision sessions
+  (the same seed). The legs must beat their controls by more than the pseudo-events beat theirs.
 
 **Negative control (R4).** Every leg gets one pseudo-event: the same symbol at a session `D'` drawn with a
 seeded generator (seed 20261107) from the sessions within 63 of `D` such that the symbol has no archive
-report date in `[D' − lead_sessions, D' + 2 × lead_sessions]`. `D'` goes through the identical gates (steps
-3–6 of section 4, the top-tercile rule included), labels, controls and statistics. The placebo's P2 must
-**not** hold; if it does, the matching leaves a bias the legs could ride, and the read is `failed`.
+report date in `[D' − lead_sessions, D' + 2 × lead_sessions]`, inside the decision window. A second draw
+of a `(symbol, D')` already drawn is dropped and counted (`duplicate_session`). `D'` goes through the
+identical gates (steps 3–6 of section 4, the top-tercile rule included), labels, controls and statistics.
+The placebo's P2 must **not** hold, and P5 must hold; otherwise the matching leaves a bias the legs could
+ride, and the read is `failed`.
 
 **Planted effect (R3).** Before the legs' statistics are computed, the executor adds to every paired placebo
 leg a planted return of half the published effect, 0.63% of the decision price, converted to R per row
 (`0.0063 × decision_price / risk_unit`), to both `r_cost` and `net_excess_r_v1`, and runs P1 and P2 on that
 frame. Both must hold (`planted_detected`); otherwise the decision is `inconclusive_underpowered`. The
-planted result is saved to `planted.json` before `result.json`.
+planted result, with the minimum detectable effect of the placebo P2 ((1.645 + 0.84) × its bootstrap
+standard deviation), is saved to `planted.json` before `result.json`.
 
-**Decision.** `inconclusive_underpowered` if the planted check fails; else `failed` if any of P1–P4 fails or
+**Decision.** `inconclusive_underpowered` if the planted check fails; else `failed` if any of P1–P5 fails or
 the placebo's P2 holds; else `survives_development`. No threshold, proxy, lead, stop, cost, window or
 control parameter is revisited after the run; any change is a new version.
 
@@ -146,7 +163,9 @@ session ÷ per-leg variance), which the prospective power plan needs; the last-d
 `E − 2` → `E − 1` minus beta × SPY over the same day) for the day −1 liquidity-provision bias; and terciles
 of legs by the past-reaction proxy (mean absolute 2-session excess reaction around each of up to the last 4
 archive reports before `D`, at least 2 needed; reaction session `E` for pre-market releases, `E + 1`
-otherwise).
+otherwise). Also: P2 on `net_excess_r_v1` and the mean beta of legs against their controls; legs split by archive
+coverage (a report in the 130 sessions before `D` or not); and the share of legs with an absolute daily
+excess return above 3 standard deviations inside the hold, a check for releases dated wrongly.
 
 ## 9. Code and artifacts
 

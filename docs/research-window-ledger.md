@@ -8,7 +8,8 @@ state something, the row says "not stated in the doc". Nothing is inferred from 
 
 The ledger does not change any gate, and a row here grants no promotion, shadow or probe credit.
 It holds reads L01–L43; L40–L42 (the [IC lane](alpha-ic-lane.md)) were added before their first read and
-have no result yet; L43 (the pre-earnings run-up development read) is declared before its read and is pending.
+have results (2026-10-31); L43 (the pre-earnings run-up development read) is declared before its read and is
+pending.
 
 ## Rules
 
@@ -56,14 +57,14 @@ Statuses follow the review's §2.5. The "Reads" column lists ledger ids from the
 
 | # | Window | Status | Use in this program | Reads |
 | --- | --- | --- | --- | --- |
-| W1 | Pooled cube, discovery 2016-08-01 → 2021-12-31 and selection 2022-01-03 → 2023-12-29 | development only | Development and rehearsal | L01–L11 (discovery; L11 also read selection); L12–L17 read the whole decision window, including these dates; L40–L42 (IC lane) read the whole window 2016-08-01 → 2023-12-29, selection included; L43 (run-up) reads the whole decision window |
+| W1 | Pooled cube, discovery 2016-08-01 → 2021-12-31 and selection 2022-01-03 → 2023-12-29 | development only | Development and rehearsal | L01–L11 (discovery; L11 also read selection); L12–L17 read the whole decision window, including these dates; L40–L42 (IC lane) read the whole window 2016-08-01 → 2023-12-29, selection included; L43 (run-up) reads W1's dates as part of its decisions 2016-08-01 → 2026-07-17 |
 | W2 | Pooled confirmation 2024-01-02 → 2026-07-31 | reserve (decay check only) | Held in reserve; unused for pooled formulas | Unused by the pooled campaigns; read by L12–L20, L39 and L43 for other lanes (see the note below the table) |
 | W3 | Native setups 2017-01-03 → 2021-04-30 | spent (third read) | Not used | L21–L24 |
 | W4 | Native setups 2021-06-01 → 2026-01-29 | development only | Descriptive | L25–L30 |
 | W5 | Native setups holdout 2026-03-02 → 2026-08-14 | spent | None | L25 |
 | W6 | Event decisions 2016-08-01 → 2026-07-31 (PEAD, exdiv, insider) | spent for these three hypotheses | Rehearsal only | L12–L14, L17; L43 (run-up) reads decisions to 2026-07-17 |
 | W7 | Spread lane discovery 2018-01-02 → 2023-12-29 | spent for pairs v1 and v2 on cohort v1 | None | L31–L32 |
-| W8 | Spread lane confirmation 2024-01-02 → 2026-07-31 | reserve (decay check only) | None; the spread lane is closed | The `spread/confirmation` journal key is unconsumed and no spread study read these dates; other lanes read the same dates (L12–L20, L39; see W2) |
+| W8 | Spread lane confirmation 2024-01-02 → 2026-07-31 | reserve (decay check only) | None; the spread lane is closed | The `spread/confirmation` journal key is unconsumed and no spread study read these dates; other lanes read the same dates (L12–L20, L39, L43; see W2) |
 | W9 | ETF, sector-panel and screened-equity windows (2020–2025) | development only | None | L33–L39, L18–L20 |
 | W10 | Sharadar era 2007-01 → 2016-07 (Form 4 from 2006) | fresh | One frozen manifest, two declared lanes | None |
 | W11 | Prospective from 2026-08-15 (2026-08-01 → 08-14 overlaps the native holdout, L25) | fresh | Probe monitors; a fixed 2027-08 insider read | Monitors only (see below) |

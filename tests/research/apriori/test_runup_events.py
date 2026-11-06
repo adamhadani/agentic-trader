@@ -248,6 +248,20 @@ def test_each_exclusion_reason_is_counted_by_reason_and_year(reason, world):
     assert counts["legs"] == counts["announcers"] == counts["placebos"] == 0
 
 
+@pytest.mark.parametrize(("prior", "covered"), [(None, False), (D - 130, True), (D - 131, False), (D - 41, True)])
+def test_archive_covered_is_a_report_in_the_130_sessions_before_the_decision(prior, covered):
+    reports = [_report("S25", DAYS[E]), *(() if prior is None else (_report("S25", DAYS[prior]),))]
+    frame, counts = build_runup_events(_world(reports=reports), ENTRY)
+    assert counts["reasons"].get("recent_previous_report", 0) == 0
+    leg = frame[(frame["role"] == "leg") & (frame["report_date"] == DAYS[E])].iloc[0]
+    assert frame["archive_covered"].dtype == bool and bool(leg["archive_covered"]) is covered
+    placebo = frame[(frame["role"] == "placebo") & (frame["pair_id"] == leg["event_id"])].iloc[0]
+    d = DAYS.index(placebo["session"])
+    since = DAYS[d - 130] if d >= 130 else date.min  # a short calendar opens the look-back
+    expected = any(since <= report.date < DAYS[d] for report in reports)  # the leg's own E counts too
+    assert bool(placebo["archive_covered"]) is expected
+
+
 def test_recent_previous_report_within_forty_sessions_excludes_the_later_report():
     frame, counts = build_runup_events(_world(reports=[_report("S25", DAYS[E]), _report("S25", DAYS[E - 40])]), ENTRY)
     assert counts["reasons"] == {"recent_previous_report": 1}
@@ -394,6 +408,23 @@ def test_placebo_outside_the_top_tercile_is_counted_not_kept():
     assert counts["placebo_reasons"] == {"not_top_tercile": 1}
 
 
+def test_a_second_draw_of_a_drawn_placebo_session_is_dropped_and_counted():
+    # Two S25 legs 32 sessions apart (D and D + 32) in a window [D, D + 32]: every session from D - 10 to
+    # D + 52 but D + 21 has an S25 report in [q - 10, q + 20], so both legs can only draw D + 21.
+    window = {"decisions": [DAYS[D].isoformat(), DAYS[D + 32].isoformat()], "bars_through": "2022-06-01"}
+    event = {**ENTRY.event.model_dump(), "recent_previous_report_sessions": 30}
+    entry = _entry(window={**window, "recent_from": DAYS[D + 1].isoformat()}, event=event)
+    reports = [_report("S25", DAYS[E]), _report("S25", DAYS[E + 32])]
+    frame, counts = build_runup_events(_world(reports=reports), entry)
+
+    assert counts["legs"] == 2 and counts["placebos"] == 1
+    placebo = _row(frame, "placebo", "S25")
+    assert placebo["session"] == DAYS[D + 21]
+    assert placebo["pair_id"] == f"S25:{DAYS[E].isoformat()}"  # the first leg in event_id order keeps it
+    assert counts["placebo_reasons"] == {"duplicate_session": 1}
+    assert counts["placebo_reasons_by_year"] == {"duplicate_session": {2021: 1}}
+
+
 def test_leg_without_a_quiet_session_counts_placebo_no_session():
     window = {"decisions": [DAYS[D - 5].isoformat(), DAYS[D + 5].isoformat()], "bars_through": "2022-06-01"}
     entry = _entry(window={**window, "recent_from": DAYS[D].isoformat()})
@@ -494,6 +525,23 @@ def test_report_just_after_the_hold_and_coverage_at_130_sessions_admit_a_control
     frame, _ = match_controls(_events(("leg", "S20", D), ("leg", "S22", D)), inputs, ENTRY)
     # S21 and S23 are now admissible and nearest; tiebreak (979 vs 977) puts S23 first.
     assert frame.iloc[0]["control_symbols"] == "S23,S21,S25,S26,S27"
+
+
+@pytest.mark.parametrize("role", ["leg", "placebo"])
+@pytest.mark.parametrize(
+    ("offset", "admitted"), [(-31, True), (-30, False), (-1, False), (LEAD, False), (LEAD + 1, True)]
+)
+def test_controls_have_no_report_from_thirty_sessions_before_to_the_end_of_the_hold(role, offset, admitted):
+    assert ENTRY.control.quiet_before_sessions == 30
+    reports = [_report("S21", DAYS[D + offset])]
+    covered = [s for s in SYMS if s != "S23"]
+    inputs = _world(reports=reports, sigma=SWAPPED, mu=NEAR, covered=covered)
+    pair = (f"S20:{DAYS[E].isoformat()}",) if role == "placebo" else ()
+    other = ("S22:x",) if role == "placebo" else ()
+    frame, _ = match_controls(_events((role, "S20", D, *pair), (role, "S22", D, *other)), inputs, ENTRY)
+    row = frame[frame["role"] == role].iloc[0]
+    expected = "S21,S25,S26,S27,S28" if admitted else "S25,S26,S27,S28,S29"
+    assert row["control_symbols"] == expected
 
 
 def test_report_131_sessions_back_does_not_cover():

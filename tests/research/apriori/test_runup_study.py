@@ -22,6 +22,7 @@ from agentic_trader.research.apriori.runup_events import (
 )
 from agentic_trader.research.apriori.runup_study import (
     RUNUP_ARM,
+    RUNUP_CONTROL_CELL_COLUMNS,
     RUNUP_CONTROL_COLUMNS,
     RunupDecision,
     cost_column,
@@ -31,6 +32,7 @@ from agentic_trader.research.apriori.runup_study import (
     planted_check,
     runup_label_columns,
 )
+from agentic_trader.research.apriori.statistics import paired_test
 from agentic_trader.research.pooled.cube import LabelCube
 from agentic_trader.research.setups.labels import BracketArm, SetupLevels, label_bracket
 
@@ -198,7 +200,7 @@ def test_the_arm_has_no_target_and_no_trail():
 
 
 def test_a_leg_time_exits_at_the_close_of_the_session_before_the_report_even_after_a_5r_rally():
-    labels, controls, counts = _label(_events(_event("AAA")), {"AAA": _rally()})
+    labels, controls, _, counts = _label(_events(_event("AAA")), {"AAA": _rally()})
 
     assert tuple(labels.columns) == runup_label_columns(ENTRY)
     assert tuple(controls.columns) == RUNUP_CONTROL_COLUMNS
@@ -257,25 +259,59 @@ def test_cost_columns_come_from_one_walk_and_the_decisive_one_is_r_cost():
 # --- exclusions ---------------------------------------------------------------------------------
 
 
-def test_a_fill_that_slips_past_the_decision_session_ends_on_the_report_and_is_excluded():
+def test_a_leg_or_placebo_whose_fill_slips_past_the_decision_session_is_outside_the_hold_window():
     only_morning = {D: (9, 10)}  # D has no regular bar after 10:35, so the fill moves to D + 1
     frame = _hourly(100.0, hours=only_morning)
     placebo = _event("BBB", role="placebo", pair_id="AAA:x")
-    labels, _, counts = _label(_events(_event("AAA"), placebo), {"AAA": frame, "BBB": frame})
+    labels, _, _, counts = _label(_events(_event("AAA"), placebo), {"AAA": frame, "BBB": frame})
 
-    assert counts["reasons"] == {"exit_on_or_after_report": 1}
-    assert counts["reasons_by_year"] == {"exit_on_or_after_report": {2021: 1}}
-    assert counts["reasons_by_role"] == {"exit_on_or_after_report": {"leg": 1}}
-    # A placebo has no report: the same walk is kept (it ends on its own 10th session).
-    assert list(labels["role"]) == ["placebo"]
-    assert _ny_date(labels.iloc[0]["exit_time"]) == DAYS[D + LEAD]
+    assert labels.empty  # a leg would hold through E; a placebo would leave its own report-free band
+    assert counts["reasons"] == {"hold_outside_window": 2}
+    assert counts["reasons_by_year"] == {"hold_outside_window": {2021: 2}}
+    assert counts["reasons_by_role"] == {"hold_outside_window": {"leg": 1, "placebo": 1}}
+    assert counts["labelled"] == {"leg": 0, "announcer": 0, "placebo": 0}
+
+
+def test_a_slipped_control_that_exits_after_its_band_unpairs_its_leg():
+    # The final review's reproduction: C1 has only the 09:00 and 10:00 bars on D and no bars on D + lead, so
+    # its walk fills on D + 1 and exits at the close of D + lead + 1, after its report-free band ends.
+    leg = _event("AAA")
+    candidates = _candidates((leg["pair_id"], "leg", D, CONTROLS))
+    hourly = {"AAA": _rally(), **_control_hourly()}
+    hourly["C1"] = _hourly(100.0, hours={D: (9, 10)}, drop=(D + LEAD,))
+    walk = label_bracket(
+        SetupLevels("LONG", 100.0, 98.0, 2100.0),
+        decision_at(DAYS[D], CLOCK),
+        hourly["C1"],
+        max_hold_sessions=LEAD,
+        cost_bps_per_side=15,
+        arm=RUNUP_ARM,
+    )
+    assert (_ny_date(walk.entry_time), _ny_date(walk.exit_time)) == (DAYS[D + 1], DAYS[D + LEAD + 1])
+
+    labels, controls, cells, counts = _label(_events(leg), hourly, candidates=candidates)
+    assert len(labels) == 1 and controls.empty and cells.empty
+    assert counts["paired"] == {"leg": 0, "placebo": 0}
+    assert counts["unpaired"] == {"leg": {"hold_outside_window": 1}, "placebo": {}}
+    assert counts["unpaired_by_year"] == {"leg": {2021: 1}, "placebo": {}}
+    assert counts["control_cells"] == {"labelled": 4, "reasons": {"hold_outside_window": 1}}
+
+
+def test_an_exit_after_the_last_session_of_the_hold_is_outside_the_window(monkeypatch):
+    def late(levels, when, hourly, **kwargs):
+        outcome = label_bracket(levels, when, hourly, **kwargs)
+        return replace(outcome, exit_time=datetime.combine(DAYS[E], time(10), tzinfo=ET_TZ))
+
+    monkeypatch.setattr(runup_study, "label_bracket", late)
+    labels, _, _, counts = _label(_events(_event("AAA", role="announcer")), {"AAA": _rally()})
+    assert labels.empty and counts["reasons_by_role"] == {"hold_outside_window": {"announcer": 1}}
 
 
 def test_a_held_session_without_bars_excludes_the_row_but_a_session_after_the_hold_does_not():
-    labels, _, counts = _label(_events(_event("AAA")), {"AAA": _hourly(100.0, drop=(D + 4,))})
+    labels, _, _, counts = _label(_events(_event("AAA")), {"AAA": _hourly(100.0, drop=(D + 4,))})
     assert labels.empty and counts["reasons"] == {"missing_session_bars": 1}
 
-    labels, _, counts = _label(_events(_event("AAA")), {"AAA": _hourly(100.0, drop=(E,))})
+    labels, _, _, counts = _label(_events(_event("AAA")), {"AAA": _hourly(100.0, drop=(E,))})
     assert len(labels) == 1 and counts["reasons"] == {}
     assert _ny_date(labels.iloc[0]["exit_time"]) == DAYS[E - 1]
 
@@ -290,7 +326,7 @@ def test_a_held_session_without_bars_excludes_the_row_but_a_session_after_the_ho
     ],
 )
 def test_exclusions_are_counted_by_reason_year_and_role(reason, hourly, atr):
-    labels, _, counts = _label(_events(_event("AAA", role="announcer", atr=atr)), hourly)
+    labels, _, _, counts = _label(_events(_event("AAA", role="announcer", atr=atr)), hourly)
     assert labels.empty
     assert counts["reasons"] == {reason: 1}
     assert counts["reasons_by_year"] == {reason: {2021: 1}}
@@ -299,7 +335,7 @@ def test_exclusions_are_counted_by_reason_year_and_role(reason, hourly, atr):
 
 
 def test_empty_events_give_empty_frames_with_their_columns():
-    labels, controls, counts = _label(_events(), {})
+    labels, controls, _, counts = _label(_events(), {})
     assert labels.empty and tuple(labels.columns) == runup_label_columns(ENTRY)
     assert controls.empty and tuple(controls.columns) == RUNUP_CONTROL_COLUMNS
     assert counts["paired"] == {"leg": 0, "placebo": 0}
@@ -345,6 +381,27 @@ def test_last_day_excess_is_the_adjusted_day_minus_one_return_net_of_beta_times_
     assert np.isnan(leg["last_day_excess"]) and np.isfinite(leg["net_excess_r"])
 
 
+@pytest.mark.parametrize(("jump_at", "inside"), [(D - 1, False), (D, True), (D + 3, True), (E - 1, True), (E, False)])
+def test_hold_max_excess_rv_is_the_largest_daily_excess_move_over_the_hold_in_rv_units(jump_at, inside):
+    closes = _beta_two(jump=(jump_at, 1.10))  # daily returns are twice SPY's but on the jump day
+    events = _events(_event("AAA"), _event("AAA", d=D - 40, role="placebo", pair_id="AAA:x"))
+    labels = _label(events, {"AAA": _rally()}, adjusted={"AAA": _daily(closes)})[0]
+    leg = labels[labels["role"] == "leg"].iloc[0]
+    assert leg["rv"] == 0.03 and _ny_date(leg["exit_time"]) == DAYS[E - 1]
+    # Sessions D .. E - 1, each close-to-close, against the row's own beta (a jump at D - 1 moves the beta).
+    stock = closes[D:E] / closes[D - 1 : E - 1] - 1.0
+    spy = SPY_CLOSE[D:E] / SPY_CLOSE[D - 1 : E - 1] - 1.0
+    expected = np.max(np.abs(stock - leg["beta"] * spy)) / 0.03
+    assert leg["hold_max_excess_rv"] == pytest.approx(expected, rel=1e-9, abs=1e-12)
+    assert bool(leg["hold_max_excess_rv"] > 3.0) is inside  # the 10% day is about 3.3 rv
+    assert np.isfinite(labels[labels["role"] == "placebo"].iloc[0]["hold_max_excess_rv"])
+
+
+def test_hold_max_excess_rv_is_nan_without_a_beta():
+    leg = _label(_events(_event("AAA")), {"AAA": _rally()}, adjusted={"AAA": _daily(_beta_two(), drop=range(D))})
+    assert np.isnan(leg[0].iloc[0]["beta"]) and np.isnan(leg[0].iloc[0]["hold_max_excess_rv"])
+
+
 # --- controls -------------------------------------------------------------------------------------
 
 
@@ -359,7 +416,8 @@ def _control_hourly():
 def test_the_control_row_is_the_mean_of_its_five_labelled_cells():
     leg = _event("AAA")
     candidates = _candidates((leg["pair_id"], "leg", D, CONTROLS))
-    labels, controls, counts = _label(_events(leg), {"AAA": _rally(), **_control_hourly()}, candidates=candidates)
+    hourly = {"AAA": _rally(), **_control_hourly()}
+    labels, controls, cells, counts = _label(_events(leg), hourly, candidates=candidates)
 
     assert len(labels) == 1 and len(controls) == 1
     row = controls.iloc[0]
@@ -367,6 +425,16 @@ def test_the_control_row_is_the_mean_of_its_five_labelled_cells():
     assert row["control_symbols"] == ",".join(CONTROLS)
     assert row["r_cost"] == pytest.approx(3.0 - 2 * 15 / 1e4 * 100.0 / 2.0)  # mean k, less 15 bp a side
     assert row["net_excess_r"] == pytest.approx(3.0 - 2 * 5 / 1e4 * 100.0 / 2.0)  # beta 0, the 5 bp floor
+    assert row["beta"] == pytest.approx(0.0, abs=1e-12)
+    # The per-cell outcomes behind the row (control_cells.csv.gz), nearest first.
+    assert tuple(cells.columns) == RUNUP_CONTROL_CELL_COLUMNS
+    assert list(cells["symbol"]) == list(CONTROLS)
+    assert set(cells["pair_id"]) == {leg["pair_id"]} and set(cells["role"]) == {"leg"}
+    assert set(cells["session"]) == {DAYS[D]}
+    assert cells["r_cost"].tolist() == pytest.approx([k - 2 * 15 / 1e4 * 100.0 / 2.0 for k in range(1, 6)])
+    assert cells["net_excess_r"].tolist() == pytest.approx([k - 2 * 5 / 1e4 * 100.0 / 2.0 for k in range(1, 6)])
+    assert cells["beta"].tolist() == pytest.approx([0.0] * 5, abs=1e-12)
+    assert cells["r_cost"].mean() == pytest.approx(row["r_cost"])
     assert counts["paired"] == {"leg": 1, "placebo": 0}
     assert counts["unpaired"] == {"leg": {}, "placebo": {}}
     assert counts["control_cells"] == {"labelled": 5, "reasons": {}}
@@ -387,7 +455,7 @@ def test_a_shared_cell_is_labelled_once(monkeypatch):
         (second["pair_id"], "leg", D, CONTROLS),
     )
     hourly = {"AAA": _rally(), "BBB": _rally(), **_control_hourly()}
-    _, controls, counts = _label(_events(first, second, placebo), hourly, candidates=candidates)
+    _, controls, _, counts = _label(_events(first, second, placebo), hourly, candidates=candidates)
 
     assert len(calls) == 7  # AAA, BBB, C1 (placebo and control) and C2..C5
     assert list(controls["pair_id"]) == [first["pair_id"], second["pair_id"]]
@@ -404,7 +472,7 @@ def test_a_control_cell_that_fails_to_label_leaves_its_pair_unpaired_and_is_coun
     hourly = {"AAA": _rally(), **_control_hourly()}
     hourly["C3"] = hourly["C3"].loc[pd.DatetimeIndex(hourly["C3"].index).tz_convert(ET_TZ).date != DAYS[D + 2]]
     del hourly["C5"]
-    labels, controls, counts = _label(_events(placebo, leg), hourly, candidates=candidates)
+    labels, controls, _, counts = _label(_events(placebo, leg), hourly, candidates=candidates)
 
     assert sorted(labels["role"]) == ["leg", "placebo"]  # the rows themselves stay labelled
     assert controls.empty
@@ -421,14 +489,14 @@ def test_a_control_without_adjusted_bars_has_no_atr():
     inputs = _inputs({"AAA": _rally(), **_control_hourly()})
     adjusted = {s: f for s, f in inputs.adjusted.items() if s != "C2"}
     inputs = RunupInputs(**{**inputs.__dict__, "adjusted": adjusted})
-    _, controls, counts = label_runup(_events(leg), candidates, inputs, ENTRY)
+    _, controls, _, counts = label_runup(_events(leg), candidates, inputs, ENTRY)
     assert controls.empty and counts["unpaired"]["leg"] == {"no_atr": 1}
 
 
 def test_counts_add_up_per_matched_role():
     leg, other = _event("AAA"), _event("BBB")
     candidates = _candidates((leg["pair_id"], "leg", D, CONTROLS))
-    _, _, counts = _label(
+    _, _, _, counts = _label(
         _events(leg, other), {"AAA": _rally(), "BBB": _rally(), **_control_hourly()}, candidates=candidates
     )
     for role in ("leg", "placebo"):
@@ -531,7 +599,7 @@ def _world(n=1200, recent=400, *, leg=0.5, leg_gap=0.5, placebo=0.0, placebo_gap
 def _evaluate(labels, controls, entry=FAST):
     result = evaluate_runup(labels, controls, entry)
     assert {"criteria", "placebo", "planted", "decision", "diagnostics"} <= set(result)
-    assert set(result["criteria"]) == {"P1", "P2", "P3", "P4"}
+    assert set(result["criteria"]) == {"P1", "P2", "P3", "P4", "P5"}
     assert {"P1", "P2"} <= set(result["placebo"]) and {"P1", "P2", "detected"} <= set(result["planted"])
     assert result["decision"] in DECISIONS
     assert "eligible_for_probe" not in json.dumps(result, default=str)
@@ -610,12 +678,46 @@ def test_p3_needs_a_positive_mean_from_recent_from():
     assert p3["trimmed_mean"] > 0 and p3["recent_mean"] == 0.0 and p3["holds"] is False
 
 
-def test_a_placebo_whose_p2_holds_fails_the_read_even_when_p1_to_p4_hold():
-    result = _evaluate(*_world(placebo_gap=0.5))
+def test_a_placebo_whose_p2_holds_fails_the_read_even_when_p1_to_p5_hold():
+    result = _evaluate(*_world(leg_gap=1.0, placebo_gap=0.5))
     assert all(criterion["holds"] for criterion in result["criteria"].values())
     assert result["planted"]["detected"] and result["placebo"]["P2"]["holds"]
     assert result["placebo"]["negative_control_fails"] is True
     assert result["decision"] == "failed"
+
+
+def test_p5_is_the_legs_paired_difference_minus_the_placebos_from_one_joint_bootstrap():
+    labels, controls = _world(leg_gap=0.5, placebo_gap=0.2)
+    result = _evaluate(labels, controls)
+    p5 = result["criteria"]["P5"]
+    assert p5["unit"] == "r_cost"
+    assert p5["leg_diff"] == pytest.approx(result["criteria"]["P2"]["mean_diff"], rel=1e-12)
+    assert p5["other_diff"] == pytest.approx(result["placebo"]["P2"]["mean_diff"], rel=1e-12)
+    assert p5["mean_diff"] == pytest.approx(0.3, rel=1e-9) and p5["holds"]
+    assert p5["n_sessions"] == len(set(labels["session"])) and p5["finite_draws"] == FAST.bootstrap.draws
+    assert result["placebo"]["P2"]["holds"] and result["decision"] == "failed"  # the placebo P2 still decides
+
+
+def test_p5_fails_when_the_placebos_beat_their_controls_by_as_much_as_the_legs():
+    result = _evaluate(*_world(leg_gap=0.5, placebo_gap=0.5))
+    assert result["criteria"]["P5"]["mean_diff"] == pytest.approx(0.0, abs=1e-12)
+    assert not result["criteria"]["P5"]["holds"] and result["decision"] == "failed"
+
+
+def test_p5_failing_alone_fails_the_read(monkeypatch):
+    def fails(*args):
+        return {"leg_diff": 0.5, "other_diff": 0.5, "mean_diff": 0.0, "ci90": [-0.1, 0.1], "holds": False}
+
+    monkeypatch.setattr(runup_study, "difference_in_paired_test", fails)
+    result = _evaluate(*_world())
+    assert all(result["criteria"][name]["holds"] for name in ("P1", "P2", "P3", "P4"))
+    assert result["planted"]["detected"] and not result["placebo"]["P2"]["holds"]
+    assert not result["criteria"]["P5"]["holds"] and result["decision"] == "failed"
+
+
+def test_p5_without_placebo_pairs_does_not_hold():
+    p5 = _evaluate(*_world(placebo=None))["criteria"]["P5"]
+    assert p5["n_other"] == 0 and np.isnan(p5["mean_diff"]) and not p5["holds"]
 
 
 @pytest.mark.parametrize("leg", [0.5, -0.5])
@@ -652,12 +754,12 @@ def test_the_planted_shift_is_the_planted_return_in_r_per_row_on_paired_placebos
     controls = [_control(p, "placebo", s, v) for p, s, v in (("A:1", s1, 0.0), ("B:1", s2, -0.1), ("C:1", s3, 0.2))]
     controls.append(_control("A:1", "leg", s1, -7.0))
     labels, controls = _frames(rows, controls)
-    seen = {}
+    seen: dict[str, list] = {"mean_test": [], "paired_test": []}
     for name in ("mean_test", "paired_test"):
         real = getattr(runup_study, name)
 
         def spy(*args, _real=real, _name=name):
-            seen[_name] = [frame.copy() for frame in args[:-1]]
+            seen[_name].append([frame.copy() for frame in args[:-1]])
             return _real(*args)
 
         monkeypatch.setattr(runup_study, name, spy)
@@ -665,16 +767,36 @@ def test_the_planted_shift_is_the_planted_return_in_r_per_row_on_paired_placebos
     planted = planted_check(labels, controls, FAST)
 
     shifts = [0.0063 * 100.0 / 2.0, 0.0063 * 80.0 / 4.0, 0.0063 * 20.0 / 1.2]
-    p1_frame = seen["mean_test"][0]
+    [[p1_frame]] = seen["mean_test"]
     assert list(p1_frame["session"]) == [s1, s2]  # C has no finite net excess
     assert p1_frame["r_cost"].tolist() == pytest.approx([0.2 + shifts[0], 0.0 + shifts[1]], rel=1e-12)
-    leg_frame, control_frame = seen["paired_test"]
+    (leg_frame, control_frame), (mde_leg, mde_control) = seen["paired_test"]
+    assert mde_leg["r_cost"].tolist() == [0.1, -0.3, 0.4] and mde_control.equals(control_frame)  # unshifted
     assert list(leg_frame["session"]) == [s1, s2, s3]
     assert leg_frame["r_cost"].tolist() == pytest.approx([0.1 + shifts[0], -0.3 + shifts[1], 0.4 + shifts[2]])
     assert control_frame["r_cost"].tolist() == [0.0, -0.1, 0.2]  # controls unchanged
     assert planted["n_paired"] == 3
     assert planted["shift_r"]["mean"] == pytest.approx(np.mean(shifts), rel=1e-12)
     assert planted["detected"] is (planted["P1"]["holds"] and planted["P2"]["holds"])
+
+
+def test_the_planted_result_states_the_minimum_detectable_effect_of_the_placebo_p2():
+    labels, controls = _world()
+    noisy = controls["role"] == "placebo"
+    controls.loc[noisy, "r_cost"] += np.random.default_rng(3).normal(0.0, 0.3, int(noisy.sum()))
+    planted = planted_check(labels, controls, FAST)
+
+    rows, own = labels[labels["role"] == "placebo"], controls[noisy]
+    p2 = paired_test(rows[["session", "r_cost"]], own[["session", "r_cost"]], FAST.bootstrap)
+    assert p2["boot_sd"] > 0
+    mde = planted["mde"]
+    assert mde["unit"] == "r_cost" and mde["z_alpha"] == 1.645 and mde["z_power"] == 0.84
+    assert mde["boot_sd"] == pytest.approx(p2["boot_sd"], rel=1e-12)
+    assert mde["mde_r"] == pytest.approx((1.645 + 0.84) * p2["boot_sd"], rel=1e-12)
+    assert _evaluate(labels, controls)["placebo"]["P2"]["boot_sd"] == pytest.approx(mde["boot_sd"], rel=1e-12)
+
+    empty = planted_check(*_frames([]), FAST)["mde"]
+    assert np.isnan(empty["boot_sd"]) and np.isnan(empty["mde_r"])
 
 
 def test_the_diagnostics_describe_announcers_splits_exits_costs_dispersion_and_the_past_reaction():
@@ -757,6 +879,44 @@ def test_the_diagnostics_describe_announcers_splits_exits_costs_dispersion_and_t
     assert past["terciles"]["high"]["net_excess_r"] == {"n": 1, "mean": pytest.approx(2.0)}  # L5
 
 
+def test_the_diagnostics_compare_net_excess_and_beta_with_controls_split_coverage_and_count_hold_jumps():
+    s1, s2, s3 = OLD[:3]
+    specs = [  # pair, session, r_cost, net, beta, archive_covered, hold_max_excess_rv
+        ("L1:x", s1, 1.0, 0.4, 1.5, True, 1.0),
+        ("L2:x", s2, 2.0, 0.6, 1.3, False, 3.5),
+        ("L3:x", s3, 3.0, 0.8, 1.1, True, 3.0),
+        ("L4:x", s3, 4.0, 1.0, 0.9, True, math.nan),  # unpaired: in the coverage split, not in the P2
+    ]
+    rows = [
+        _row(pair, "leg", session, r, net=net, beta=beta, archive_covered=covered, hold_max_excess_rv=jump)
+        for pair, session, r, net, beta, covered, jump in specs
+    ]
+    rows += [
+        _row("L1:x", "placebo", s1, 0.0, hold_max_excess_rv=4.0),
+        _row("L2:x", "placebo", s2, 0.0, hold_max_excess_rv=0.5),
+    ]
+    controls = [
+        {**_control(pair, "leg", session, 0.0), "net_excess_r": net, "beta": beta}
+        for pair, session, net, beta in (("L1:x", s1, 0.1, 1.0), ("L2:x", s2, 0.2, 1.2), ("L3:x", s3, 0.3, 1.4))
+    ]
+    diagnostics = _evaluate(*_frames(rows, controls))["diagnostics"]
+
+    versus = diagnostics["net_excess_vs_controls"]
+    assert versus["P2"]["unit"] == "net_excess_r" and versus["P2"]["n_leg"] == 3
+    assert versus["P2"]["mean_diff"] == pytest.approx((0.4 + 0.6 + 0.8 - 0.1 - 0.2 - 0.3) / 3)
+    assert versus["beta"] == {
+        "legs": {"n": 3, "mean": pytest.approx(1.3)},
+        "controls": {"n": 3, "mean": pytest.approx(1.2)},
+    }
+    coverage = diagnostics["by_archive_coverage"]
+    assert coverage["covered"]["net_excess_r"] == {"n": 3, "mean": pytest.approx(2.2 / 3)}
+    assert coverage["uncovered"]["net_excess_r"] == {"n": 1, "mean": pytest.approx(0.6)}
+    jumps = diagnostics["hold_jumps"]
+    assert jumps["threshold_rv"] == 3.0
+    assert jumps["legs"] == {"n": 3, "n_above": 1, "share": pytest.approx(1 / 3)}  # 3.0 is not above 3
+    assert jumps["placebo"] == {"n": 2, "n_above": 1, "share": pytest.approx(0.5)}
+
+
 def test_the_design_effect_is_nan_without_two_sessions():
     rows = [_row("L1:x", "leg", OLD[0], 1.0), _row("L2:x", "leg", OLD[0], 2.0)]
     dispersion = _evaluate(*_frames(rows))["diagnostics"]["dispersion"]
@@ -801,7 +961,8 @@ def _pipeline(monkeypatch, labels, controls):
     def labelled(frame, candidates, inputs, entry):
         assert frame is events
         calls.append("labels")
-        return labels, controls, {"labelled": {"leg": int((labels["role"] == "leg").sum())}}
+        cells = controls.assign(symbol="C1")[list(RUNUP_CONTROL_CELL_COLUMNS)]
+        return labels, controls, cells, {"labelled": {"leg": int((labels["role"] == "leg").sum())}}
 
     monkeypatch.setattr(runup_study, "build_runup_events", events_of)
     monkeypatch.setattr(runup_study, "match_controls", matched)
@@ -897,7 +1058,7 @@ async def test_the_executor_saves_frames_and_planted_before_the_criteria_and_res
         return real_save(payload, path)
 
     monkeypatch.setattr(runup_study, "save_json_report", save)
-    for name in ("mean_test", "paired_test"):
+    for name in ("mean_test", "paired_test", "difference_in_paired_test"):
         real = getattr(runup_study, name)
 
         def spy(*args, _real=real, _name=name):
@@ -913,20 +1074,24 @@ async def test_the_executor_saves_frames_and_planted_before_the_criteria_and_res
 
     assert calls == ["events", "controls", "labels"]
     assert written == ["protocol.json", "manifest.json", "planted.json", "result.json"]
-    # The planted check (its P1 and P2) runs first; every placebo and leg criterion after planted.json exists.
-    assert tested[:2] == [("mean_test", False), ("paired_test", False)]
-    assert len(tested) == 6 and all(exists for _, exists in tested[2:])
+    # The planted check (its P1 and P2, then the placebo P2 its MDE needs) runs first; every other statistic,
+    # P5 and the diagnostics' P2 on net excess included, runs after planted.json exists.
+    assert tested[:3] == [("mean_test", False), ("paired_test", False), ("paired_test", False)]
+    assert len(tested) == 9 and all(exists for _, exists in tested[3:])
+    assert ("difference_in_paired_test", True) in tested
     assert result["status"] == "completed" and result["decision"] == "survives_development"
     assert result["authorizes_promotion"] is False
     assert result["inputs"] == {"cube_sha256": CUBE_SHA, "pages_sha256": "p" * 64}
     assert result["events"] == {"legs": 1200} and result["labels"] == {"labelled": {"leg": 1200}}
     saved = json.loads((directory / "result.json").read_text())
     assert saved["planted"] == json.loads((directory / "planted.json").read_text())
-    assert saved["planted"]["detected"] is True
+    assert saved["planted"]["detected"] is True and "mde_r" in saved["planted"]["mde"]
     placebo = pd.read_csv(directory / "placebo.csv.gz")
     assert len(placebo) == 1200 and set(placebo["role"]) == {"placebo"}
     assert len(pd.read_csv(directory / "labels.csv.gz")) == 2400
     assert len(pd.read_csv(directory / "controls.csv.gz")) == 2400
+    cells = pd.read_csv(directory / "control_cells.csv.gz")
+    assert tuple(cells.columns) == RUNUP_CONTROL_CELL_COLUMNS and len(cells) == 2400
     assert len(pd.read_csv(directory / "events.csv.gz")) == 2400
     for name, text in _json_texts(directory).items():
         assert "eligible_for_probe" not in text, name
@@ -962,6 +1127,6 @@ async def test_the_real_pipeline_on_inputs_without_reports_completes_inconclusiv
     assert result["status"] == "completed", result.get("error")
     assert result["inputs"] == {"pages_sha256": "p" * 64, "cube_sha256": CUBE_SHA}  # the hashed cube's digest
     assert result["decision"] == "inconclusive_underpowered" and result["events"]["legs"] == 0
-    for name in ("events", "labels", "controls", "placebo"):
+    for name in ("events", "labels", "controls", "control_cells", "placebo"):
         assert pd.read_csv(directory / f"{name}.csv.gz").empty
     assert json.loads((directory / "result.json").read_text())["decision"] == "inconclusive_underpowered"

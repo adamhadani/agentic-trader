@@ -370,6 +370,8 @@ class RunupControl(BaseModel, frozen=True, extra="forbid"):
     match_return_sessions: int = Field(ge=1)
     liquidity_buckets: int = Field(ge=2)
     coverage_sessions: int = Field(ge=1)
+    # A control has no report in [D - quiet_before_sessions, D + lead_sessions] (the legs' clean history).
+    quiet_before_sessions: int = Field(ge=0)
 
 
 class RunupPlacebo(BaseModel, frozen=True, extra="forbid"):
