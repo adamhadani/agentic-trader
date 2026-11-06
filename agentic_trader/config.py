@@ -508,6 +508,27 @@ class FilingVetoConfig(BaseModel):
         }
 
 
+class ReleaseExitConfig(BaseModel):
+    """The release exit (docs/superpowers/specs/2026-11-06-release-exit-filing-veto-design.md, section 3).
+
+    Once per New York trading day, at the first five-minute tick from ``minutes_before_close`` before the
+    calendar's close (an early close honoured), one pass finds every tracked native equity position whose next
+    earnings report falls before the next session's open. ``preview`` journals the pass and sends one notice per
+    such position; ``enforce`` closes it through ``PositionCloseService``. An ``unknown`` status never closes.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    mode: EntryBlockMode = "off"
+    minutes_before_close: int = Field(default=30, ge=10, le=120)
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def yaml_off(cls, value: Any) -> Any:
+        # YAML 1.1 reads a bare `off` as False; that spelling means "off". `on`/True stays invalid.
+        return "off" if value is False else value
+
+
 class InsiderWatchConfig(BaseModel):
     """Insider watch cards (docs/superpowers/specs/2026-10-23-insider-watch-cards-design.md).
 
@@ -1126,6 +1147,7 @@ class AppConfig(BaseModel):
     insider_watch: InsiderWatchConfig = Field(default_factory=InsiderWatchConfig)
     earnings_capture: EarningsCaptureConfig = Field(default_factory=EarningsCaptureConfig)
     filing_veto: FilingVetoConfig = Field(default_factory=FilingVetoConfig)
+    release_exit: ReleaseExitConfig = Field(default_factory=ReleaseExitConfig)
     explicit_contracts: tuple[str, ...] | None = None
     risk: RiskConfig = Field(default_factory=RiskConfig)
     strategies: StrategyConfig = Field(default_factory=StrategyConfig)
@@ -1405,6 +1427,7 @@ def load_config(
         insider_watch=InsiderWatchConfig(**(cfg_dict.get("insider_watch") or {})),
         earnings_capture=EarningsCaptureConfig(**(cfg_dict.get("earnings_capture") or {})),
         filing_veto=FilingVetoConfig(**(cfg_dict.get("filing_veto") or {})),
+        release_exit=ReleaseExitConfig(**(cfg_dict.get("release_exit") or {})),
         explicit_contracts=tuple(explicit_contracts),
         risk=RiskConfig(**cfg_dict.get("risk", {})),
         strategies=strategies_config,

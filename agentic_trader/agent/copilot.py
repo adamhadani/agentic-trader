@@ -89,6 +89,7 @@ from agentic_trader.data.corporate_actions import (
     between,
     position_note,
 )
+from agentic_trader.data.earnings_capture import EarningsCaptureStore, default_capture_directory
 from agentic_trader.data.filings_capture import FilingsCaptureStore, FilingsLookup
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.data.pacing import RequestPacer
@@ -142,6 +143,7 @@ from agentic_trader.execution.freshness import (
 )
 from agentic_trader.execution.lifetime_policy import NATIVE_ENTRY_LIFETIME_KEY, native_entry_lifetime_marker
 from agentic_trader.execution.lifetimes import RestingCancelResult, TradeLifetimeService
+from agentic_trader.execution.release_exit import NATIVE_SCOPE, ReleaseExitService, RunStatus
 from agentic_trader.market.session import (
     ET_TZ,
     AlpacaCalendarProvider,
@@ -169,6 +171,7 @@ from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG, is_paper_scope
 from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.research.alpha.strategy import execution_policy_from_dict, policy_trails, trailing_price
 from agentic_trader.research.apriori.pead_base_rate import BaseRateUnavailable, load_pead_base_rate
+from agentic_trader.research.apriori.watch_contract import INSIDER_WATCH_STRATEGY_ID
 from agentic_trader.research.pooled.entry import REPO_ROOT
 from agentic_trader.research.setups.card_stats import CardStatsSnapshot
 from agentic_trader.research.setups.net_excess import NET_EXCESS_UNIT
@@ -451,6 +454,17 @@ class TradingCopilot:
                 # surface as a lifecycle review, never a guessed holiday calendar.
                 calendar=AlpacaCalendarProvider(trading_client=alpaca_client) if alpaca_client is not None else None,
             )
+        )
+        # The release exit (execution/release_exit.py): one journaled pass per New York trading day shortly
+        # before the close, on the lifetime service's broker calendar and the blackout's earnings calendar.
+        self.release_exit = ReleaseExitService(
+            config.release_exit,
+            self.db,
+            close_service=self.close_service,
+            earnings=self.earnings_calendar,
+            captures=EarningsCaptureStore(self.db.workflows, default_capture_directory()),
+            calendar=getattr(self.lifetime_service, "calendar", None),
+            scope_of=self._release_exit_scope,
         )
         # The PEAD catalog probe's drift source for the 10:35 suggestion scan. Construction
         # reads the frozen entry file only; every provider read happens inside a scan.
@@ -771,6 +785,25 @@ class TradingCopilot:
 
     def _catalog_strategy_ids(self) -> frozenset[str]:
         return frozenset(source.strategy_id for source in self.catalog_sources)
+
+    def _release_exit_scope(self, position: Mapping[str, Any]) -> str:
+        """A tracked position's release-exit scope: ``native``, or the exempt kind that keeps its own exits.
+
+        A catalog card is its source's id (``pead``, ``insider_watch``; a watch position stays exempt while its
+        source is disabled), then a paper probe (``probe``), then an alpha-versioned card (``alpha``).
+        """
+        catalog = {INSIDER_WATCH_STRATEGY_ID: "insider_watch"} | {
+            source.strategy_id: source.source_id for source in self.catalog_sources
+        }
+        strategy = position.get("strategy")
+        if strategy in catalog:
+            return catalog[strategy]
+        provenance = position.get("decision_provenance")
+        if isinstance(provenance, Mapping) and provenance.get(PAPER_PROBE_TAG):
+            return "probe"
+        if position.get("alpha_policy") or position.get("alpha_version"):
+            return "alpha"
+        return NATIVE_SCOPE
 
     def _counts_as_dynamic(self, row: Mapping[str, Any]) -> bool:
         """Whether a card recorded today counts toward the ``dynamic`` group.
@@ -5186,6 +5219,10 @@ class TradingCopilot:
     def _is_suggestion_scan(summary: dict[str, Any]) -> bool:
         """A scheduled suggestion scan's summary (``make_suggestion_scan``), completed or gated."""
         return summary.get("trigger") == ScanTrigger.SUGGESTION_SCAN
+
+    async def run_release_exit(self, now: datetime | None = None) -> RunStatus:
+        """One release-exit tick (the daemon's five-minute job); it never raises into the scheduler."""
+        return await self.release_exit.run(now)
 
     async def publish_auto_entry_digest(self, now: datetime | None = None) -> bool:
         """Queue today's paper auto-entry digest once, from regular close + 15 minutes; True when queued.

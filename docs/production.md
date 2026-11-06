@@ -1587,6 +1587,56 @@ rule ([spec](superpowers/specs/2026-11-06-release-exit-filing-veto-design.md)).
   missing or does not cover a symbol never refuses an entry. To stop the worker, set `filing_veto.capture:
   false` and restart.
 
+### Release exit
+
+The release exit (`agentic_trader/execution/release_exit.py`, `release_exit.mode`, code default `off`) keeps a
+native equity position from being held through an earnings release
+([spec](superpowers/specs/2026-11-06-release-exit-filing-veto-design.md), section 3). It changes no entry rule,
+never touches the trading halt and opens no lifetime review.
+
+- **When.** A five-minute daemon job (`release_exit`, registered unless the mode is `off`) runs one pass per New
+  York trading day, on its first tick at or after the close minus `release_exit.minutes_before_close` (30, valid
+  10–120): 15:30, or 12:30 on a 13:00 early close. The close and the next session come from the lifetime service's
+  broker calendar. A daemon started after that day's close skips the date and journals nothing for it.
+- **Which reports.** With T today and N the next trading day: a report on T after the close or at an unspecified
+  time, any report dated after T and before N (a weekend or holiday), or a report on N before the open or at an
+  unspecified time. A report on N after the close is N's own pass.
+- **Evidence.** The union of the live Nasdaq lookup (the earnings blackout's calendar and cache, over T to N) and
+  the latest [earnings calendar capture](#earnings-calendar-capture) when it is at most 4 days old and holds every
+  weekday of T to N. A report in either source counts; on a timing disagreement the reading that exits today wins.
+  `none` needs a verified live lookup or a usable capture; with neither the status is `unknown`, which is never
+  closed and never read as "no report".
+- **Scope.** Tracked `EXECUTED` equity positions, both directions. A catalog card (`pead`, `insider_watch`), a
+  paper probe (`probe`) or an alpha-versioned card (`alpha`) is journaled `exempt` with its decision and never
+  closed; non-equity positions are skipped.
+- **Journal.** One `release_exit_pass` event per date (stream `release-exit`, key `release-exit/<ET date>`):
+  `mode`, `trading_day`, `next_trading_day`, `close_at`, `capture_date` and one entry per position (`signal_id`,
+  `symbol`, `direction`, `scope`, `status` (`would_close`, `close`, `none`, `unknown` or `exempt`), `decision`,
+  `report_date`, `timing`, `sources`, `live_verified`, and `request_id` for a `close`).
+- **Preview.** Each `would_close` position gets one notice in the pass's transaction (key
+  `release-exit/<signal id>/<report date>`): "Release exit (preview): SYMBOL reports DATE before open. In enforce
+  the desk would close this long at about 15:30 ET today. Nothing was sent to the broker; /flatten closes it
+  manually." It is an ordinary outbox message sent during market hours.
+- **Enforce.** After the pass is journaled, each `close` entry goes once through `PositionCloseService.close_signal`
+  with request ID `release-` plus the first 32 hex digits of `sha256("native/<signal id>/<report date>")` and context
+  `{reason: release_exit, report_date, timing, sources}`; the close service keeps its intent, recovery and refusals.
+  Each result is a `release_exit_close` event (key `release-exit/<ET date>/<signal id>`: `close_result`,
+  `close_status`, `outcome` `submitted`, `refused`, `failed`, `error` or `already_exiting`). A refused, failed or
+  raising close queues "Release exit could not close SYMBOL: reason." with "The position keeps its stop; /flatten
+  closes it manually." when the request never reached the broker, or "Check its protective orders at the broker;
+  /flatten closes it manually." once it did (the reason then carries the broker's protection statement). A
+  position that is already closed, or that another close or exit order owns, gets no notice. Nothing is retried:
+  a restart re-calls only a close whose result was never journaled, and the stable request ID makes that call a
+  no-op.
+- **Failure.** A pass that raises before journaling is retried on the next tick until the close; a date whose
+  pass this process attempted and never completed queues one `release-exit-unavailable/<ET date>` notice at the
+  close, naming the exception type only. Readiness is unchanged.
+- **Runbook.** Inspect with `uv run copilot db events --stream release-exit --limit 5` and the `release_exit`
+  block of `uv run copilot cards outcomes` ([card evidence](card-evidence.md#release-exit)). The daemon log
+  carries `release_exit_failed` and `release_exit_lookup_failed` with type names. To act on a preview notice,
+  `/flatten` (or a `/close` of the signal) closes the position. To stop the job, set `release_exit.mode: off` and
+  restart; `enforce` is a separate operator decision on the journaled preview counts.
+
 ## Provider read and forecast hardening
 
 See [forecast contract hardening](forecast-contract-hardening.md). Active `doctor` includes

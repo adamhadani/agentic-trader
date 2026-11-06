@@ -14,6 +14,7 @@ from agentic_trader.config import load_config
 from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.execution.durable import EventKind
+from agentic_trader.execution.release_exit import RELEASE_EXIT_STREAM
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.apriori.catalog import load_pead_entry
 from agentic_trader.research.apriori.pead_events import EVENT_COLUMNS
@@ -36,6 +37,7 @@ from agentic_trader.research.setups.outcomes import (
     attach_execution,
     filing_veto_summary,
     label_journaled,
+    release_exit_summary,
     scan_supply,
     summarize,
 )
@@ -108,6 +110,10 @@ async def outcomes_cmd(days: int) -> None:
         )
         summary["supply"] = scan_supply(events)
         summary["filing_veto"] = filing_veto_summary(events, frame)
+        summary["release_exit"] = release_exit_summary(
+            await db.workflows.events(RELEASE_EXIT_STREAM),
+            since=now.astimezone(ET_TZ).date() - timedelta(days=days - 1),
+        )
         summary["execution"] = summarize_execution(execution)
         click.echo(json.dumps(summary, indent=2, default=str))
         if frame.empty:

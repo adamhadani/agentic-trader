@@ -102,6 +102,11 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    Direct replies and durable notices retain refusal reasons. Closed-session refusals
    show the broker's next regular open in UTC; a cancellation attempt, even with a
    lost acknowledgement, must warn that protection may have been removed.
+   The release exit (`release_exit.mode`, code default `off`) journals one `release-exit/{et_date}` pass at the
+   calendar's close − `minutes_before_close` for tracked native equity positions reporting earnings before the next
+   session's open (live lookup ∪ fresh capture; `unknown` never closes; catalog, probe and alpha positions are
+   `exempt`) and, in `enforce`, closes each once through `close_signal` with a stable `release-` request ID, a
+   refusal queuing a notice with no halt or review ([release exit](docs/production.md#release-exit)).
 3. **Broker evidence:** never match exits by symbol alone, infer a fill price from
    an order request, or persist a stop ratchet before exact replacement confirmation.
    Preserve original thesis/risk. POST/PATCH/DELETE are never automatically retried.

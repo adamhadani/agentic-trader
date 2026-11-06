@@ -769,6 +769,23 @@ def register_auto_entry_jobs(scheduler: Any, copilot: Any, config: AppConfig) ->
     )
 
 
+def register_release_exit_job(scheduler: Any, copilot: Any, config: AppConfig) -> None:
+    """Register the release-exit tick (execution/release_exit.py): every 5 minutes and once at startup; none when off.
+
+    Its pass runs once per New York trading day, on the first tick at or after the calendar's close minus
+    ``release_exit.minutes_before_close``; ``run_release_exit`` never raises into the scheduler.
+    """
+    if config.release_exit.mode == "off":
+        return
+    scheduler.add_job(
+        copilot.run_release_exit,
+        "interval",
+        minutes=5,
+        id="release_exit",
+        next_run_time=datetime.now(UTC),
+    )
+
+
 @click.command("daemon", help="Run continuous daemon scanner and trade manager")
 @click.option(
     "--no-llm",
@@ -880,6 +897,8 @@ async def daemon(no_llm: bool) -> None:
     register_card_expiry_sweep(scheduler, copilot)
     # Paper auto-entry of marked suggestion cards (Alpaca paper with session-bounded entries only).
     register_auto_entry_jobs(scheduler, copilot, config)
+    # The release exit: one journaled pass per trading day shortly before the close (preview or enforce).
+    register_release_exit_job(scheduler, copilot, config)
     # Schedule daily morning macro briefing (Monday - Friday)
     if config.scheduler.macro_briefing_enabled:
         scheduler.add_job(

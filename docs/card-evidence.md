@@ -433,6 +433,22 @@ for the candidate part and from the frame's `filings_would_block` column for the
 A pre-deploy event has no `filings` and reads as absent. Nothing in `risk/`, `card_policy`, `card_stats` or
 admission reads this block.
 
+## Release exit
+
+The release exit ([production](production.md#release-exit)) is measured, never gated, by this block.
+`cards outcomes` adds `release_exit` from the `release-exit` journal (`release_exit_summary`), keeping the passes
+and close results of New York trading days inside the `--days` window:
+
+- `passes` and `positions`: the journaled passes and their position entries;
+- `by_status`: entries by status (`would_close`, `close`, `none`, `unknown`, `exempt`); `by_scope`: by scope
+  (`native` or the exempt kind: `pead`, `insider_watch`, `probe`, `alpha`);
+- `exempt_through_report`: exempt positions whose decision was `exit`, held through a report by design;
+- `by_date`: each trading day's `mode`, `by_status` and `exempt_through_report`;
+- `closes`: the `enforce` close results, `n` and `by_outcome` (`submitted`, `refused`, `failed`, `error`,
+  `already_exiting`).
+
+Nothing in `risk/`, `card_policy`, `card_stats` or admission reads this block.
+
 ## Regime and recurrence context
 
 Spec: [regime and recurrence](superpowers/specs/2026-10-14-regime-recurrence-design.md). Two more

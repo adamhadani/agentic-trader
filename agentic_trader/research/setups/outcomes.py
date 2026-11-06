@@ -68,6 +68,7 @@ __all__ = [
     "label_journaled",
     "market_r",
     "operator_block",
+    "release_exit_summary",
     "scan_supply",
     "summarize",
     "with_recurrence",
@@ -1438,6 +1439,59 @@ def filing_veto_summary(events: Sequence[Mapping[str, Any]], frame: pd.DataFrame
             "rate": n_block / n_ok if n_ok else None,
         },
         "cards": {"n_would_block": n_cards, "mean_net_excess_r": mean_excess, "n_matured": n_matured},
+    }
+
+
+def _count(counts: dict[str, int], key: Any) -> None:
+    counts[str(key)] = counts.get(str(key), 0) + 1
+
+
+def release_exit_summary(events: Sequence[Mapping[str, Any]], *, since: date | None = None) -> dict[str, Any]:
+    """The descriptive ``release_exit`` block: what the daily release-exit passes saw and did.
+
+    Reads the ``release-exit`` journal (``execution/release_exit.py``): each ``release_exit_pass`` event's entries
+    counted ``by_status`` (``would_close``, ``close``, ``none``, ``unknown``, ``exempt``), ``by_scope`` (``native``
+    or the exempt kind) and ``by_date`` (with the pass's ``mode``); ``exempt_through_report`` counts the exempt
+    positions whose decision was ``exit`` (held through a report by design); ``closes`` counts the enforce close
+    results ``by_outcome``. ``since`` keeps the passes and closes of New York trading days on or after it. Never a
+    gate: nothing in ``risk/``, ``card_policy`` or admission reads it.
+    """
+    by_status: dict[str, int] = {}
+    by_scope: dict[str, int] = {}
+    by_date: dict[str, dict[str, Any]] = {}
+    by_outcome: dict[str, int] = {}
+    passes = positions = exempt_through_report = 0
+    for event in events:
+        payload = event.get("payload") or {}
+        trading_day = payload.get("trading_day")
+        if since is not None and (not trading_day or date.fromisoformat(trading_day) < since):
+            continue
+        if event.get("kind") == EventKind.RELEASE_EXIT_CLOSE:
+            _count(by_outcome, payload.get("outcome"))
+            continue
+        if event.get("kind") != EventKind.RELEASE_EXIT_PASS:
+            continue
+        passes += 1
+        day = by_date.setdefault(str(trading_day), {"mode": payload.get("mode"), "by_status": {}})
+        day_exempt = 0
+        for entry in payload.get("positions") or []:
+            positions += 1
+            _count(by_status, entry.get("status"))
+            _count(by_scope, entry.get("scope"))
+            _count(day["by_status"], entry.get("status"))
+            if entry.get("status") == "exempt" and entry.get("decision") == "exit":
+                day_exempt += 1
+        day["by_status"] = dict(sorted(day["by_status"].items()))
+        day["exempt_through_report"] = day_exempt
+        exempt_through_report += day_exempt
+    return {
+        "passes": passes,
+        "positions": positions,
+        "by_status": dict(sorted(by_status.items())),
+        "by_scope": dict(sorted(by_scope.items())),
+        "exempt_through_report": exempt_through_report,
+        "by_date": dict(sorted(by_date.items())),
+        "closes": {"n": sum(by_outcome.values()), "by_outcome": dict(sorted(by_outcome.items()))},
     }
 
 
