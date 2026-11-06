@@ -127,9 +127,9 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    which also starts the alert clock for held incidents (window start if the summary fails; never muted);
    `entry_recovery`, `entry_cancellation`, `close_recovery`, `endpoint` and `storage` page at any hour, and the
    three broker-work checks can never be removed from `exempt_components`.
+   The daemon's earnings capture journals `earnings/calendar/<date>` once per New York weekday after 06:00 ET outside scan windows, all-or-nothing (`earnings_capture` readiness, stale after 4 days; nothing reads it yet, [production](docs/production.md#earnings-calendar-capture)).
    Suggestion scans run at configured New York times and spend a derived per-session
    card budget (signals table, ET trading day); `PENDING` cards reserve no capacity;
-   The daemon's earnings capture journals `earnings/calendar/<date>` once per New York weekday after 06:00 ET outside scan windows, all-or-nothing (`earnings_capture` readiness, stale after 4 days; nothing reads it yet, [production](docs/production.md#earnings-calendar-capture)).
    the intraday job scans only `non_universe_contracts`; `setup_quality` orders cards
    and is stored in provenance — it is not validated alpha. Every eligible scan (unrestricted,
    non-dry, with a budget, past the halt, session and idle checks) journals exactly one
