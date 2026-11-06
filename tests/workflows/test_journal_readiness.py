@@ -260,6 +260,22 @@ async def test_earnings_capture_readiness_ages_out_after_four_days(store, app_co
         assert checks["earnings_capture"]["max_age_seconds"] == 345600
 
 
+@pytest.mark.parametrize("mode", ["disabled", "missing", "fresh", "four-days", "stale", "failure"])
+async def test_filings_capture_readiness_ages_out_after_four_days(store, app_config, mode):
+    readiness = ReadinessService(
+        store, app_config, MetricsCollector(), run_id="current", filings_capture_enabled=mode != "disabled"
+    )
+    if mode not in ("disabled", "missing"):
+        await store.record_health(HealthComponent.FILINGS_CAPTURE, mode != "failure", "low coverage", run_id="current")
+    offset = {"four-days": timedelta(days=3, hours=23), "stale": timedelta(days=4, seconds=1)}.get(mode, timedelta())
+    checks = (await readiness.report(now=datetime.now(UTC) + offset))["checks"]
+    if mode == "disabled":
+        assert "filings_capture" not in checks
+    else:
+        assert checks["filings_capture"]["ready"] == (mode in ("fresh", "four-days"))
+        assert checks["filings_capture"]["max_age_seconds"] == 345600
+
+
 async def _fresh_readiness(store, app_config, macro_calendar):
     """A service whose every other check is ready, so `report["ready"]` depends on `macro_calendar` alone."""
     collector = MetricsCollector()

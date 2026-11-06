@@ -19,6 +19,9 @@ from agentic_trader.telemetry.collector import MetricsCollector
 INSIDER_CAPTURE_MAX_AGE_SECONDS = 4 * 86400
 # Duplicates agentic_trader/data/earnings_capture.py:CAPTURE_MAX_AGE_SECONDS for the same reason; a test pins it.
 EARNINGS_CAPTURE_MAX_AGE_SECONDS = 4 * 86400
+# The default filing_veto.max_age_seconds; a test pins it. The worker observes not ready once its newest
+# well-covered pass is older than the configured limit, so this one catches a worker that stopped observing.
+FILINGS_CAPTURE_MAX_AGE_SECONDS = 4 * 86400
 
 
 class HealthComponent(StrEnum):
@@ -35,6 +38,7 @@ class HealthComponent(StrEnum):
     CORPORATE_ACTIONS = "corporate_actions"
     INSIDER_CAPTURE = "insider_capture"
     EARNINGS_CAPTURE = "earnings_capture"
+    FILINGS_CAPTURE = "filings_capture"
 
 
 class ReadinessService:
@@ -52,6 +56,7 @@ class ReadinessService:
         corporate_actions_enabled: bool = False,
         insider_capture_enabled: bool = False,
         earnings_capture_enabled: bool = False,
+        filings_capture_enabled: bool = False,
         macro_calendar: Callable[[datetime], Mapping[str, Any]] | None = None,
     ):
         self.store, self.config, self.metrics, self.run_id = store, config, metrics, run_id
@@ -63,6 +68,7 @@ class ReadinessService:
         self.corporate_actions_enabled = corporate_actions_enabled
         self.insider_capture_enabled = insider_capture_enabled
         self.earnings_capture_enabled = earnings_capture_enabled
+        self.filings_capture_enabled = filings_capture_enabled
         self.macro_calendar = macro_calendar
         self.stream_connected = stream_connected
         self._last_observation: dict[str, tuple[float, bool, str]] = {}
@@ -115,6 +121,8 @@ class ReadinessService:
         if self.earnings_capture_enabled:
             # Ready while the latest capture is within 4 days; the limit catches a worker that stopped observing.
             limits[HealthComponent.EARNINGS_CAPTURE] = EARNINGS_CAPTURE_MAX_AGE_SECONDS
+        if self.filings_capture_enabled:
+            limits[HealthComponent.FILINGS_CAPTURE] = FILINGS_CAPTURE_MAX_AGE_SECONDS
         if self.accounting_enabled:
             limits[HealthComponent.ACCOUNTING] = self.config.accounting.max_age_seconds
         checks: dict[str, Any] = {"daemon_started": {"ready": self.started}}

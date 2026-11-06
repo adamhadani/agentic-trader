@@ -27,6 +27,7 @@ from agentic_trader.data.earnings_capture import (
     default_capture_directory as earnings_capture_directory,
     run_earnings_capture_worker,
 )
+from agentic_trader.data.filings_capture import FilingsCaptureStore, run_filings_capture_worker
 from agentic_trader.data.insider_capture import (
     CaptureScope,
     InsiderCaptureStore,
@@ -484,6 +485,29 @@ def start_earnings_capture(copilot, config) -> asyncio.Task[None] | None:
     return asyncio.create_task(run_earnings_capture(copilot, config))
 
 
+async def run_filings_capture(copilot, config) -> None:
+    """The filing-veto evidence capture (data/filings_capture.py) over the corporate-action symbols.
+
+    The symbols are read on each pass, as the corporate-actions worker reads them: the universe, held
+    equities (tracked and broker-held) and ``corporate_actions.extra_symbols``.
+    """
+    store = FilingsCaptureStore(copilot.db.workflows)
+
+    async def observe(ok: bool, detail: str) -> None:
+        await copilot.readiness.observe(HealthComponent.FILINGS_CAPTURE, ok, detail)
+
+    await run_filings_capture_worker(
+        config, store, observe, copilot._shutdown_event, symbols=lambda: corporate_action_symbols(copilot, config)
+    )
+
+
+def start_filings_capture(copilot, config) -> asyncio.Task[None] | None:
+    """Start the capture task when ``filing_veto.capture``; otherwise none."""
+    if not config.filing_veto.capture:
+        return None
+    return asyncio.create_task(run_filings_capture(copilot, config))
+
+
 def _slot_due_at(slot_et: str) -> datetime:
     """The instant a New York ``HH:MM`` suggestion-scan slot was due today."""
     return datetime.combine(datetime.now(ET_TZ).date(), dt_time.fromisoformat(slot_et), tzinfo=ET_TZ)
@@ -819,6 +843,8 @@ async def daemon(no_llm: bool) -> None:
         asyncio.create_task(run_insider_capture(copilot, config)) if config.insider_watch.enabled else None
     )
     earnings_capture_task = start_earnings_capture(copilot, config)
+    # The filing veto's EDGAR capture; EDGAR_USER_AGENT is read inside the worker.
+    filings_capture_task = start_filings_capture(copilot, config)
     if copilot.insider_watch_source is not None:
         # The pinned insider archive (about 16 s) is read once per process in a worker thread, from now.
         copilot.insider_watch_source.warm()
@@ -924,6 +950,18 @@ async def daemon(no_llm: bool) -> None:
                 logger.warning(
                     "Earnings-capture worker ended with an error",
                     extra={"event": "earnings_capture_task_failed", "reason": type(exc).__name__},
+                )
+        if filings_capture_task is not None:
+            filings_capture_task.cancel()
+            try:
+                await filings_capture_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                # Type name only: an exception's text may carry a request header.
+                logger.warning(
+                    "Filings-capture worker ended with an error",
+                    extra={"event": "filings_capture_task_failed", "reason": type(exc).__name__},
                 )
         workflow_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

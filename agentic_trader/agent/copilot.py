@@ -629,6 +629,7 @@ class TradingCopilot:
             corporate_actions_enabled=corporate_actions_live(config),
             insider_capture_enabled=config.insider_watch.enabled,
             earnings_capture_enabled=config.earnings_capture.enabled,
+            filings_capture_enabled=config.filing_veto.capture,
             macro_calendar=lambda now: macro_calendar_readiness(
                 self.static_calendar.state(now),
                 renewal_days=config.risk.macro_calendar_renewal_days,

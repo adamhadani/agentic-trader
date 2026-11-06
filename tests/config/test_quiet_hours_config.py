@@ -90,8 +90,16 @@ async def test_check_names_cover_readiness(temp_db, app_config):
         corporate_actions_enabled=True,
         insider_capture_enabled=True,
         earnings_capture_enabled=True,
+        filings_capture_enabled=True,
         alpha_registry_report=registry,
         stream_connected=lambda: True,
         macro_calendar=lambda now: {"ready": True},
     )
     assert set((await service.report())["checks"]) | {"endpoint", "storage"} == READINESS_CHECK_NAMES
+
+
+def test_filings_capture_is_an_ordinary_quiet_hours_component():
+    assert "filings_capture" in READINESS_CHECK_NAMES
+    assert HealthComponent.FILINGS_CAPTURE == "filings_capture"
+    assert "filings_capture" not in QuietHoursConfig().exempt_components
+    assert "filings_capture" not in QuietHoursConfig(enabled=True).exempt_components

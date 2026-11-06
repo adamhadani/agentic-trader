@@ -21,7 +21,7 @@ import pytest
 from pydantic import ValidationError
 
 from agentic_trader.config import InsiderWatchConfig
-from agentic_trader.data import insider_capture
+from agentic_trader.data import edgar_http, insider_capture
 from agentic_trader.data.corporate_actions import CorporateAction, CorporateActionKind
 from agentic_trader.data.insider_capture import (
     CAPTURE_STREAM,
@@ -251,7 +251,7 @@ async def test_a_held_day_published_by_the_second_request_is_captured_in_order(c
 
 
 async def test_every_request_has_a_total_deadline(capture_store, monkeypatch):
-    monkeypatch.setattr(insider_capture, "REQUEST_DEADLINE_SECONDS", 0.05)
+    monkeypatch.setattr(edgar_http, "REQUEST_DEADLINE_SECONDS", 0.05)
 
     async def slow(request: httpx.Request) -> httpx.Response:
         await asyncio.sleep(5)
@@ -346,7 +346,7 @@ async def test_an_oversized_document_is_recorded_per_document_and_the_date_is_st
 ):
     oct1 = date(2026, 10, 1)
     index = index_body(oct1, CROX)
-    monkeypatch.setattr(insider_capture, "MAX_DOCUMENT_BYTES", len(index) + 1)  # the index fits; the document not
+    monkeypatch.setattr(edgar_http, "MAX_DOCUMENT_BYTES", len(index) + 1)  # the index fits; the document not
     sec = FakeSec(indexes={oct1: index}, documents={_path(CROX): b"x" * (len(index) + 2)})
     result = await _capture(sec, capture_store, [oct1])
     assert result.recorded == (oct1,)
@@ -357,7 +357,7 @@ async def test_an_oversized_document_is_recorded_per_document_and_the_date_is_st
 
 async def test_an_oversized_index_still_raises(capture_store, monkeypatch):
     oct1 = date(2026, 10, 1)
-    monkeypatch.setattr(insider_capture, "MAX_DOCUMENT_BYTES", 10)
+    monkeypatch.setattr(edgar_http, "MAX_DOCUMENT_BYTES", 10)
     sec = FakeSec(indexes={oct1: index_body(oct1)})
     with pytest.raises(ValueError, match="budget"):
         await _capture(sec, capture_store, [oct1])

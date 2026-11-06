@@ -1541,6 +1541,50 @@ that each season's forward dates are kept as they were published.
   revised since, not as it was published that day. To
   stop the worker, set `earnings_capture.enabled: false` and restart.
 
+### Filings capture
+
+A daemon worker (`agentic_trader/data/filings_capture.py`), enabled with `filing_veto.capture` (code default
+`false`), journals each covered symbol's recent negative EDGAR filings as the evidence of the `filing_veto` entry
+rule ([spec](superpowers/specs/2026-11-06-release-exit-filing-veto-design.md)).
+
+- **Symbols.** The corporate-actions worker's list, read on each pass: the universe, held equities (tracked and
+  broker-held) and `corporate_actions.extra_symbols`.
+- **Schedule.** On each New York weekday, one pass per slot: `open` at the first poll from 06:00, and
+  `pre-HHMM` `filing_veto.pre_scan_minutes` (30) before each suggestion scan (with 10:35 and 14:35: `pre-1005`
+  and `pre-1405`). The worker polls every 5 minutes and runs only the latest due slot, so a slot missed while
+  the daemon was down is skipped once a later one is due. It never runs inside a suggestion-scan window (which
+  is never delayed): a window that opens between two requests stops the pass and journals nothing, and the
+  slot runs after the window.
+- **Requests.** The SEC ticker map (`www.sec.gov/files/company_tickers.json`) once per pass, then each mapped
+  CIK's `data.sec.gov/submissions/CIK##########.json` (only `filings.recent` is read; symbols sharing a CIK
+  share its request). Two requests per second; one retry after 5 seconds, only after a transport error, HTTP
+  429 or a 5xx; only those two hosts, no redirects, the 16 MiB body budget and a 120 s deadline per request.
+- **Outcomes.** Each requested symbol is `covered`, `unmapped` (absent from the ticker map, or under two CIKs:
+  never guessed) or `failed` (`http_<status>` or the exception type name). A failed ticker map fails the
+  whole pass (nothing journaled; the next poll retries the slot).
+- **Journal.** One `filings/capture/<ET date>/<slot>` event on stream `filings/capture` per pass: `requested`,
+  `covered`, `unmapped`, `failed`, `ticker_map_sha256`, `fetched_at`, `lookback_days` and `filings`. A covered
+  symbol's list holds its `NT 10-K`/`NT 10-Q`/`NT 20-F` (and `/A`), adverse 8-K (Items 2.04, 2.05, 2.06, 4.02,
+  5.01) and `424B4`/`424B5` filings dated within the widest window (60 days); an empty list is the evidence of
+  no such filing. Raw bodies are not kept.
+- **Credential.** `EDGAR_USER_AGENT`, as for the insider capture: read from the daemon's environment only, sent as
+  the `User-Agent`, never printed, logged, journaled or committed. Without it the worker sends nothing and
+  `filings_capture` reports `missing_user_agent` (not ready).
+- **Readiness.** `filings_capture` is ready while the newest pass that covered at least 90% of its mapped
+  (requested minus unmapped) symbols is at most `filing_veto.max_age_seconds` (4 days) old. The detail counts
+  the newest pass's covered, unmapped and failed symbols, failures by status or type name, and names the last
+  90% pass when the newest one fell short. A failed poll is observed by type name and stays ready while such
+  a pass exists. With no pass yet it reads ready (`not_due; no capture yet`) only until a poll has passed the
+  weekend, scan-window and 06:00 gates in this process. It is an ordinary component under quiet hours. It is
+  not a data-quality check of EDGAR itself.
+- **Runbook.** Inspect with `uv run copilot doctor --readiness` and
+  `uv run copilot db events --stream filings/capture --limit 1`. `low coverage` means many mapped symbols
+  failed: read the failure breakdown in the detail and the daemon log (`filings_capture_failed`, with the
+  ticker-map reason in `detail`); `http_403` usually means SEC rejected the user agent, `http_429` throttling.
+  `stale` means no recent pass at all: check `EDGAR_USER_AGENT` and SEC reachability. Evidence that is stale,
+  missing or does not cover a symbol never refuses an entry. To stop the worker, set `filing_veto.capture:
+  false` and restart.
+
 ## Provider read and forecast hardening
 
 See [forecast contract hardening](forecast-contract-hardening.md). Active `doctor` includes
