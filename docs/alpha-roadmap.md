@@ -993,11 +993,12 @@ Research verdict on event-driven work that costs nothing to build.
 - **Build first: the dated earnings-calendar capture.** Nasdaq dates are only as reliable as a match to 8-K
   Item 2.02 times shows, the archive's consensus fields were fetched after the fact, and every season not
   captured is lost.
-- **Then: an uncertainty-conditioned run-up.** Top volatility tercile, buy about ten sessions before the
-  report, sell at the day -1 close, never hold through. The development read covers 2016-2026 and can only
-  fail. Prospective confirmation starts with the Q4 2026 season. The published effect is +1.26% over ten
-  sessions for the high-uncertainty tercile, 1996-2019, with nothing measured after 2019. Two prospective
-  seasons can reject a dead rule; confirming a half-size effect takes about seven seasons.
+- **Then: an uncertainty-conditioned run-up: failed 2026-11-06, closed.** The rule bought the top volatility
+  tercile about ten sessions before the report and sold at the day −1 close. Its development read on cohort
+  v3 (2016–2026, ledger L43) returned −0.070R net of a beta-matched SPY and −0.006R against matched
+  non-announcers. The planted check was detected (MDE 0.039R), so the null is powered
+  ([result](apriori-runup-2026-11-06.md)). There will be no prospective read. The capture is kept for the
+  veto layer, any later pre-event test and checking the earnings rule's dates.
 - **In preview: an EDGAR negative-filing veto layer for long cards** (NT 10-K/10-Q, 8-K Items
   2.04/2.05/2.06/4.02/5.01, convertible pricing, lock-up expiry), **and a release exit for open native
   longs.** The earnings blackout gates entries only, so a native long opened 8 or more calendar days ahead can

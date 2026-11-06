@@ -293,3 +293,52 @@ card says "INSIDER WATCH — unvalidated".
   eligibility reason); `cards outcomes` labels them
   ([block](card-evidence.md#insider-watch-outcomes)). Nothing here validates the leg: reopening it as an alpha
   needs its own predeclared forward test.
+
+## Entry 4: uncertainty-conditioned pre-earnings run-up
+
+`runup` version 1 (`config/research/apriori/runup-v1.json`,
+[spec](superpowers/specs/2026-11-06-apriori-runup-design.md)) is a research-only, long-only development read
+of the pre-announcement run-up (Frazzini and Lamont 2007; Barber et al. 2013; Johnson and So 2018; Gao, Hu
+and Zhang) on cohort v3. It is a development read: the window is spent, so it can fail but cannot pass.
+
+- **Rule in plain words.** For each deduplicated archive earnings report of a cohort name with report
+  session E, buy ten sessions earlier (D = E - 10) at the 10:35 New York decision clock and sell at the close
+  of E - 1, so the position is never held through the announcement. Only names in the top tercile of
+  60-session realised volatility (ending D - 1) among the cube-eligible names on D are legs; the rest are
+  announcers kept for descriptive statistics. Excluded: a second report within 40 sessions before E, an
+  identity break inside the volatility window, a structural corporate action within 5 calendar days of
+  [D, E]. Stop 2 x ATR14, no target, 15 bp per side decides (5 and 25 reported). Every labelled row (leg,
+  announcer, placebo or control cell) must fill on its decision session and exit by the close of its tenth
+  session, otherwise it is excluded as `hold_outside_window` (a failing control cell unpairs its pair).
+  Decisions 2016-08-01..2026-07-17.
+- **Inputs it pins.** The pooled events protocol (`cohort3-events-v1.json`) by SHA-256 on its bytes, its
+  cohort digest, the cached cohort-v3 cube by content hash, the Nasdaq page archive and the corporate-actions
+  acquisition by the protocol's digests. These pinned digests are checked before use and a mismatch names
+  both values. SPY hourly bars are fetched once into the run directory; SPY daily bars come from the pooled
+  cache when it has them, else they are fetched there too. SPY's file digests and the trading calendar's
+  digest are recorded in provenance, not checked against a pin.
+- **Pass rule.** P1: mean `net_excess_r_v1` of legs > 0 with ci90 lower bound > 0. P2: legs minus 5 matched
+  same-session controls (same dollar-volume tercile, top volatility tercile, no report in [D - 30, D + 10]
+  so no release in the control's hold and the legs' clean recent history, covered by the archive, nearest
+  20-session return) > 0 with the paired ci90 lower bound > 0. P3: the 1%-trimmed mean > 0 and the mean
+  from 2023-01-01 > 0. P4: at least 1,000 legs, 300 from 2023-01-01. P5: the legs' paired difference minus
+  the pseudo-events' paired difference > 0, with the ci90 lower bound > 0 from one joint session-block
+  bootstrap over both sets of decision sessions: the legs must beat their controls by more than the
+  pseudo-events beat theirs.
+- **Negative control and planted check.** Every leg gets one pseudo-event on the same name (a session drawn
+  within 63 of D with no report in [D' - 10, D' + 20]; a second draw of a name and session already drawn is
+  dropped and counted) through identical gates, labels, controls and statistics; its P2 must not hold and
+  P5 must hold. Before the legs' statistics, a planted return of 0.63% of the decision price is added to
+  every paired placebo leg; P1 and P2 on that frame must both hold. `planted.json` also records the placebo
+  P2's minimum detectable effect, (1.645 + 0.84) x its bootstrap standard deviation.
+- **Decisions.** `inconclusive_underpowered`: the planted check failed, so the read decides nothing.
+  `failed`: any of P1-P5 failed or the placebo's P2 held. `survives_development`: only makes a separately
+  specified prospective read eligible, which must declare its own alpha. None authorizes a probe, card,
+  promotion, shadow or registry credit.
+- **Run.** `copilot alpha apriori-study config/research/apriori/runup-v1.json --output <new-dir>
+  --cache <pooled-cache> --earnings-pages <archive> --corporate-actions <actions.json>`. Ledger row L43.
+- **Result: `failed` (2026-11-06, [result](apriori-runup-2026-11-06.md)).** The legs return −0.070R net of a
+  beta-matched SPY and per-name cost (10,395 legs, ci90 [−0.101, −0.037]) and −0.006R against their matched
+  controls (ci90 [−0.026, +0.014]). P3 and P5 fail too, and P4 holds. The planted check was detected (MDE
+  0.039R), so this is a powered null. The pseudo-events' P2 did not hold. The control-band sensitivity shows
+  no leak. The lane is closed: no prospective read, no probe.
