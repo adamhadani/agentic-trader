@@ -10,10 +10,11 @@ probe and alpha-versioned positions are journaled ``exempt`` with their kind and
 
 The pass is journaled once per date (stream ``release-exit``, key ``release-exit/{et_date}``), with its preview
 notices in the same transaction. In ``enforce`` each ``close`` entry then goes through
-``PositionCloseService.close_signal`` with a request ID stable across ticks and restarts, and the outcome is
-appended as its own ``release_exit_close`` event; a non-submitted outcome queues a notice. Nothing here halts
-trading, opens a lifetime review or retries a broker mutation, and journal, log and notice text carry exception
-type names only.
+``PositionCloseService.close_signal`` with a request ID stable across ticks and restarts within the trading day
+(and new on the next day's pass), and the outcome is appended as its own ``release_exit_close`` event; a
+non-submitted outcome queues a notice. Request IDs and notice keys carry the pass's trading day. Nothing here
+halts trading, opens a lifetime review or retries a broker mutation, and journal, log and notice text carry
+exception type names only. A notice names ``/close <signal_id>``, the single-position close.
 """
 
 from __future__ import annotations
@@ -53,6 +54,8 @@ __all__ = [
     "RunStatus",
     "decide",
     "exits_today",
+    "failure_key",
+    "preview_key",
     "release_request_id",
 ]
 
@@ -147,22 +150,42 @@ def decide(
     return ReleaseDecision("unknown", None, None, (), live_verified)
 
 
-def release_request_id(scope: str, signal_id: int, report_date: date) -> str:
-    """The close request ID: stable across ticks and restarts, so a repeated ``close_signal`` is a no-op."""
-    digest = hashlib.sha256(f"{scope}/{signal_id}/{report_date.isoformat()}".encode()).hexdigest()
-    return f"release-{digest[:32]}"
+def release_request_id(scope: str, signal_id: int, report_date: date, trading_day: date) -> str:
+    """The close request ID of one pass: stable across ticks and restarts within ``trading_day``, so a repeated
+    ``close_signal`` is a no-op, and new on the next trading day's pass (a report on the next session at an
+    unspecified time qualifies on both passes, and a close that failed on the first must not block the second)."""
+    key = f"{scope}/{signal_id}/{report_date.isoformat()}/{trading_day.isoformat()}"
+    return f"release-{hashlib.sha256(key.encode()).hexdigest()[:32]}"
 
 
-def preview_notice(symbol: str, report_date: date, timing: EarningsTiming, direction: str, at: datetime) -> str:
+def preview_key(trading_day: date, signal_id: int, report_date: date) -> str:
+    """The preview notice's outbox key: once per pass (trading day), position and report."""
+    return f"{RELEASE_EXIT_STREAM}/{trading_day.isoformat()}/{signal_id}/{report_date.isoformat()}"
+
+
+def failure_key(trading_day: date, signal_id: int, report_date: date) -> str:
+    """The enforce failure notice's outbox key: once per pass (trading day), position and report."""
+    return f"{preview_key(trading_day, signal_id, report_date)}/failed"
+
+
+def _manual_close(signal_id: int) -> str:
+    # The single-position Telegram close (``/close <signal_id>``); ``/flatten`` would close every broker position,
+    # including the exempt catalog, probe and alpha ones.
+    return f"/close {signal_id} closes it manually."
+
+
+def preview_notice(
+    symbol: str, signal_id: int, report_date: date, timing: EarningsTiming, direction: str, at: datetime
+) -> str:
     """The spec's preview notice (section 3.5); ``at`` is the pass time in New York."""
     return (
         f"Release exit (preview): {symbol} reports {report_date.isoformat()} {timing_word(timing)}. "
         f"In enforce the desk would close this {direction.lower()} at about {at.astimezone(ET_TZ):%H:%M} ET today. "
-        "Nothing was sent to the broker; /flatten closes it manually."
+        f"Nothing was sent to the broker; {_manual_close(signal_id)}"
     )
 
 
-def failure_notice(symbol: str, reason: str, *, broker_step: bool) -> str:
+def failure_notice(symbol: str, signal_id: int, reason: str, *, broker_step: bool) -> str:
     """The enforce failure notice (spec section 3.6).
 
     Only a refusal before this request reached the broker can say the stop is kept: once the close service ran
@@ -170,9 +193,9 @@ def failure_notice(symbol: str, reason: str, *, broker_step: bool) -> str:
     must warn that protection may have been removed), so the notice points at the protective orders instead.
     """
     tail = (
-        "Check its protective orders at the broker; /flatten closes it manually."
+        f"Check its protective orders at the broker; {_manual_close(signal_id)}"
         if broker_step
-        else "The position keeps its stop; /flatten closes it manually."
+        else f"The position keeps its stop; {_manual_close(signal_id)}"
     )
     return f"Release exit could not close {symbol}: {reason.rstrip().removesuffix('.')}. {tail}"
 
@@ -443,13 +466,13 @@ class ReleaseExitService:
             }
             if status == "close":
                 assert decision.report_date is not None
-                entry["request_id"] = release_request_id(scope, position["id"], decision.report_date)
+                entry["request_id"] = release_request_id(scope, position["id"], decision.report_date, today)
             elif status == "would_close":
                 assert decision.report_date is not None and decision.timing is not None
                 notices.append(
                     (
-                        f"release-exit/{position['id']}/{decision.report_date.isoformat()}",
-                        preview_notice(symbol, decision.report_date, decision.timing, direction, now),
+                        preview_key(today, position["id"], decision.report_date),
+                        preview_notice(symbol, position["id"], decision.report_date, decision.timing, direction, now),
                     )
                 )
             entries.append(entry)
@@ -519,8 +542,8 @@ class ReleaseExitService:
             reason = f"the close raised {raised}" if raised is not None else result
             if notify:
                 notice = (
-                    f"release-exit/{signal_id}/{entry['report_date']}/failed",
-                    failure_notice(symbol, reason, broker_step=record is not None),
+                    failure_key(today, signal_id, date.fromisoformat(entry["report_date"])),
+                    failure_notice(symbol, signal_id, reason, broker_step=record is not None),
                 )
             else:
                 logger.warning(

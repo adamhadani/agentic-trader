@@ -770,12 +770,22 @@ def register_auto_entry_jobs(scheduler: Any, copilot: Any, config: AppConfig) ->
 
 
 def register_release_exit_job(scheduler: Any, copilot: Any, config: AppConfig) -> None:
-    """Register the release-exit tick (execution/release_exit.py): every 5 minutes and once at startup; none when off.
+    """Register the release-exit tick (execution/release_exit.py): every 5 minutes and once at startup.
 
+    None when off, and none without the broker trading calendar the pass is timed on (the lifetime service's
+    strict Alpaca calendar, the one the auto-entry digest also reads; absent without Alpaca credentials, as in
+    the simulator): then it logs once, here at startup, instead of a ``TradingCalendarUnavailable`` every tick.
     Its pass runs once per New York trading day, on the first tick at or after the calendar's close minus
     ``release_exit.minutes_before_close``; ``run_release_exit`` never raises into the scheduler.
     """
     if config.release_exit.mode == "off":
+        return
+    if copilot.release_exit.calendar is None:
+        logger.warning(
+            "Release exit disabled: no broker trading calendar (release_exit.mode %s)",
+            config.release_exit.mode,
+            extra={"event": "release_exit_disabled", "reason": "no_trading_calendar"},
+        )
         return
     scheduler.add_job(
         copilot.run_release_exit,

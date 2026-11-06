@@ -5,6 +5,8 @@ Date: 2026-11-06. Operator: "start next workstream" (step 3 of the
 ("go with your recommended approaches"). Both controls ship in `preview`; `enforce` is a later operator call
 on journaled evidence, as with `corporate_action`, `book_sizing` and `card_policy`.
 
+**Amended 2026-11-06 after final review:** the notices name `/close {signal_id}` instead of `/flatten`, request IDs and notice keys carry the pass's trading day (sections 3.5 and 3.6), the capture journals each filing's primary document (4.1), the `filing_veto` block reports static and dynamic names apart (4.4), and the job needs a broker calendar (3.2).
+
 ## 1. Why
 
 The pre-event research (2026-11-06) found that the documented pre-event effects a free-data desk can use are
@@ -90,6 +92,8 @@ which takes years). So these controls are adopted on prior evidence plus preview
 - **One pass per date:** the journal key `release-exit/{et_date}` makes it idempotent across restarts.
 - **Restart after the close:** if the daemon restarts after that day's close, it skips the date and
   journals nothing for it.
+- **No broker calendar** (no Alpaca credentials, as in a simulator without keys): the job is not registered,
+  and the daemon logs `release_exit_disabled` once at startup.
 
 ### 3.3 Which reports trigger an exit today
 
@@ -131,11 +135,15 @@ A report on N after hours is handled by N's own pass.
   `report_date`, `timing`, `sources` (`live`, `capture` or both) and `live_verified`.
 
 **The notice.** For each `would_close` native position, one `MESSAGE` notice in the same transaction, with
-key `release-exit/{signal_id}/{report_date}`:
+key `release-exit/{et_date}/{signal_id}/{report_date}` (a report on the next session at an unspecified time
+qualifies on two passes and is noticed on each):
 
 > Release exit (preview): {SYMBOL} reports {date} {before open|after close|timing unspecified}. In enforce the
-> desk would close this {long|short} at about {HH:MM} ET today. Nothing was sent to the broker; /flatten
-> closes it manually.
+> desk would close this {long|short} at about {HH:MM} ET today. Nothing was sent to the broker; /close
+> {signal_id} closes it manually.
+
+`/close {signal_id}` is the single-position close; `/flatten` would close every broker position, including the
+exempt ones.
 
 **Quiet hours.** The notice is an ordinary outbox message, and the pass runs inside market hours.
 
@@ -143,18 +151,22 @@ key `release-exit/{signal_id}/{report_date}`:
 
 **The close.** For each `close` position the pass calls
 `PositionCloseService.close_signal(signal_id, request_id=…, context=…)`:
-- `request_id` is `"release-" + sha256(f"{scope}/{signal_id}/{report_date}")[:32]`, stable across ticks and
-  restarts;
+- `request_id` is `"release-" + sha256(f"{scope}/{signal_id}/{report_date}/{et_date}")[:32]`, stable across
+  ticks and restarts within the pass's trading day and new on the next day's pass, so a close that failed on
+  one pass never blocks the next;
 - `context` is `{"reason": "release_exit", "report_date", "timing", "sources"}`.
 
 `close_signal` keeps its own durable intent, recovery and refusals (contract 2). The returned text is
 recorded in the pass entry, as `close_result`.
 
 **A refusal or failure.**
-- Any non-submitted outcome queues a notice:
+- Any non-submitted outcome queues a notice (key `release-exit/{et_date}/{signal_id}/{report_date}/failed`):
 
-  > Release exit could not close {SYMBOL}: {reason}. The position keeps its stop; /flatten closes it
+  > Release exit could not close {SYMBOL}: {reason}. The position keeps its stop; /close {signal_id} closes it
   > manually.
+
+  Once the request reached the broker, the tail is instead "Check its protective orders at the broker;
+  /close {signal_id} closes it manually." (contract 2).
 
 - No halt and no review. The holding-expiry review path is not reused, because a release exit is a
   precaution and the position is still protected.
@@ -213,7 +225,11 @@ release_exit:
   - payload: `requested`, `covered`, `unmapped`, `failed`, `ticker_map_sha256`, `fetched_at`,
     `lookback_days`, and `filings`;
   - `filings` maps each covered symbol to its matched filings: `form`, `items`, `filing_date`,
-    `acceptance`, `accession`.
+    `acceptance`, `accession`, `primary_document` and `primary_doc_description` (EDGAR's `primaryDocument`
+    and `primaryDocDescription`, null when absent: `424B4`/`424B5` cover equity, convertible and debt
+    offerings alike, and these tell them apart in preview evidence).
+- **Dynamic-universe names** are not in the symbol list, so in v1 they are uncovered by design (they journal
+  `uncovered` and are never refused).
 - **Matching.** Only filings in a veto category and dated within `max(category windows)` (default 60 days)
   of the pass date are kept. A covered symbol with none has an empty list: that is evidence of "no filing",
   and it is what lets the rule clear a symbol.
@@ -263,7 +279,8 @@ release_exit:
   `filings: {status, would_block, category}`, for longs only (a short has `null`). It is computed from the
   same in-memory lookup, so no I/O is added to the scan.
 - **`cards outcomes` gains a `filing_veto` block.** Descriptive only, never a gate:
-  - the ranked candidates' would-block rate by category and status counts;
+  - the ranked candidates' would-block rate by category and status counts, with `coverage` (the share whose
+    status is `ok`), and the same counts for `static` and `dynamic` names side by side (`by_universe`);
   - the cards with `would_block`, with their matured `net_excess_r_v1` mean and n.
 - **`cards outcomes` gains a `release_exit` block:** would-close and exempt counts by date, from the
   `release-exit` journal.

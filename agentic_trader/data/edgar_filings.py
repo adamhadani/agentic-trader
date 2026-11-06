@@ -20,6 +20,9 @@ LATE_FILING_FORMS: frozenset[str] = frozenset({"NT 10-K", "NT 10-Q", "NT 20-F", 
 OFFERING_FORMS: frozenset[str] = frozenset({"424B4", "424B5"})
 _EIGHT_K_FORMS = frozenset({"8-K", "8-K/A"})
 _COLUMNS = ("accessionNumber", "filingDate", "acceptanceDateTime", "form", "items")
+# Read when present (an absent column reads as None): the primary document lets preview evidence tell a debt
+# prospectus from an equity one, since ``424B4``/``424B5`` cover equity, convertible and debt offerings alike.
+_OPTIONAL_COLUMNS = ("primaryDocument", "primaryDocDescription")
 
 
 def normalize_ticker(ticker: object) -> str:
@@ -47,6 +50,9 @@ class MatchedFiling:
     filing_date: date
     acceptance: str | None
     accession: str
+    # EDGAR's ``primaryDocument`` and ``primaryDocDescription``; None when the column or value is absent.
+    primary_document: str | None = None
+    primary_doc_description: str | None = None
 
     def describe(self) -> str:
         if self.items and self.category is FilingCategory.ADVERSE_8K:
@@ -62,20 +68,32 @@ class MatchedFiling:
             "filing_date": self.filing_date.isoformat(),
             "acceptance": self.acceptance,
             "accession": self.accession,
+            "primary_document": self.primary_document,
+            "primary_doc_description": self.primary_doc_description,
         }
 
     @classmethod
     def from_payload(cls, d: Mapping[str, Any]) -> MatchedFiling:
-        acceptance = d.get("acceptance")
+        """The inverse of ``to_payload``; a payload journaled before the primary-document fields reads them as None."""
         return cls(
             symbol=str(d["symbol"]),
             category=FilingCategory(d["category"]),
             form=str(d["form"]),
             items=tuple(str(i) for i in d["items"]),
             filing_date=date.fromisoformat(str(d["filing_date"])),
-            acceptance=None if acceptance is None else str(acceptance),
+            acceptance=_optional_text(d.get("acceptance")),
             accession=str(d["accession"]),
+            primary_document=_optional_text(d.get("primary_document")),
+            primary_doc_description=_optional_text(d.get("primary_doc_description")),
         )
+
+
+def _optional_text(value: object) -> str | None:
+    return None if value is None else str(value)
+
+
+def _non_empty(value: object) -> str | None:
+    return str(value) if value else None
 
 
 def parse_recent(payload: Mapping[str, Any], symbol: str, since: date) -> list[MatchedFiling]:
@@ -83,12 +101,15 @@ def parse_recent(payload: Mapping[str, Any], symbol: str, since: date) -> list[M
     try:
         recent = payload["filings"]["recent"]
         columns = [list(recent[key]) for key in _COLUMNS]
+        optional = [list(recent[key]) if key in recent else None for key in _OPTIONAL_COLUMNS]
     except (KeyError, TypeError) as exc:
         raise ValueError(f"submissions payload lacks filings.recent column {exc}") from exc
-    if len({len(c) for c in columns}) != 1:
+    rows = len(columns[0])
+    filled = [column if column is not None else [None] * rows for column in optional]
+    if len({len(c) for c in (*columns, *filled)}) != 1:
         raise ValueError("submissions columns have mismatched lengths")
     out: list[MatchedFiling] = []
-    for accession, filed, accepted, form, raw_items in zip(*columns, strict=True):
+    for accession, filed, accepted, form, raw_items, document, description in zip(*columns, *filled, strict=True):
         filing_date = date.fromisoformat(str(filed))
         if filing_date < since:
             continue
@@ -103,8 +124,10 @@ def parse_recent(payload: Mapping[str, Any], symbol: str, since: date) -> list[M
                 form=str(form),
                 items=items,
                 filing_date=filing_date,
-                acceptance=str(accepted) if accepted else None,
+                acceptance=_non_empty(accepted),
                 accession=str(accession),
+                primary_document=_non_empty(document),
+                primary_doc_description=_non_empty(description),
             )
         )
     out.sort(key=lambda f: (f.filing_date, f.acceptance or "", f.accession), reverse=True)

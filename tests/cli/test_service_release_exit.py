@@ -1,7 +1,10 @@
-"""Daemon wiring for the release exit: one five-minute interval job, none while off."""
+"""Daemon wiring for the release exit: one five-minute interval job, none while off or without a broker calendar."""
 
+import logging
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
+
+import pytest
 
 from agentic_trader.cli.commands import service
 from agentic_trader.config import ReleaseExitConfig
@@ -24,3 +27,16 @@ def test_no_release_exit_job_while_off(app_config):
     config = app_config.model_copy(update={"release_exit": ReleaseExitConfig(mode="off")})
     service.register_release_exit_job(scheduler, MagicMock(), config)
     scheduler.add_job.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", ["preview", "enforce"])
+def test_no_release_exit_job_without_a_broker_calendar_and_one_startup_log(app_config, caplog, mode):
+    """The simulator without Alpaca credentials has no broker trading calendar: no job, one log, no daily failure."""
+    scheduler, copilot = MagicMock(), MagicMock()
+    copilot.release_exit.calendar = None
+    config = app_config.model_copy(update={"release_exit": ReleaseExitConfig(mode=mode)})
+    with caplog.at_level(logging.WARNING):
+        service.register_release_exit_job(scheduler, copilot, config)
+    scheduler.add_job.assert_not_called()
+    [record] = [r for r in caplog.records if r.__dict__.get("event") == "release_exit_disabled"]
+    assert record.__dict__["reason"] == "no_trading_calendar"

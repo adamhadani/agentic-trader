@@ -56,14 +56,20 @@ from pandas.tseries.holiday import USFederalHolidayCalendar
 from sqlalchemy import select
 
 from agentic_trader.data.edgar_form4 import IndexRow, parse_daily_index, parse_form4, select_form4
-from agentic_trader.data.edgar_http import TIMEOUT_SECONDS, USER_AGENT_ENV, BodyTooLarge, edgar_fetch, edgar_pacer
+from agentic_trader.data.edgar_http import (
+    SEC_HOST,
+    TIMEOUT_SECONDS,
+    USER_AGENT_ENV,
+    BodyTooLarge,
+    edgar_fetch,
+    edgar_pacer,
+)
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.apriori.catalog import load_insider_entry
 from agentic_trader.research.apriori.watch_contract import WATCH_ENTRY
 from agentic_trader.research.insider_filings import (
     DROP_RULES,
-    SEC_HOST,
     InsiderFilingStore,
     InsiderTransaction,
     Quarter,

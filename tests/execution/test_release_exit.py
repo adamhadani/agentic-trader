@@ -33,8 +33,14 @@ from agentic_trader.storage.models import WorkItemRecord
 PM, AH, UNSPEC = EarningsTiming.PRE_MARKET, EarningsTiming.AFTER_HOURS, EarningsTiming.UNSPECIFIED
 THURSDAY, FRIDAY, SATURDAY, SUNDAY = date(2026, 11, 5), date(2026, 11, 6), date(2026, 11, 7), date(2026, 11, 8)
 MONDAY, TUESDAY = date(2026, 11, 9), date(2026, 11, 10)
-NO_STOP = "The position keeps its stop; /flatten closes it manually."
-CHECK_STOP = "Check its protective orders at the broker; /flatten closes it manually."
+
+
+def no_stop(signal_id: int) -> str:
+    return f"The position keeps its stop; /close {signal_id} closes it manually."
+
+
+def check_stop(signal_id: int) -> str:
+    return f"Check its protective orders at the broker; /close {signal_id} closes it manually."
 
 
 # --- exits_today -----------------------------------------------------------------------------------------------
@@ -319,9 +325,9 @@ async def test_preview_journals_one_pass_with_native_and_exempt_entries_and_one_
     )
 
     assert await notices(temp_db) == {
-        f"release-exit/{aapl}/2026-11-09": (
+        f"release-exit/2026-11-06/{aapl}/2026-11-09": (
             "Release exit (preview): AAPL reports 2026-11-09 before open. In enforce the desk would close this "
-            "long at about 15:30 ET today. Nothing was sent to the broker; /flatten closes it manually."
+            f"long at about 15:30 ET today. Nothing was sent to the broker; /close {aapl} closes it manually."
         )
     }
     assert broker.submits == [] and await temp_db.active_close_requests() == []
@@ -398,9 +404,9 @@ async def test_a_short_would_close_notice_says_short(temp_db):
     release = service(temp_db, earnings=FakeEarnings({"TSLA": EarningsEvent("TSLA", MONDAY, UNSPEC)}))
     assert await release.run(at(FRIDAY, 15, 30)) == "done"
     assert await notices(temp_db) == {
-        f"release-exit/{tsla}/2026-11-09": (
+        f"release-exit/2026-11-06/{tsla}/2026-11-09": (
             "Release exit (preview): TSLA reports 2026-11-09 timing unspecified. In enforce the desk would close "
-            "this short at about 15:30 ET today. Nothing was sent to the broker; /flatten closes it manually."
+            f"this short at about 15:30 ET today. Nothing was sent to the broker; /close {tsla} closes it manually."
         )
     }
 
@@ -408,8 +414,9 @@ async def test_a_short_would_close_notice_says_short(temp_db):
 # --- enforce ---------------------------------------------------------------------------------------------------
 
 
-def _request_id(signal_id: int, report_date: str) -> str:
-    return "release-" + hashlib.sha256(f"native/{signal_id}/{report_date}".encode()).hexdigest()[:32]
+def _request_id(signal_id: int, report_date: str, trading_day: str = "2026-11-06") -> str:
+    key = f"native/{signal_id}/{report_date}/{trading_day}"
+    return "release-" + hashlib.sha256(key.encode()).hexdigest()[:32]
 
 
 async def test_enforce_closes_once_with_the_stable_request_id_and_context(temp_db):
@@ -421,7 +428,7 @@ async def test_enforce_closes_once_with_the_stable_request_id_and_context(temp_d
     assert await release.run(at(FRIDAY, 15, 30)) == "done"
 
     request_id = _request_id(aapl, "2026-11-09")
-    assert release_request_id("native", aapl, MONDAY) == request_id
+    assert release_request_id("native", aapl, MONDAY, FRIDAY) == request_id
     assert [request.client_order_id for request in broker.submits] == [request_id]
     [requested] = [
         e for e in await temp_db.workflows.events(f"close/{request_id}") if e["kind"] == EventKind.CLOSE_REQUESTED
@@ -503,10 +510,52 @@ async def test_a_broker_refusal_queues_a_notice_and_never_halts(temp_db):
     assert await release.run(at(FRIDAY, 15, 30)) == "done"
     _, closed = await release_events(temp_db)
     assert (closed["payload"]["outcome"], closed["payload"]["close_status"]) == ("failed", CloseRequestStatus.FAILED)
-    assert (await notices(temp_db))[f"release-exit/{aapl}/2026-11-06/failed"] == (
-        f"Release exit could not close AAPL: {refusal.removesuffix('.')}. {CHECK_STOP}"
+    assert (await notices(temp_db))[f"release-exit/2026-11-06/{aapl}/2026-11-06/failed"] == (
+        f"Release exit could not close AAPL: {refusal.removesuffix('.')}. {check_stop(aapl)}"
     )
     assert await temp_db.get_state(SystemStateKey.TRADING_HALTED) is None
+
+
+def test_the_request_id_is_stable_within_a_day_and_new_on_the_next():
+    assert release_request_id("native", 7, MONDAY, FRIDAY) == release_request_id("native", 7, MONDAY, FRIDAY)
+    assert release_request_id("native", 7, MONDAY, FRIDAY) != release_request_id("native", 7, MONDAY, MONDAY)
+
+
+async def test_a_close_failed_on_one_pass_is_attempted_again_on_the_next_days_pass(temp_db):
+    """A Monday report at an unspecified time qualifies on Friday's pass and on Monday's own pass."""
+    aapl = await position(temp_db, "AAPL")
+    refusal = "Broker rejected the close. Existing protective orders were left unchanged by this request."
+    broker = FakeBroker([held("AAPL")], OrderResult(success=False, error_message=refusal))
+    release = service(
+        temp_db, mode="enforce", earnings=FakeEarnings({"AAPL": EarningsEvent("AAPL", MONDAY, UNSPEC)}), broker=broker
+    )
+    assert await release.run(at(FRIDAY, 15, 30)) == "done"
+    assert await release.run(at(FRIDAY, 15, 35)) == "present"  # stable within the day: nothing called again
+
+    broker.result = OrderResult(success=True, order_id="broker-close-2")
+    assert await release.run(at(MONDAY, 15, 30)) == "done"
+
+    friday_id, monday_id = _request_id(aapl, "2026-11-09"), _request_id(aapl, "2026-11-09", "2026-11-09")
+    assert friday_id != monday_id
+    assert [request.client_order_id for request in broker.submits] == [friday_id, monday_id]
+    friday_pass, friday_close, monday_pass, monday_close = await release_events(temp_db)
+    assert _entries(friday_pass)["AAPL"]["request_id"] == friday_id
+    assert _entries(monday_pass)["AAPL"]["request_id"] == monday_id
+    assert (friday_close["payload"]["outcome"], monday_close["payload"]["outcome"]) == ("failed", "submitted")
+    assert [key for key in await notices(temp_db) if key.startswith("release-exit")] == [
+        f"release-exit/2026-11-06/{aapl}/2026-11-09/failed"
+    ]
+
+
+async def test_a_report_qualifying_on_two_passes_gets_a_preview_notice_on_each(temp_db):
+    aapl = await position(temp_db, "AAPL")
+    release = service(temp_db, earnings=FakeEarnings({"AAPL": EarningsEvent("AAPL", MONDAY, UNSPEC)}))
+    assert await release.run(at(FRIDAY, 15, 30)) == "done"
+    assert await release.run(at(MONDAY, 15, 30)) == "done"
+    assert sorted(await notices(temp_db)) == [
+        f"release-exit/2026-11-06/{aapl}/2026-11-09",
+        f"release-exit/2026-11-09/{aapl}/2026-11-09",
+    ]
 
 
 async def test_a_refusal_before_any_broker_step_says_the_stop_is_kept(temp_db):
@@ -520,9 +569,9 @@ async def test_a_refusal_before_any_broker_step_says_the_stop_is_kept(temp_db):
     assert await release.run(at(FRIDAY, 15, 30)) == "done"
     _, closed = await release_events(temp_db)
     assert (closed["payload"]["outcome"], closed["payload"]["close_status"]) == ("refused", None)
-    assert (await notices(temp_db))[f"release-exit/{aapl}/2026-11-06/failed"] == (
+    assert (await notices(temp_db))[f"release-exit/2026-11-06/{aapl}/2026-11-06/failed"] == (
         "Release exit could not close AAPL: No open broker position; awaiting reconciliation of existing orders. "
-        + NO_STOP
+        + no_stop(aapl)
     )
     assert await temp_db.get_state(SystemStateKey.TRADING_HALTED) is None
 
@@ -542,8 +591,8 @@ async def test_a_raising_close_is_recorded_by_type_name_and_never_retried(temp_d
     assert calls == [aapl]
     _, closed = await release_events(temp_db)
     assert (closed["payload"]["outcome"], closed["payload"]["close_result"]) == ("error", "ConnectionError")
-    assert (await notices(temp_db))[f"release-exit/{aapl}/2026-11-06/failed"] == (
-        f"Release exit could not close AAPL: the close raised ConnectionError. {NO_STOP}"
+    assert (await notices(temp_db))[f"release-exit/2026-11-06/{aapl}/2026-11-06/failed"] == (
+        f"Release exit could not close AAPL: the close raised ConnectionError. {no_stop(aapl)}"
     )
 
 
@@ -652,7 +701,7 @@ async def test_an_owed_close_failure_is_notified_only_until_close_plus_30(temp_d
     _, closed = await release_events(temp_db)
     assert (closed["payload"]["outcome"], closed["payload"]["notified"]) == ("refused", notified)
     queued = [key for key in await notices(temp_db) if key.startswith("release-exit")]
-    assert queued == ([f"release-exit/{signal_id}/2026-11-06/failed"] if notified else [])
+    assert queued == ([f"release-exit/2026-11-06/{signal_id}/2026-11-06/failed"] if notified else [])
 
 
 # --- failure of the pass itself --------------------------------------------------------------------------------

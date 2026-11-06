@@ -21,7 +21,8 @@ from urllib.parse import urlparse
 import httpx
 import numpy as np
 
-from agentic_trader.research.insider_filings import TICKERS_URL, _fetch, _validate_tickers
+from agentic_trader.data.edgar_http import TICKERS_URL
+from agentic_trader.research.insider_filings import _fetch, _validate_tickers
 
 
 __all__ = [

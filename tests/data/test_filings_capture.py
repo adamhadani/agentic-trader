@@ -18,12 +18,12 @@ from sqlalchemy import select
 
 from agentic_trader.config import AppConfig, FilingVetoConfig
 from agentic_trader.data.edgar_filings import FilingCategory, MatchedFiling
+from agentic_trader.data.edgar_http import TICKERS_URL
 from agentic_trader.data.filings_capture import (
     COVERAGE_READY_FRACTION,
     FILINGS_STREAM,
     MAX_CONSECUTIVE_FAILURES,
     SUBMISSIONS_URL_TEMPLATE,
-    TICKERS_URL,
     FilingsCaptureFailed,
     FilingsCaptureStore,
     FilingsCaptureWorker,

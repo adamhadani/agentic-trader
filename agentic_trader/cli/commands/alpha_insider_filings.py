@@ -15,9 +15,9 @@ import httpx
 
 from agentic_trader.cli.commands.alpha import research_environment
 from agentic_trader.cli.utils import coro
+from agentic_trader.data.edgar_http import REQUESTS_PER_SECOND
 from agentic_trader.research.insider_filings import (
     _TIMEOUT_SECONDS,
-    REQUESTS_PER_SECOND,
     InsiderFilingStore,
     acquire_insider_filings,
     parse_quarter,

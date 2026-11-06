@@ -603,7 +603,7 @@ filing_veto:
   offering_days: 7
   pre_scan_minutes: 30
 
-# Release exit for open native longs ahead of a report (same spec).
+# Release exit for open native equity positions, long or short, ahead of a report (same spec).
 release_exit:
   mode: "preview"   # preview since 2026-11-06; enforce is an operator decision on journaled evidence
   minutes_before_close: 30

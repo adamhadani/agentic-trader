@@ -1,5 +1,8 @@
 """EDGAR HTTP helpers shared by the daemon's SEC captures (the insider Form 4 capture and the filings capture).
 
+It owns the EDGAR access constants (the hosts, the ticker map URL and the fair-access pacing) for every caller,
+the daemon captures and the research acquisitions alike, so ``data/`` never imports ``research/`` for them.
+
 One GET is allowed only on ``https://www.sec.gov`` or ``https://data.sec.gov``, follows no redirect (the
 callers' clients set ``follow_redirects=False``), has a total deadline (``REQUEST_DEADLINE_SECONDS``) and a body
 budget (``MAX_DOCUMENT_BYTES``), and treats any response but a 200 (or a 404 the caller allows) as a failure.
@@ -22,13 +25,15 @@ from urllib.parse import urlparse
 
 import httpx
 
-from agentic_trader.research.insider_filings import REQUESTS_PER_SECOND
-
 
 __all__ = [
     "EDGAR_HOSTS",
     "MAX_DOCUMENT_BYTES",
+    "REQUESTS_PER_SECOND",
     "REQUEST_DEADLINE_SECONDS",
+    "SEC_DATA_HOST",
+    "SEC_HOST",
+    "TICKERS_URL",
     "TIMEOUT_SECONDS",
     "TRANSIENT_RETRY",
     "TRANSPORT_RETRY",
@@ -42,7 +47,13 @@ __all__ = [
     "retrying",
 ]
 
-EDGAR_HOSTS = frozenset({"www.sec.gov", "data.sec.gov"})
+SEC_HOST = "www.sec.gov"
+SEC_DATA_HOST = "data.sec.gov"
+EDGAR_HOSTS = frozenset({SEC_HOST, SEC_DATA_HOST})
+# The SEC ticker-to-CIK map, read by the filings capture and the research acquisitions.
+TICKERS_URL = f"https://{SEC_HOST}/files/company_tickers.json"
+# The SEC fair-access pacing every EDGAR caller uses.
+REQUESTS_PER_SECOND = 2
 USER_AGENT_ENV = "EDGAR_USER_AGENT"
 MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
 TIMEOUT_SECONDS = 60.0

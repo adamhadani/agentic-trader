@@ -33,6 +33,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from agentic_trader.data.edgar_filings import normalize_ticker
+from agentic_trader.data.edgar_http import SEC_HOST, TICKERS_URL
 from agentic_trader.research.short_volume import write_private
 
 
@@ -40,10 +41,7 @@ __all__ = [
     "DROP_RULES",
     "INDEX_URL",
     "MAX_ARCHIVE_BYTES",
-    "REQUESTS_PER_SECOND",
     "REQUIRED_TABLES",
-    "SEC_HOST",
-    "TICKERS_URL",
     "InsiderFilingStore",
     "InsiderTransaction",
     "Quarter",
@@ -57,11 +55,8 @@ __all__ = [
     "validate_archive",
 ]
 
-SEC_HOST = "www.sec.gov"
-INDEX_URL = "https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets"
-TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+INDEX_URL = f"https://{SEC_HOST}/data-research/sec-markets-data/insider-transactions-data-sets"
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
-REQUESTS_PER_SECOND = 2
 _TIMEOUT_SECONDS = 60.0
 
 REQUIRED_TABLES: dict[str, tuple[str, ...]] = {

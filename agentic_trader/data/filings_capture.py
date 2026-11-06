@@ -39,6 +39,8 @@ from sqlalchemy import select
 
 from agentic_trader.data.edgar_filings import MatchedFiling, parse_recent, ticker_ciks
 from agentic_trader.data.edgar_http import (
+    SEC_DATA_HOST,
+    TICKERS_URL,
     TIMEOUT_SECONDS,
     TRANSIENT_RETRY,
     USER_AGENT_ENV,
@@ -48,7 +50,6 @@ from agentic_trader.data.edgar_http import (
 )
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.market.session import ET_TZ
-from agentic_trader.research.insider_filings import TICKERS_URL
 from agentic_trader.research.setups.card_stats_worker import in_scan_window
 from agentic_trader.storage.models import DomainEventRecord
 
@@ -64,7 +65,6 @@ __all__ = [
     "MAX_CONSECUTIVE_FAILURES",
     "POLL_SECONDS",
     "SUBMISSIONS_URL_TEMPLATE",
-    "TICKERS_URL",
     "FilingsCaptureFailed",
     "FilingsCaptureStore",
     "FilingsCaptureWorker",
@@ -80,7 +80,7 @@ logger = logging.getLogger("copilot")
 
 FILINGS_STREAM = "filings/capture"
 _CAPTURE_LOCK = "filings-capture"
-SUBMISSIONS_URL_TEMPLATE = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+SUBMISSIONS_URL_TEMPLATE = f"https://{SEC_DATA_HOST}/submissions/CIK{{cik:010d}}.json"
 CAPTURE_AFTER_ET = time(6, 0)
 POLL_SECONDS = 300
 # A pass is a readiness pass when it covered at least this fraction of its mapped symbols.

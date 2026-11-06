@@ -1396,33 +1396,56 @@ def scan_supply(events: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]
     return dict(sorted(supply.items()))
 
 
-def filing_veto_summary(events: Sequence[Mapping[str, Any]], frame: pd.DataFrame) -> dict[str, Any]:
-    """The descriptive ``filing_veto`` block: what the late-filing / adverse 8-K / offering veto saw.
+FILING_VETO_GROUPS = ("static", "dynamic")
 
-    ``candidates``: ``n`` journaled candidates with a ``filings`` block and their ``by_status``;
-    ``would_block``: the ok-status candidates the rule would refuse, with ``by_category`` and ``rate`` (over
-    ok-status candidates; None with none); ``cards``: the sent cards the rule would have refused, with
-    ``n_matured`` and ``mean_net_excess_r`` over the matured ones. Reads the events for the candidate counts
-    (so a scan's candidates count whether or not they were labelled) and the frame's ``filings_would_block``
-    column for the cards. Never a gate: nothing in ``risk/``, ``card_policy`` or admission reads it.
-    """
+
+def _filing_veto_group(blocks: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """``n``, ``by_status``, ``coverage`` (the ok share; None with none) and the ok-status ``would_block`` count
+    with its ``by_category`` and ``rate`` (over ok-status candidates; None with none)."""
     by_status: dict[str, int] = {}
     by_category: dict[str, int] = {}
     n_ok = n_block = 0
+    for block in blocks:
+        status = str(block.get("status"))
+        _count(by_status, status)
+        if status != "ok":
+            continue
+        n_ok += 1
+        if block.get("would_block") is True:
+            n_block += 1
+            _count(by_category, block.get("category"))
+    return {
+        "n": len(blocks),
+        "by_status": dict(sorted(by_status.items())),
+        "coverage": n_ok / len(blocks) if blocks else None,
+        "would_block": n_block,
+        "by_category": dict(sorted(by_category.items())),
+        "rate": n_block / n_ok if n_ok else None,
+    }
+
+
+def filing_veto_summary(events: Sequence[Mapping[str, Any]], frame: pd.DataFrame) -> dict[str, Any]:
+    """The descriptive ``filing_veto`` block: what the late-filing / adverse 8-K / offering veto saw.
+
+    ``candidates``: ``n`` journaled candidates with a ``filings`` block (the ranked long equity candidates of a
+    scan judged while the veto was on), their ``by_status`` and ``coverage`` (the share whose status is ``ok``;
+    None with none); ``would_block``: the ok-status candidates the rule would refuse, with ``by_category`` and
+    ``rate`` (over ok-status candidates; None with none); ``by_universe``: the same counts (``n``, ``by_status``,
+    ``coverage``, ``would_block``, ``by_category``, ``rate``) for ``static`` names and for ``dynamic`` ones (a
+    candidate journaled with ``dynamic: true``), side by side, because the filings capture does not cover
+    dynamic-universe names in v1 and they journal ``uncovered`` by design; ``cards``: the sent cards the rule
+    would have refused, with ``n_matured`` and ``mean_net_excess_r`` over the matured ones. Reads the events for
+    the candidate counts (so a scan's candidates count whether or not they were labelled) and the frame's
+    ``filings_would_block`` column for the cards. Never a gate: nothing in ``risk/``, ``card_policy`` or admission
+    reads it.
+    """
+    groups: dict[str, list[Mapping[str, Any]]] = {group: [] for group in FILING_VETO_GROUPS}
     for payload in _universe_scan_payloads(events):
         for candidate in payload.get("candidates") or []:
             block = _filings_block(candidate)
-            if block is None:
-                continue
-            status = str(block.get("status"))
-            by_status[status] = by_status.get(status, 0) + 1
-            if status != "ok":
-                continue
-            n_ok += 1
-            if block.get("would_block") is True:
-                n_block += 1
-                category = str(block.get("category"))
-                by_category[category] = by_category.get(category, 0) + 1
+            if block is not None:
+                groups["dynamic" if candidate.get("dynamic") is True else "static"].append(block)
+    total = _filing_veto_group([block for blocks in groups.values() for block in blocks])
     n_cards = n_matured = 0
     mean_excess: float | None = None
     if not frame.empty and "filings_would_block" in frame:
@@ -1432,12 +1455,9 @@ def filing_veto_summary(events: Sequence[Mapping[str, Any]], frame: pd.DataFrame
         n_cards, n_matured = len(cards), len(matured)
         mean_excess = _finite_mean(matured, "net_excess_r") if n_matured else None
     return {
-        "candidates": {"n": sum(by_status.values()), "by_status": dict(sorted(by_status.items()))},
-        "would_block": {
-            "total": n_block,
-            "by_category": dict(sorted(by_category.items())),
-            "rate": n_block / n_ok if n_ok else None,
-        },
+        "candidates": {"n": total["n"], "by_status": total["by_status"], "coverage": total["coverage"]},
+        "would_block": {"total": total["would_block"], "by_category": total["by_category"], "rate": total["rate"]},
+        "by_universe": {group: _filing_veto_group(blocks) for group, blocks in groups.items()},
         "cards": {"n_would_block": n_cards, "mean_net_excess_r": mean_excess, "n_matured": n_matured},
     }
 

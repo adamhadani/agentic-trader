@@ -424,9 +424,16 @@ ranked long equity candidate carries it, including one that left before the veto
 `cards outcomes` adds `filing_veto` beside `supply` (`filing_veto_summary(events, frame)`), from the events
 for the candidate part and from the frame's `filings_would_block` column for the cards:
 
-- `candidates`: `n` journaled candidates with a `filings` block and their `by_status`;
+- `candidates`: `n` journaled candidates with a `filings` block (the ranked long equity candidates of scans
+  judged while the veto was on), their `by_status` and `coverage` (the share whose status is `ok`; `null` with
+  none);
 - `would_block`: `total` ok-status candidates the rule would refuse, `by_category` and `rate` (over ok-status
   candidates; `null` with none);
+- `by_universe`: the same counts side by side for `static` names and `dynamic` ones (a candidate journaled with
+  `dynamic: true`): `n`, `by_status`, `coverage`, `would_block` (the count), `by_category` and `rate`. The
+  filings capture covers the universe, held equities and `corporate_actions.extra_symbols` only, so in v1
+  dynamic-universe names are uncovered by design: they journal `uncovered`, are never refused, and their rate is
+  reported apart rather than diluting the static one;
 - `cards`: `n_would_block` sent cards the rule would have refused, `n_matured` of them and their
   `mean_net_excess_r` (beta-matched net excess; `null` with none matured).
 

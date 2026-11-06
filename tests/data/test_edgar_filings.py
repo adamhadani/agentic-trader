@@ -71,6 +71,35 @@ def test_parse_recent_rejects_mismatched_columns() -> None:
         parse_recent({"filings": {}}, "ABC", date(2026, 9, 7))
 
 
+def test_parse_recent_reads_the_primary_document_when_present() -> None:
+    p = _payload()
+    p["filings"]["recent"]["primaryDocument"] = ["d1.htm", "d2.htm", "d424b5.htm", "d4.htm"]
+    p["filings"]["recent"]["primaryDocDescription"] = ["8-K", "NT 10-Q", "424B5", ""]
+    got = parse_recent(p, "ABC", date(2026, 9, 7))
+    assert [(f.accession, f.primary_document, f.primary_doc_description) for f in got] == [
+        ("a1", "d1.htm", "8-K"),
+        ("a3", "d424b5.htm", "424B5"),
+    ]
+
+
+def test_parse_recent_reads_a_missing_primary_document_column_as_none() -> None:
+    p = _payload()
+    p["filings"]["recent"]["primaryDocument"] = ["d1.htm", "d2.htm", "d424b5.htm", "d4.htm"]  # no description
+    got = parse_recent(p, "ABC", date(2026, 9, 7))
+    assert [(f.primary_document, f.primary_doc_description) for f in got] == [("d1.htm", None), ("d424b5.htm", None)]
+    assert all(
+        f.primary_document is None and f.primary_doc_description is None
+        for f in parse_recent(_payload(), "ABC", date(2026, 9, 7))
+    )
+
+
+def test_parse_recent_rejects_a_mismatched_primary_document_column() -> None:
+    p = _payload()
+    p["filings"]["recent"]["primaryDocument"] = ["d1.htm"]
+    with pytest.raises(ValueError):
+        parse_recent(p, "ABC", date(2026, 9, 7))
+
+
 def test_ticker_ciks_maps_class_shares_and_drops_collisions() -> None:
     payload = {
         "0": {"cik_str": 1, "ticker": "BF-B"},
@@ -87,8 +116,27 @@ def test_normalize_ticker() -> None:
 def test_matched_filing_payload_round_trip() -> None:
     f = MatchedFiling("ABC", FilingCategory.ADVERSE_8K, "8-K", ("2.05",), date(2026, 10, 30), None, "a1")
     assert MatchedFiling.from_payload(f.to_payload()) == f
-    g = MatchedFiling("ABC", FilingCategory.OFFERING, "424B5", (), date(2026, 10, 30), "2026-10-30T16:05:23.000Z", "a2")
-    assert MatchedFiling.from_payload(g.to_payload()) == g
+    g = MatchedFiling(
+        "ABC",
+        FilingCategory.OFFERING,
+        "424B5",
+        (),
+        date(2026, 10, 30),
+        "2026-10-30T16:05:23.000Z",
+        "a2",
+        primary_document="d424b5.htm",
+        primary_doc_description="424B5",
+    )
+    payload = g.to_payload()
+    assert (payload["primary_document"], payload["primary_doc_description"]) == ("d424b5.htm", "424B5")
+    assert MatchedFiling.from_payload(payload) == g
+
+
+def test_a_payload_journaled_before_the_primary_document_fields_reads_them_as_none() -> None:
+    f = MatchedFiling("ABC", FilingCategory.OFFERING, "424B5", (), date(2026, 10, 30), None, "a2")
+    old = {k: v for k, v in f.to_payload().items() if k not in {"primary_document", "primary_doc_description"}}
+    got = MatchedFiling.from_payload(old)
+    assert got == f and got.primary_document is None and got.primary_doc_description is None
 
 
 def test_describe() -> None:

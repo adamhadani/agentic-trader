@@ -13,6 +13,14 @@ def _with(filings, **kwargs):
     return {**_candidate(**kwargs), "filings": filings}
 
 
+def _dynamic(filings, **kwargs):
+    """A dynamic-universe candidate, tagged as ``_journal_scan_ranking`` tags one."""
+    return {**_with(filings, **kwargs), "dynamic": True, "dynamic_source": "most_actives"}
+
+
+UNCOVERED = {"status": "uncovered", "would_block": None, "category": None}
+
+
 def _ok(would_block, category=None):
     return {"status": "ok", "would_block": would_block, "category": category}
 
@@ -24,7 +32,7 @@ EVENTS = [
         [
             _with(_ok(True, "late_filing"), contract="AAA"),
             _with(_ok(False), contract="BBB"),
-            _with({"status": "uncovered", "would_block": None, "category": None}, contract="CCC"),
+            _with(UNCOVERED, contract="CCC"),
             _with(None, contract="DDD"),
         ],
     ),
@@ -55,7 +63,7 @@ def _frame() -> pd.DataFrame:
 
 def test_summary_counts_rates_and_card_means():
     out = filing_veto_summary(EVENTS, _frame())
-    assert out["candidates"] == {"n": 5, "by_status": {"ok": 4, "uncovered": 1}}
+    assert out["candidates"] == {"n": 5, "by_status": {"ok": 4, "uncovered": 1}, "coverage": pytest.approx(4 / 5)}
     assert out["would_block"]["total"] == 3
     assert out["would_block"]["by_category"] == {"adverse_8k": 1, "late_filing": 2}
     assert out["would_block"]["rate"] == pytest.approx(3 / 4)
@@ -64,10 +72,49 @@ def test_summary_counts_rates_and_card_means():
     assert out["cards"]["mean_net_excess_r"] == pytest.approx(-0.25)
 
 
+def test_dynamic_names_are_reported_apart_from_static_ones():
+    """The capture never covers dynamic-universe names in v1, so they journal ``uncovered`` by design."""
+    dynamic_scan = _event(
+        "s3",
+        DECIDED_AT,
+        [
+            _dynamic(UNCOVERED, contract="DYN1"),
+            _dynamic(UNCOVERED, contract="DYN2"),
+            _dynamic(_ok(True, "offering"), contract="DYN3"),
+            _dynamic(None, contract="DYN4", direction="SHORT"),  # a short carries no block
+        ],
+    )
+    out = filing_veto_summary([*EVENTS, dynamic_scan], pd.DataFrame())
+    assert out["candidates"] == {"n": 8, "by_status": {"ok": 5, "uncovered": 3}, "coverage": pytest.approx(5 / 8)}
+    assert out["would_block"] == {
+        "total": 4,
+        "by_category": {"adverse_8k": 1, "late_filing": 2, "offering": 1},
+        "rate": pytest.approx(4 / 5),
+    }
+    assert out["by_universe"]["static"] == {
+        "n": 5,
+        "by_status": {"ok": 4, "uncovered": 1},
+        "coverage": pytest.approx(4 / 5),
+        "would_block": 3,
+        "by_category": {"adverse_8k": 1, "late_filing": 2},
+        "rate": pytest.approx(3 / 4),
+    }
+    assert out["by_universe"]["dynamic"] == {
+        "n": 3,
+        "by_status": {"ok": 1, "uncovered": 2},
+        "coverage": pytest.approx(1 / 3),
+        "would_block": 1,
+        "by_category": {"offering": 1},
+        "rate": pytest.approx(1.0),
+    }
+
+
 def test_summary_of_nothing_is_empty_not_an_error():
     out = filing_veto_summary([], pd.DataFrame())
-    assert out["candidates"] == {"n": 0, "by_status": {}}
+    assert out["candidates"] == {"n": 0, "by_status": {}, "coverage": None}
     assert out["would_block"] == {"total": 0, "by_category": {}, "rate": None}
+    empty = {"n": 0, "by_status": {}, "coverage": None, "would_block": 0, "by_category": {}, "rate": None}
+    assert out["by_universe"] == {"static": empty, "dynamic": empty}
     assert out["cards"] == {"n_would_block": 0, "mean_net_excess_r": None, "n_matured": 0}
 
 

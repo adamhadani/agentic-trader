@@ -460,7 +460,8 @@ class EarningsCaptureConfig(BaseModel):
     """Dated earnings-calendar capture (docs/superpowers/specs/2026-11-06-earnings-capture-design.md).
 
     The daemon captures the Nasdaq forward earnings calendar once per New York weekday for the next
-    ``horizon_days`` calendar days and journals it. Research and context only.
+    ``horizon_days`` calendar days and journals it. Research and context, and the release exit's second source
+    beside the live Nasdaq lookup (off, it leaves the live lookup only, so ``unknown`` is more likely).
     """
 
     model_config = {"extra": "forbid"}

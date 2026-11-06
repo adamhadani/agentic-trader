@@ -105,8 +105,9 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    The release exit (`release_exit.mode`, code default `off`) journals one `release-exit/{et_date}` pass at the
    calendar's close − `minutes_before_close` for tracked native equity positions reporting earnings before the next
    session's open (live lookup ∪ fresh capture; `unknown` never closes; catalog, probe and alpha positions are
-   `exempt`) and, in `enforce`, closes each once through `close_signal` with a stable `release-` request ID, a
-   refusal queuing a notice with no halt or review ([release exit](docs/production.md#release-exit)).
+   `exempt`) and, in `enforce`, closes each once through `close_signal` with a `release-` request ID stable within
+   the trading day (request IDs and notice keys carry it), a refusal queuing a notice with no halt or review; its
+   notices name `/close <signal_id>`, never `/flatten` ([release exit](docs/production.md#release-exit)).
 3. **Broker evidence:** never match exits by symbol alone, infer a fill price from
    an order request, or persist a stop ratchet before exact replacement confirmation.
    Preserve original thesis/risk. POST/PATCH/DELETE are never automatically retried.
@@ -136,7 +137,7 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    which also starts the alert clock for held incidents (window start if the summary fails; never muted);
    `entry_recovery`, `entry_cancellation`, `close_recovery`, `endpoint` and `storage` page at any hour, and the
    three broker-work checks can never be removed from `exempt_components`.
-   The daemon's earnings capture journals `earnings/calendar/<date>` once per New York weekday after 06:00 ET outside scan windows, all-or-nothing (`earnings_capture` readiness, stale after 4 days; nothing reads it yet, [production](docs/production.md#earnings-calendar-capture)).
+   The daemon's earnings capture journals `earnings/calendar/<date>` once per New York weekday after 06:00 ET outside scan windows, all-or-nothing (`earnings_capture` readiness, stale after 4 days, [production](docs/production.md#earnings-calendar-capture)); the release exit reads it (`reports_between`) beside the live Nasdaq lookup, so turning the capture off makes an `unknown` release-exit status more likely.
    The daemon's EDGAR filings capture (`filing_veto.capture`) journals dated NT-filing, adverse 8-K and offering evidence for the filing veto (`filings_capture` readiness, stale after `filing_veto.max_age_seconds`; stale or missing evidence never vetoes), and ships in `preview` with the release exit.
    Suggestion scans run at configured New York times and spend a derived per-session
    card budget (signals table, ET trading day); `PENDING` cards reserve no capacity;
