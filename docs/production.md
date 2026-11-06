@@ -1452,6 +1452,8 @@ itself.
   registry's promote/shadow/demote. Confirm a `pead_decision` journal event
   (`ok`, `unavailable` or empty) at the next scheduled 10:35 New York scan, and,
   if an event qualified, the drift card in Telegram.
+- A PEAD decision fetches each qualifying symbol's daily bars; a failed fetch is retried once after 2 seconds,
+  and a second failure leaves the reason with the suffix ` (after 1 retry)`.
 
 ### Insider watch Form 4 capture
 
@@ -1509,6 +1511,35 @@ The [watch cards](apriori-alphas.md#watch-cards) read SEC Form 4 filings from a 
   `apriori.max_drift_lateness_seconds`, the same cap as the PEAD probe: changing it moves both.
 - **Operate.** Use `copilot cards outcomes` for the evidence block. To stop new watch cards without touching
   positions, set `insider_watch.enabled: false` and restart; open watch positions keep their protection.
+
+### Earnings calendar capture
+
+A daemon worker (`agentic_trader/data/earnings_capture.py`), enabled with `earnings_capture.enabled` (shipped
+`true`), keeps a dated record of the Nasdaq forward earnings calendar. Nothing reads it yet; it exists so
+that each season's forward dates are kept as they were published.
+
+- **Schedule.** On each New York weekday after 06:00, outside the suggestion-scan windows (which are never
+  delayed), it takes one capture dated that day. A poll runs every 30 minutes until one is journaled.
+- **Targets.** One Nasdaq calendar page per weekday from today through `earnings_capture.horizon_days` (28)
+  ahead, one request per second. A page is retried once, only after a transport error, HTTP 429 or a 5xx; any other
+  unaccepted response fails the pass at once.
+- **All or nothing.** If any page is still unaccepted (after its retry, where one applies), nothing is journaled and the next poll
+  tries again. A scan window that opens between two requests stops the pass quietly.
+- **Journal and files.** One `earnings/calendar/<capture date>` event on stream `earnings/calendar` holds every
+  forward row and each page's body digest. The compressed raw bodies are private files under
+  `<state>/data/earnings_calendar/<capture date>/`, never in Git.
+- **Readiness.** `earnings_capture` is ready while the latest capture is at most 4 days old (a long weekend).
+  A failed poll is observed by exception type name and stays ready while a capture that recent exists, so a
+  transient Nasdaq outage does not page; the component turns not ready once the latest capture is older than 4
+  days or the worker stops observing. With no capture yet it reads ready (`not_due; no capture yet`) only until
+  a pass has run in this process. It is not a data-quality check.
+- **Runbook.** Inspect with `uv run copilot doctor --readiness` and
+  `uv run copilot db events --stream earnings/calendar --limit 1`. A not-ready component means no capture in
+  4 days: check Nasdaq reachability and the daemon log (`earnings_capture_failed`: for an incomplete capture the log names the
+  target date and the reason, an HTTP status, `rCode`, fixed string or exception type name; for any other failure the
+  exception type only). A missed day cannot be recovered afterwards, because a later fetch shows the calendar as
+  revised since, not as it was published that day. To
+  stop the worker, set `earnings_capture.enabled: false` and restart.
 
 ## Provider read and forecast hardening
 

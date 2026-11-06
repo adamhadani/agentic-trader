@@ -8,8 +8,9 @@ the static liquidity reference) makes the whole session unavailable: no partial 
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Literal, Protocol
@@ -36,6 +37,11 @@ __all__ = ["LOOKBACK_CALENDAR_DAYS", "DailyBars", "LiveEvents", "event_document"
 LOOKBACK_CALENDAR_DAYS = 120
 # A journaled unavailable reason keeps the provider's message, bounded.
 REASON_MAX_CHARS = 200
+# One GET timeout on 2026-11-05 skipped the decision; each of the two bar reads is retried once.
+BARS_RETRY_DELAY_SECONDS = 2.0
+_RETRY_SUFFIX = " (after 1 retry)"
+
+logger = logging.getLogger(__name__)
 
 
 class DailyBars(Protocol):
@@ -98,6 +104,26 @@ def _benchmark_bars_available(frame: pd.DataFrame | None, d_minus_1: date, d_plu
     return bool(np.all(np.isfinite(closes)))
 
 
+async def _fetch_daily(
+    bars: DailyBars,
+    symbols: Sequence[str],
+    start: datetime,
+    end: datetime,
+    adjustment: str,
+    sleep: Callable[[float], Awaitable[None]],
+) -> Mapping[str, pd.DataFrame]:
+    """One daily-bars GET (safe to repeat), retried once after `BARS_RETRY_DELAY_SECONDS`."""
+    try:
+        return await asyncio.to_thread(bars.fetch_daily_many, symbols, start, end, adjustment=adjustment)
+    except Exception as exc:
+        logger.warning(
+            "PEAD daily bars fetch failed; retrying once",
+            extra={"event": "pead_bars_retry", "reason": type(exc).__name__},
+        )
+    await sleep(BARS_RETRY_DELAY_SECONDS)
+    return await asyncio.to_thread(bars.fetch_daily_many, symbols, start, end, adjustment=adjustment)
+
+
 async def live_events(
     entry: PeadEntry,
     session: date,
@@ -106,6 +132,7 @@ async def live_events(
     calendar,
     bars: DailyBars,
     static_symbols: Sequence[str],
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> LiveEvents:
     """The narrow-leg PEAD events for ``session``, computed by the study's own ``build_events``.
 
@@ -132,12 +159,12 @@ async def live_events(
     start = datetime.combine(trading[0], time.min, tzinfo=UTC)
     end = datetime.combine(as_of, time(23, 59), tzinfo=UTC)
     try:
-        adjusted = await asyncio.to_thread(bars.fetch_daily_many, [benchmark, *reporters], start, end, adjustment="all")
-        raw = await asyncio.to_thread(
-            bars.fetch_daily_many, sorted({*reporters, *static_symbols}), start, end, adjustment="raw"
-        )
+        adjusted = await _fetch_daily(bars, [benchmark, *reporters], start, end, "all", sleep)
+        raw = await _fetch_daily(bars, sorted({*reporters, *static_symbols}), start, end, "raw", sleep)
     except Exception as exc:
-        reason = f"bars_unavailable: {type(exc).__name__}: {exc}"[:REASON_MAX_CHARS]
+        reason = (
+            f"bars_unavailable: {type(exc).__name__}: {exc}"[: REASON_MAX_CHARS - len(_RETRY_SUFFIX)] + _RETRY_SUFFIX
+        )
         return _unavailable(session, reason, report_date=report_date, page=page)
 
     if not _benchmark_bars_available(adjusted.get(benchmark), d_minus_1, as_of):

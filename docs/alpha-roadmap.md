@@ -986,6 +986,27 @@ stop-intent recovery, composition/bootstrap and independent operations monitorin
 remain in [architecture-review.md](architecture-review.md#remaining-findings-ranked).
 Portfolio execution cannot bypass those ownership/protection constraints.
 
+## Pre-event program (2026-11-06)
+
+Research verdict on event-driven work that costs nothing to build.
+
+- **Build first: the dated earnings-calendar capture.** Nasdaq dates are only as reliable as a match to 8-K
+  Item 2.02 times shows, the archive's consensus fields were fetched after the fact, and every season not
+  captured is lost.
+- **Then: an uncertainty-conditioned run-up.** Top volatility tercile, buy about ten sessions before the
+  report, sell at the day -1 close, never hold through. The development read covers 2016-2026 and can only
+  fail. Prospective confirmation starts with the Q4 2026 season. The published effect is +1.26% over ten
+  sessions for the high-uncertainty tercile, 1996-2019, with nothing measured after 2019. Two prospective
+  seasons can reject a dead rule; confirming a half-size effect takes about seven seasons.
+- **In preview: an EDGAR negative-filing veto layer for long cards** (NT 10-K/10-Q, 8-K Items
+  2.04/2.05/2.06/4.02/5.01, convertible pricing, lock-up expiry), **and a release exit for open native
+  longs.** The earnings blackout gates entries only, so a native long opened 8 or more calendar days ahead can
+  hold through a report.
+- **Later: analyst and investor days,** after an EDGAR count of announcements.
+- **Dropped:** the unconditional announcement premium; hold-through surprise bets (scheduling, seasonality,
+  streaks, shorting, insider selling and news tone, which are vetoes at most); LLM backtests on historical
+  text; index-inclusion bets; buyback, SEO, split and pre-FOMC drifts; Google Trends, Reddit and StockTwits.
+
 ## References
 
 - [DSR, including independent-trial treatment in Appendix 3](https://www.davidhbailey.com/dhbpapers/deflated-sharpe.pdf).
