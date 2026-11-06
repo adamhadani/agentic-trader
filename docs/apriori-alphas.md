@@ -337,4 +337,8 @@ and Zhang) on cohort v3. It is a development read: the window is spent, so it ca
   promotion, shadow or registry credit.
 - **Run.** `copilot alpha apriori-study config/research/apriori/runup-v1.json --output <new-dir>
   --cache <pooled-cache> --earnings-pages <archive> --corporate-actions <actions.json>`. Ledger row L43.
-- **Result: pending.**
+- **Result: `failed` (2026-11-06, [result](apriori-runup-2026-11-06.md)).** The legs return −0.070R net of a
+  beta-matched SPY and per-name cost (10,395 legs, ci90 [−0.101, −0.037]) and −0.006R against their matched
+  controls (ci90 [−0.026, +0.014]). P3 and P5 fail too, and P4 holds. The planted check was detected (MDE
+  0.039R), so this is a powered null. The pseudo-events' P2 did not hold. The control-band sensitivity shows
+  no leak. The lane is closed: no prospective read, no probe.

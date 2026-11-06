@@ -8,8 +8,8 @@ state something, the row says "not stated in the doc". Nothing is inferred from 
 
 The ledger does not change any gate, and a row here grants no promotion, shadow or probe credit.
 It holds reads L01–L43; L40–L42 (the [IC lane](alpha-ic-lane.md)) were added before their first read and
-have results (2026-10-31); L43 (the pre-earnings run-up development read) is declared before its read and is
-pending.
+have results (2026-10-31); L43 (the pre-earnings run-up development read) was declared before its read and
+failed (2026-11-06).
 
 ## Rules
 
@@ -179,11 +179,11 @@ after L40 means a new revision and a re-run of the checks.
 
 ### Pre-earnings run-up (cohort v3, development window W1/W2/W6)
 
-Declared before the read. Frozen file `config/research/apriori/runup-v1.json`; the lane's α is in the table above.
+Declared before the read, read on 2026-11-06. Frozen file `config/research/apriori/runup-v1.json`; the lane's α is in the table above.
 
 | Id | Date | Lane / study | Cohort | What will be read | Result doc | Verdict |
 | --- | --- | --- | --- | --- | --- | --- |
-| L43 | 2026-11-06 | `runup` v1, pre-earnings run-up development read | Cohort v3 (`cohort3-events-v1`) | Outcomes, decisions 2016-08-01 → 2026-07-17; development only, cannot pass | pending | pending |
+| L43 | 2026-11-06 | `runup` v1, pre-earnings run-up development read | Cohort v3 (`cohort3-events-v1`) | Outcomes, decisions 2016-08-01 → 2026-07-17; development only, cannot pass | [results](apriori-runup-2026-11-06.md) | **Fail, lane closed:** P1 −0.070R net of beta-matched SPY (ci90 [−0.101, −0.037]); P2 −0.006R vs matched controls (ci90 [−0.026, +0.014]); P3, P5 fail; planted detected, MDE 0.039R. No α claim |
 
 ### Prospective from 2026-08-01
 
