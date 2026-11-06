@@ -410,6 +410,29 @@ Only its alignment and tone buckets are mature-row-only (and leave out rows with
 counts cover every row with a block (populations in [news context](news-context.md#attribution)). It
 never feeds `card_policy` or `card_stats`.
 
+## Filing veto
+
+The `filing_veto` entry rule ([risk policy](risk-policy.md)) is measured, never gated, by this block. Each
+`scan_candidates_ranked` candidate carries `filings`: `{status, would_block, category}` for a long
+equity candidate judged while `filing_veto.entry_block` is `preview` or `enforce`, and `null` for a short, a
+non-equity, a veto that is off or a scan without a lookup. `status` is the evidence status (`ok`, `stale`,
+`unavailable`, `uncovered`); `would_block` and `category` are set only when it is `ok`. It is
+classified from the scan's in-memory lookup by the one shared helper (`agent/filing_veto.py:filing_veto_evidence`,
+the same one the evaluator gate and tap gate use, no I/O), independently of the evaluator's result, so every
+ranked long equity candidate carries it, including one that left before the veto gate.
+
+`cards outcomes` adds `filing_veto` beside `supply` (`filing_veto_summary(events, frame)`), from the events
+for the candidate part and from the frame's `filings_would_block` column for the cards:
+
+- `candidates`: `n` journaled candidates with a `filings` block and their `by_status`;
+- `would_block`: `total` ok-status candidates the rule would refuse, `by_category` and `rate` (over ok-status
+  candidates; `null` with none);
+- `cards`: `n_would_block` sent cards the rule would have refused, `n_matured` of them and their
+  `mean_net_excess_r` (beta-matched net excess; `null` with none matured).
+
+A pre-deploy event has no `filings` and reads as absent. Nothing in `risk/`, `card_policy`, `card_stats` or
+admission reads this block.
+
 ## Regime and recurrence context
 
 Spec: [regime and recurrence](superpowers/specs/2026-10-14-regime-recurrence-design.md). Two more

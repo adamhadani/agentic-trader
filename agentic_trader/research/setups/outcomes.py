@@ -174,6 +174,7 @@ _COLUMNS = (
     "timing_r",
     *_CF_COLUMNS,
     "market_reason",
+    "filings_would_block",
     "decided_at",
     "reason",
 )
@@ -363,6 +364,18 @@ def _would_withhold(entry: dict[str, Any]) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+def _filings_block(entry: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    block = entry.get("filings")
+    return block if isinstance(block, dict) else None
+
+
+def _filings_would_block(entry: dict[str, Any]) -> bool | None:
+    """The journaled filing-veto verdict, or None unless the candidate's evidence status was ok."""
+    block = _filings_block(entry)
+    value = block.get("would_block") if block is not None and block.get("status") == "ok" else None
+    return value if isinstance(value, bool) else None
+
+
 NEWS_ALIGNMENTS = ("aligned", "opposed", "neutral", "none")
 RESOLVED_HITS = (BracketHit.TARGET.value, BracketHit.STOP.value, BracketHit.TIMEOUT.value)
 PRIOR_OUTCOMES = (*RESOLVED_HITS, "none")
@@ -467,6 +480,7 @@ def _row(
         "news_catalyst": score.get("catalyst"),
         "news_relevance": score.get("relevance"),
         "news_alignment": news_alignment(entry.get("direction"), score.get("tone")),
+        "filings_would_block": _filings_would_block(entry),
         "regime_vix": regime.get("vix"),
         "regime_vix_regime": regime.get("vix_regime"),
         "regime_risk_multiplier": regime.get("risk_multiplier"),
@@ -1379,6 +1393,52 @@ def scan_supply(events: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]
             for key, value in entry["funnel"].items()
         }
     return dict(sorted(supply.items()))
+
+
+def filing_veto_summary(events: Sequence[Mapping[str, Any]], frame: pd.DataFrame) -> dict[str, Any]:
+    """The descriptive ``filing_veto`` block: what the late-filing / adverse 8-K / offering veto saw.
+
+    ``candidates``: ``n`` journaled candidates with a ``filings`` block and their ``by_status``;
+    ``would_block``: the ok-status candidates the rule would refuse, with ``by_category`` and ``rate`` (over
+    ok-status candidates; None with none); ``cards``: the sent cards the rule would have refused, with
+    ``n_matured`` and ``mean_net_excess_r`` over the matured ones. Reads the events for the candidate counts
+    (so a scan's candidates count whether or not they were labelled) and the frame's ``filings_would_block``
+    column for the cards. Never a gate: nothing in ``risk/``, ``card_policy`` or admission reads it.
+    """
+    by_status: dict[str, int] = {}
+    by_category: dict[str, int] = {}
+    n_ok = n_block = 0
+    for payload in _universe_scan_payloads(events):
+        for candidate in payload.get("candidates") or []:
+            block = _filings_block(candidate)
+            if block is None:
+                continue
+            status = str(block.get("status"))
+            by_status[status] = by_status.get(status, 0) + 1
+            if status != "ok":
+                continue
+            n_ok += 1
+            if block.get("would_block") is True:
+                n_block += 1
+                category = str(block.get("category"))
+                by_category[category] = by_category.get(category, 0) + 1
+    n_cards = n_matured = 0
+    mean_excess: float | None = None
+    if not frame.empty and "filings_would_block" in frame:
+        would = frame["filings_would_block"].map(lambda value: value is True).astype(bool)
+        cards = frame.loc[would & frame["sent"].astype(bool)]
+        matured = cards.loc[~cards["hit"].isin([BracketHit.IMMATURE.value, FETCH_FAILED_HIT])]
+        n_cards, n_matured = len(cards), len(matured)
+        mean_excess = _finite_mean(matured, "net_excess_r") if n_matured else None
+    return {
+        "candidates": {"n": sum(by_status.values()), "by_status": dict(sorted(by_status.items()))},
+        "would_block": {
+            "total": n_block,
+            "by_category": dict(sorted(by_category.items())),
+            "rate": n_block / n_ok if n_ok else None,
+        },
+        "cards": {"n_would_block": n_cards, "mean_net_excess_r": mean_excess, "n_matured": n_matured},
+    }
 
 
 def summarize(

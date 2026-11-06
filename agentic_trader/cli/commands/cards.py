@@ -34,6 +34,7 @@ from agentic_trader.research.setups.outcomes import (
     DEFAULT_COST_BPS_PER_SIDE,
     DEFAULT_MAX_HOLD_SESSIONS,
     attach_execution,
+    filing_veto_summary,
     label_journaled,
     scan_supply,
     summarize,
@@ -106,6 +107,7 @@ async def outcomes_cmd(days: int) -> None:
             slots=config.scheduler.suggestion_scan_times_et,
         )
         summary["supply"] = scan_supply(events)
+        summary["filing_veto"] = filing_veto_summary(events, frame)
         summary["execution"] = summarize_execution(execution)
         click.echo(json.dumps(summary, indent=2, default=str))
         if frame.empty:

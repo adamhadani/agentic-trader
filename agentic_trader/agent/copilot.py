@@ -38,6 +38,7 @@ from agentic_trader.agent.earnings import (
     earnings_blackout_reason,
 )
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
+from agentic_trader.agent.filing_veto import filing_veto_evidence, journal_filings_block
 from agentic_trader.agent.insider_watch import CARDED_THIS_SCAN, InsiderWatchSource, build_insider_watch_source
 from agentic_trader.agent.llm_gate import (
     LLM_UNAVAILABLE_EARLIER_IN_SCAN,
@@ -186,7 +187,6 @@ from agentic_trader.risk import (
     RiskLimits,
     corporate_action_block,
     entry_session_open,
-    filing_veto_block,
     normalize_symbol,
     per_trade_risk,
     per_trade_risk_budget,
@@ -2038,6 +2038,7 @@ class TradingCopilot:
                     shadow_by_rank=shadow_by_rank[:native_count],
                     llm_by_rank=llm_by_rank[:native_count],
                     news_by_rank=news_by_rank[:native_count],
+                    filings_lookup=filings_lookup,
                     signal_ids_by_rank=signal_ids_by_rank[:native_count],
                     card_policy_by_rank=policy_by_rank[:native_count],
                     book_by_rank=book_by_rank[:native_count],
@@ -2219,6 +2220,7 @@ class TradingCopilot:
                 shadow_by_rank=[],
                 llm_by_rank=[],
                 news_by_rank=[],
+                filings_lookup=None,
                 signal_ids_by_rank=[],
                 card_policy_by_rank=[],
                 book_by_rank=[],
@@ -2488,6 +2490,24 @@ class TradingCopilot:
         ]
         return list(shadow_blocks(vectors, ranker))
 
+    def _journal_filings(
+        self, candidate: Any, lookup: FilingsLookup | None, decided_at: datetime
+    ) -> dict[str, Any] | None:
+        """The candidate's journaled filing-veto summary from the scan's in-memory lookup (no I/O); null for a
+        short, a non-equity, a veto that is off or no lookup. Independent of the evaluator's outcome, so a
+        candidate rejected before gate 2d still carries it."""
+        policy = self.config.filing_veto
+        if (
+            lookup is None
+            or policy.entry_block == "off"
+            or normalize_asset_class(str(getattr(candidate, "asset_class", "")))
+            != normalize_asset_class(AssetClass.EQUITY)
+            or str(candidate.direction).upper() != Direction.LONG
+        ):
+            return None
+        block, _ = filing_veto_evidence(lookup, candidate.contract, decided_at.astimezone(ET_TZ).date(), policy)
+        return journal_filings_block(block)
+
     async def _journal_scan_ranking(
         self,
         *,
@@ -2507,6 +2527,7 @@ class TradingCopilot:
         shadow_by_rank: list[dict[str, Any] | None],
         llm_by_rank: list[dict[str, Any] | None],
         news_by_rank: list[dict[str, Any] | None],
+        filings_lookup: FilingsLookup | None,
         signal_ids_by_rank: list[int | None],
         card_policy_by_rank: list[CardPolicyDecision | None],
         book_by_rank: list[BookSizingDecision | None],
@@ -2536,6 +2557,9 @@ class TradingCopilot:
                     "shadow": shadow_by_rank[rank - 1],
                     "llm": llm_by_rank[rank - 1],
                     "news": news_by_rank[rank - 1],
+                    # The filing-veto evidence the evaluator saw ({status, would_block, category}); null for a
+                    # short, a non-equity, a veto that is off or no lookup. Descriptive, never a gate.
+                    "filings": self._journal_filings(candidate, filings_lookup, decided_at),
                     "signal_id": signal_ids_by_rank[rank - 1],
                     "card_policy": journal_block(card_policy_by_rank[rank - 1], policy.mode),
                     "book_sizing": self.book_sizer.journal_block(book_by_rank[rank - 1]),
@@ -3909,9 +3933,7 @@ class TradingCopilot:
         lookup = await self._filings_lookup(now)
         if lookup is None or lookup.status != "ok" or not lookup.covers(contract):
             return None
-        rejection = filing_veto_block(
-            lookup.for_symbol(contract), contract, now.astimezone(ET_TZ).date(), windows=policy.windows()
-        )
+        _, rejection = filing_veto_evidence(lookup, contract, now.astimezone(ET_TZ).date(), policy)
         return rejection.reason if rejection is not None else None
 
     async def _tap_gate_reason(

@@ -19,6 +19,7 @@ from agentic_trader.agent.earnings import (
     earnings_blackout_reason,
     earnings_note,
 )
+from agentic_trader.agent.filing_veto import filing_veto_evidence
 from agentic_trader.agent.llm_gate import LLM_KEY_MISSING, classify_gate_reply, llm_unavailable_reason
 from agentic_trader.agent.position_sizing import PositionSizingResult, calculate_dynamic_sizing
 from agentic_trader.agent.prompts import USER_EVALUATION_TEMPLATE, build_system_prompt, gate_prompt_sha256
@@ -41,11 +42,9 @@ from agentic_trader.risk import (
     RiskRule,
     aggregate_stop_risk,
     blocking_corporate_action,
-    blocking_filing,
     book_gates,
     corporate_action_block,
     entry_session_open,
-    filing_veto_block,
     per_trade_risk,
     per_trade_risk_budget,
     regime_breakout,
@@ -671,38 +670,18 @@ class RiskEvaluator:
             and filings is not None
             and filing_policy.entry_block != "off"
         ):
-            filings_as_of = filings.as_of.isoformat() if filings.as_of else None
-            if filings.status != "ok":
-                filings_block = {"status": filings.status, "mode": filing_policy.entry_block}
-            elif not filings.covers(candidate.contract):
-                filings_block = {"status": "uncovered", "mode": filing_policy.entry_block, "as_of": filings_as_of}
-            else:
-                today = evaluated_at.astimezone(ET_TZ).date()
-                windows = filing_policy.windows()
-                symbol_filings = filings.for_symbol(candidate.contract)
-                rejection = filing_veto_block(symbol_filings, candidate.contract, today, windows=windows)
-                filing = blocking_filing(symbol_filings, candidate.contract, today, windows=windows)
-                filings_block = {
-                    "status": "ok",
-                    "mode": filing_policy.entry_block,
-                    "as_of": filings_as_of,
-                    "would_block": rejection is not None,
-                    "category": filing.category.value if filing is not None else None,
-                    "form": filing.form if filing is not None else None,
-                    "items": list(filing.items) if filing is not None else None,
-                    "filing_date": filing.filing_date.isoformat() if filing is not None else None,
-                    "accession": filing.accession if filing is not None else None,
-                    "reason": rejection.reason if rejection is not None else None,
-                }
-                if rejection is not None and filing_policy.entry_block == "enforce":
-                    return _rejected(
-                        rejection.reason,
-                        rejection.rule,
-                        thesis=f"Rejected: filing veto for {candidate.contract}.",
-                        earnings_note=earnings_note_value,
-                        corporate_actions=corporate_block,
-                        filings=filings_block,
-                    )
+            filings_block, rejection = filing_veto_evidence(
+                filings, candidate.contract, evaluated_at.astimezone(ET_TZ).date(), filing_policy
+            )
+            if rejection is not None and filing_policy.entry_block == "enforce":
+                return _rejected(
+                    rejection.reason,
+                    rejection.rule,
+                    thesis=f"Rejected: filing veto for {candidate.contract}.",
+                    earnings_note=earnings_note_value,
+                    corporate_actions=corporate_block,
+                    filings=filings_block,
+                )
 
         # 3. Regime breakout suppression (agentic_trader.risk.regime_breakout); the regime detail
         #    stays in the thesis.
