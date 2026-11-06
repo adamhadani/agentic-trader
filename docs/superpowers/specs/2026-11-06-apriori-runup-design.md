@@ -174,11 +174,12 @@ excess return above 3 standard deviations inside the hold, a check for releases 
 - `config/research/apriori/runup-v1.json`: decisions 2016-08-01 → 2026-07-17 (the last `E` the archive covers
   is 2026-07-31), `bars_through` 2026-09-01, `recent_from` 2023-01-01, and the values above.
 - `research/apriori/runup_events.py` (sections 4 and 6's candidate rules, placebo draws),
-  `research/apriori/runup_study.py` (labels, controls, net excess, P1–P4, placebo, planted, diagnostics,
-  executor), `research/apriori/runup_runner.py` (input assembly with every digest checked before use).
+  `research/apriori/runup_study.py` (labels, controls, net excess, P1–P5, placebo, planted, diagnostics,
+  executor), `research/apriori/runup_runner.py` (input assembly: the pooled protocol, cohort, cube, pages
+  and actions digests are checked before use; the SPY files and the calendar are recorded by digest).
 - `alpha apriori-study` dispatches on `id: runup` (as it does for `exdiv` and `insider`).
 - The executor writes `protocol.json` and `manifest.json` before any provider call, then `events.csv.gz`,
-  `labels.csv.gz`, `controls.csv.gz`, `placebo.csv.gz`, `planted.json`, `result.json`. Every failure is
+  `labels.csv.gz`, `controls.csv.gz`, `control_cells.csv.gz`, `placebo.csv.gz`, `planted.json`, `result.json`. Every failure is
   `status: failed` with the exception; `authorizes_promotion` is always false.
 - Run output goes under `~/agentic-trader-research/apriori-runup-v1-<date>`, never into the repository.
 
