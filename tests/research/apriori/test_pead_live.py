@@ -2,6 +2,7 @@ import json
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
+import httpx
 import numpy as np
 import pandas as pd
 import pytest
@@ -10,7 +11,7 @@ from agentic_trader.agent.earnings import CalendarRow, EarningsTiming, ReportedP
 from agentic_trader.market.session import MarketCalendarDay
 from agentic_trader.research.apriori.catalog import load_pead_entry
 from agentic_trader.research.apriori.pead_events import MarketData, build_events
-from agentic_trader.research.apriori.pead_live import event_document, live_events
+from agentic_trader.research.apriori.pead_live import REASON_MAX_CHARS, event_document, live_events
 
 
 ENTRY = load_pead_entry(Path(__file__).resolve().parents[3] / "config/research/apriori/pead-v1.json").entry
@@ -101,6 +102,29 @@ class Bars:
             raise RuntimeError(self.message)
         source = self.adjusted if adjustment == "all" else self.raw
         return {s: source[s] for s in symbols if s in source}
+
+
+class FlakyBars(Bars):
+    """Raises `httpx.ReadTimeout` for the first `failures[adjustment]` calls of each adjustment."""
+
+    def __init__(self, *args, failures: dict[str, int], **kwargs):
+        super().__init__(*args, **kwargs)
+        self.failures = dict(failures)
+
+    def fetch_daily_many(self, symbols, start, end, *, adjustment):
+        if self.failures.get(adjustment, 0) > 0:
+            self.failures[adjustment] -= 1
+            self.calls.append((tuple(symbols), start, end, adjustment))
+            raise httpx.ReadTimeout("read operation timed out")
+        return super().fetch_daily_many(symbols, start, end, adjustment=adjustment)
+
+
+class Sleeps:
+    def __init__(self):
+        self.delays: list[float] = []
+
+    async def __call__(self, delay: float) -> None:
+        self.delays.append(delay)
 
 
 def daily_frame(days: list[date], closes, volume: float = 1_000_000.0, spread: float = 1.0) -> pd.DataFrame:
@@ -297,7 +321,7 @@ _NOT_A_SESSION = date(2026, 10, 31)  # Saturday
     ],
 )
 async def test_unavailable_reasons(overrides, fragment):
-    result = await live_events(**base_kwargs(**overrides))
+    result = await live_events(**base_kwargs(**overrides), sleep=Sleeps())
 
     assert result.status == "unavailable"
     assert result.events == ()
@@ -305,9 +329,57 @@ async def test_unavailable_reasons(overrides, fragment):
 
 
 async def test_a_bar_fetch_failure_keeps_the_exception_message_bounded():
-    result = await live_events(**base_kwargs(bars=Bars(ADJUSTED_FRAMES, RAW_FRAMES, fail=True)))
-    assert result.reason == "bars_unavailable: RuntimeError: bars unavailable"
+    result = await live_events(**base_kwargs(bars=Bars(ADJUSTED_FRAMES, RAW_FRAMES, fail=True)), sleep=Sleeps())
+    assert result.reason == "bars_unavailable: RuntimeError: bars unavailable (after 1 retry)"
 
-    long = await live_events(**base_kwargs(bars=Bars(ADJUSTED_FRAMES, RAW_FRAMES, fail=True, message="x" * 500)))
-    assert long.reason == ("bars_unavailable: RuntimeError: " + "x" * 500)[:200]
-    assert len(long.reason) == 200
+    long = await live_events(
+        **base_kwargs(bars=Bars(ADJUSTED_FRAMES, RAW_FRAMES, fail=True, message="x" * 500)), sleep=Sleeps()
+    )
+    assert long.reason.startswith("bars_unavailable: RuntimeError: xxx")
+    assert long.reason.endswith(" (after 1 retry)")
+    assert len(long.reason) == REASON_MAX_CHARS
+
+
+async def test_bars_retry_after_first_timeout():
+    bars = FlakyBars(ADJUSTED_FRAMES, RAW_FRAMES, failures={"all": 1})
+    sleep = Sleeps()
+
+    result = await live_events(**base_kwargs(bars=bars), sleep=sleep)
+
+    assert result.status == "ok"
+    assert [call[3] for call in bars.calls] == ["all", "all", "raw"]
+    assert sleep.delays == [2.0]
+
+
+async def test_raw_fetch_retry():
+    bars = FlakyBars(ADJUSTED_FRAMES, RAW_FRAMES, failures={"raw": 1})
+    sleep = Sleeps()
+
+    result = await live_events(**base_kwargs(bars=bars), sleep=sleep)
+
+    assert result.status == "ok"
+    assert [call[3] for call in bars.calls] == ["all", "raw", "raw"]
+    assert sleep.delays == [2.0]
+
+
+async def test_bars_unavailable_after_retry():
+    bars = FlakyBars(ADJUSTED_FRAMES, RAW_FRAMES, failures={"all": 2})
+    sleep = Sleeps()
+
+    result = await live_events(**base_kwargs(bars=bars), sleep=sleep)
+
+    assert result.status == "unavailable"
+    assert result.reason.startswith("bars_unavailable: ReadTimeout")
+    assert result.reason.endswith("(after 1 retry)")
+    assert len(result.reason) <= REASON_MAX_CHARS
+    assert [call[3] for call in bars.calls] == ["all", "all"]
+    assert sleep.delays == [2.0]
+
+
+async def test_no_retry_on_success():
+    sleep = Sleeps()
+
+    result = await live_events(**base_kwargs(), sleep=sleep)
+
+    assert result.status == "ok"
+    assert sleep.delays == []

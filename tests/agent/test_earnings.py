@@ -8,10 +8,12 @@ from agentic_trader.agent.earnings import (
     EarningsEvent,
     EarningsLookup,
     EarningsTiming,
+    ForwardRow,
     NasdaqEarningsCalendar,
     earnings_blackout_reason,
     earnings_note,
     parse_calendar_payload,
+    parse_forward_rows,
 )
 
 
@@ -382,3 +384,61 @@ async def test_reported_rows_transport_exception_is_unavailable():
     assert page.rows is None
     assert page.detail is not None
     assert "RuntimeError" in page.detail
+
+
+def test_parse_forward_rows_reads_every_column():
+    payload = {
+        "data": {
+            "rows": [
+                {
+                    "symbol": "PBR",
+                    "name": "Petroleo Brasileiro",
+                    "marketCap": "$126,374,027,000",
+                    "fiscalQuarterEnding": "Sep/2026",
+                    "epsForecast": "$1.38",
+                    "noOfEsts": "2",
+                    "lastYearRptDt": "11/06/2025",
+                    "lastYearEPS": "$0.82",
+                    "time": "time-after-hours",
+                }
+            ]
+        }
+    }
+    rows, skipped = parse_forward_rows(payload, date(2026, 11, 6))
+    assert rows == [
+        ForwardRow("PBR", EarningsTiming.AFTER_HOURS, "Sep/2026", 1.38, 2, date(2025, 11, 6), 0.82, 126374027000.0)
+    ]
+    assert skipped == 0
+
+
+def test_parse_forward_rows_missing_values():
+    payload = {
+        "data": {
+            "rows": [
+                {
+                    "symbol": "abc",
+                    "marketCap": "N/A",
+                    "fiscalQuarterEnding": "",
+                    "epsForecast": "N/A",
+                    "noOfEsts": "",
+                    "lastYearRptDt": "13/45/2025",
+                    "lastYearEPS": "($0.95)",
+                    "time": "time-not-supplied",
+                }
+            ]
+        }
+    }
+    rows, skipped = parse_forward_rows(payload, date(2026, 11, 6))
+    assert skipped == 0
+    assert rows == [ForwardRow("ABC", EarningsTiming.UNSPECIFIED, None, None, None, None, -0.95, None)]
+
+
+def test_parse_forward_rows_skips_rows_without_symbol():
+    payload = {"data": {"rows": [{"symbol": " "}, {"time": "x"}, {"symbol": "XYZ"}]}}
+    rows, skipped = parse_forward_rows(payload, date(2026, 11, 6))
+    assert [r.symbol for r in rows] == ["XYZ"]
+    assert skipped == 2
+
+
+def test_parse_forward_rows_null_data_is_empty():
+    assert parse_forward_rows({"data": None}, date(2026, 11, 6)) == ([], 0)

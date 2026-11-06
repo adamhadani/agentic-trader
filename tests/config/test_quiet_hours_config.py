@@ -89,6 +89,7 @@ async def test_check_names_cover_readiness(temp_db, app_config):
         card_stats_enabled=True,
         corporate_actions_enabled=True,
         insider_capture_enabled=True,
+        earnings_capture_enabled=True,
         alpha_registry_report=registry,
         stream_connected=lambda: True,
         macro_calendar=lambda now: {"ready": True},

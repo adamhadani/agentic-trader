@@ -152,6 +152,59 @@ def parse_calendar_payload(payload: object, day: date) -> list[CalendarRow]:
 
 
 @dataclass(frozen=True)
+class ForwardRow:
+    """One row of a forward (not yet reported) Nasdaq calendar page, as served."""
+
+    symbol: str
+    timing: EarningsTiming
+    fiscal_quarter: str | None
+    eps_forecast: float | None
+    n_estimates: int | None
+    last_year_report_date: date | None
+    last_year_eps: float | None
+    market_cap: float | None
+
+
+def _report_date(raw: object) -> date | None:
+    """``'11/06/2025'`` -> date(2025, 11, 6); ``N/A``, blank or unparseable -> None."""
+    try:
+        return date.strptime(str(raw or "").strip(), "%m/%d/%Y")
+    except ValueError:
+        return None
+
+
+def parse_forward_rows(payload: object, day: date) -> tuple[list[ForwardRow], int]:
+    """Forward rows of one Nasdaq calendar response for ``day`` and the count skipped.
+
+    A missing or null ``data``/``rows`` is an empty day; rows without a symbol are
+    skipped and counted. Duplicate symbols are kept as served.
+    """
+    data = payload.get("data") if isinstance(payload, dict) else None
+    raw_rows = data.get("rows") if isinstance(data, dict) else None
+    rows: list[ForwardRow] = []
+    skipped = 0
+    for row in raw_rows if isinstance(raw_rows, list) else []:
+        symbol = str(row.get("symbol") or "").strip().upper() if isinstance(row, dict) else ""
+        if not symbol:
+            skipped += 1
+            continue
+        quarter = str(row.get("fiscalQuarterEnding") or "").strip()
+        rows.append(
+            ForwardRow(
+                symbol=symbol,
+                timing=_parse_timing(row.get("time")),
+                fiscal_quarter=quarter or None,
+                eps_forecast=_number(row.get("epsForecast")),
+                n_estimates=_count(row.get("noOfEsts")),
+                last_year_report_date=_report_date(row.get("lastYearRptDt")),
+                last_year_eps=_number(row.get("lastYearEPS")),
+                market_cap=_number(row.get("marketCap")),
+            )
+        )
+    return rows, skipped
+
+
+@dataclass(frozen=True)
 class ReportedPage:
     """Every row Nasdaq listed for ``day``, or the reason it could not be trusted.
 
