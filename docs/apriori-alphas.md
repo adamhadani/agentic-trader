@@ -293,3 +293,38 @@ card says "INSIDER WATCH — unvalidated".
   eligibility reason); `cards outcomes` labels them
   ([block](card-evidence.md#insider-watch-outcomes)). Nothing here validates the leg: reopening it as an alpha
   needs its own predeclared forward test.
+
+## Entry 4: uncertainty-conditioned pre-earnings run-up
+
+`runup` version 1 (`config/research/apriori/runup-v1.json`,
+[spec](superpowers/specs/2026-11-06-apriori-runup-design.md)) is a research-only, long-only development read
+of the pre-announcement run-up (Frazzini and Lamont 2007; Barber et al. 2013; Johnson and So 2018; Gao, Hu
+and Zhang) on cohort v3. It is a development read: the window is spent, so it can fail but cannot pass.
+
+- **Rule in plain words.** For each deduplicated archive earnings report of a cohort name with report
+  session E, buy ten sessions earlier (D = E - 10) at the 10:35 New York decision clock and sell at the close
+  of E - 1, so the position is never held through the announcement. Only names in the top tercile of
+  60-session realised volatility (ending D - 1) among the cube-eligible names on D are legs; the rest are
+  announcers kept for descriptive statistics. Excluded: a second report within 40 sessions before E, an
+  identity break inside the volatility window, a structural corporate action within 5 calendar days of
+  [D, E]. Stop 2 x ATR14, no target, 15 bp per side decides (5 and 25 reported). Decisions
+  2016-08-01..2026-07-17.
+- **Inputs it pins.** The pooled events protocol (`cohort3-events-v1.json`) by SHA-256 on its bytes, its
+  cohort digest, the cached cohort-v3 cube by content hash, the Nasdaq page archive and the corporate-actions
+  acquisition by the protocol's digests, and SPY daily and hourly bars (fetched once into the run directory,
+  digested in provenance). Every digest is checked before use and a mismatch names both values.
+- **Pass rule.** P1: mean `net_excess_r_v1` of legs > 0 with ci90 lower bound > 0. P2: legs minus 5 matched
+  same-session controls (same dollar-volume tercile, top volatility tercile, no report in [D, D+10], covered
+  by the archive, nearest 20-session return) > 0 with the paired ci90 lower bound > 0. P3: the 1%-trimmed
+  mean > 0 and the mean from 2023-01-01 > 0. P4: at least 1,000 legs, 300 from 2023-01-01.
+- **Negative control and planted check.** Every leg gets one pseudo-event on the same name (a session drawn
+  within 63 of D with no report in [D' - 10, D' + 20]) through identical gates, labels, controls and
+  statistics; its P2 must not hold. Before the legs' statistics, a planted return of 0.63% of the decision
+  price is added to every paired placebo leg; P1 and P2 on that frame must both hold.
+- **Decisions.** `inconclusive_underpowered`: the planted check failed, so the read decides nothing.
+  `failed`: any of P1-P4 failed or the placebo's P2 held. `survives_development`: only makes a separately
+  specified prospective read eligible, which must declare its own alpha. None authorizes a probe, card,
+  promotion, shadow or registry credit.
+- **Run.** `copilot alpha apriori-study config/research/apriori/runup-v1.json --output <new-dir>
+  --cache <pooled-cache> --earnings-pages <archive> --corporate-actions <actions.json>`. Ledger row L43.
+- **Result: pending.**

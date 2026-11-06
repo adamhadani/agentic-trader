@@ -88,6 +88,7 @@ from agentic_trader.research.apriori.catalog import (
     load_exdiv_entry,
     load_insider_entry,
     load_pead_entry,
+    load_runup_entry,
 )
 from agentic_trader.research.apriori.exdiv_runner import build_exdiv_inputs
 from agentic_trader.research.apriori.exdiv_study import execute_exdiv_study
@@ -96,6 +97,8 @@ from agentic_trader.research.apriori.insider_study import execute_insider_study
 from agentic_trader.research.apriori.pead_runner import build_pead_inputs
 from agentic_trader.research.apriori.pead_study import execute_pead_study
 from agentic_trader.research.apriori.probe import is_catalog_definition, load_catalog_probe
+from agentic_trader.research.apriori.runup_runner import build_runup_inputs
+from agentic_trader.research.apriori.runup_study import execute_runup_study
 from agentic_trader.research.corporate_actions import build_corporate_actions_source
 from agentic_trader.research.pooled.campaign import (
     EventInputs,
@@ -1612,11 +1615,17 @@ def _apriori_clients() -> _AprioriClients:
     "--corporate-actions",
     type=click.Path(path_type=Path),
     default=None,
-    help="Corporate-actions acquisition actions.json (insider entry only)",
+    help="Corporate-actions acquisition actions.json (insider and runup entries)",
+)
+@click.option(
+    "--earnings-pages",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Nasdaq earnings-calendar page archive directory (runup entry only)",
 )
 @coro
-async def alpha_apriori_study_cmd(protocol_path, output, cache, insider_filings, corporate_actions):
-    """Run a frozen a priori catalog study (`pead`, `exdiv` or `insider` by the entry's id; research only; grants no credit)."""
+async def alpha_apriori_study_cmd(protocol_path, output, cache, insider_filings, corporate_actions, earnings_pages):
+    """Run a frozen a priori catalog study (`pead`, `exdiv`, `insider` or `runup` by the entry's id; research only; grants no credit)."""
     if output.exists():
         raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
     entry_id = await asyncio.to_thread(catalog_entry_id, protocol_path)
@@ -1625,8 +1634,19 @@ async def alpha_apriori_study_cmd(protocol_path, output, cache, insider_filings,
             raise click.ClickException("--insider-filings and --corporate-actions are required for the insider entry")
         if cache is None:
             raise click.ClickException("--cache is required for the insider entry: the pooled cache holding its cube")
-    elif insider_filings is not None or corporate_actions is not None:
-        raise click.ClickException("--insider-filings and --corporate-actions apply only to the insider entry")
+    elif entry_id == "runup":
+        if earnings_pages is None or corporate_actions is None:
+            raise click.ClickException("--earnings-pages and --corporate-actions are required for the runup entry")
+        if cache is None:
+            raise click.ClickException("--cache is required for the runup entry: the pooled cache holding its cube")
+        if insider_filings is not None:
+            raise click.ClickException("--insider-filings applies only to the insider entry")
+    if entry_id != "runup" and earnings_pages is not None:
+        raise click.ClickException("--earnings-pages applies only to the runup entry")
+    if entry_id not in ("insider", "runup") and (insider_filings is not None or corporate_actions is not None):
+        raise click.ClickException(
+            "--insider-filings applies only to the insider entry and --corporate-actions to the insider and runup entries"
+        )
     cache_dir = cache if cache is not None else output / "raw"
     environment = await asyncio.to_thread(research_environment)
 
@@ -1685,6 +1705,26 @@ async def alpha_apriori_study_cmd(protocol_path, output, cache, insider_filings,
                 )
 
             result = await execute_insider_study(loaded_insider, output, build=build_insider, environment=environment)
+    elif entry_id == "runup":
+        loaded_runup = await asyncio.to_thread(load_runup_entry, protocol_path)
+        with _apriori_clients() as clients:
+
+            async def build_runup():
+                return await build_runup_inputs(
+                    loaded_runup.entry,
+                    repo_root=REPO_ROOT,
+                    bars=clients.bars,
+                    calendar=clients.calendar,
+                    cache_dir=cache_dir,
+                    earnings_pages=earnings_pages,
+                    actions_file=corporate_actions,
+                    market_cache_dir=output / "market",
+                    static_symbols=clients.static_symbols,
+                    pace=clients.pace,
+                    progress=lambda message: click.echo(message, err=True),
+                )
+
+            result = await execute_runup_study(loaded_runup, output, build=build_runup, environment=environment)
     else:
         raise click.ClickException(f"Unknown catalog entry id: {entry_id}")
     summary = ("status", "decision", "decisions", "error")  # exdiv has one leg (`decision`); pead has two
