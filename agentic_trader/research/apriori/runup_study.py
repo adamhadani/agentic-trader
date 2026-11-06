@@ -1,4 +1,4 @@
-"""Pre-earnings run-up labels, matched-control rows and net excess (entry ``runup``).
+"""Pre-earnings run-up labels, controls, net excess, the frozen rule and its executor (entry ``runup``).
 
 Spec section 5 (trade and labels), section 6's control labels and section 8's last-day excess
 (``docs/superpowers/specs/2026-11-06-apriori-runup-design.md``). Every row is one LONG cell ``(symbol, D)``:
@@ -20,27 +20,55 @@ once and shared. A labelled leg or placebo's control is the mean ``r_cost`` and 
 ``matched_controls`` cells; any failing cell leaves it unpaired, counted by role under the first failing
 cell's reason in nearest-first order (``no_candidates`` when ``match_controls`` found too few names). Every
 labelled cell gets ``net_excess_r_v1`` through ``pead_base_rate.add_net_excess`` (a missing input gives
-``NaN``, never a fill). Research only: nothing here reads a database, a broker or the network.
+``NaN``, never a fill).
+
+Evaluation (spec section 7) reuses the shared session-block statistics, which read a column named
+``r_cost``: each test passes its unit under that name and records it as ``unit``. P1 is ``mean_test`` on the
+legs' finite ``net_excess_r``; P2 is ``paired_test`` on the paired legs' ``r_cost`` against their control rows,
+keyed by session; P3 is the trimmed mean of the legs' finite ``net_excess_r`` and its plain mean from
+``recent_from``; P4 counts the legs with a finite ``net_excess_r`` overall and from ``recent_from``. The placebo
+runs the same P1 and P2 on ``role == "placebo"`` rows and their controls; its P2 holding fails the read. The
+planted check adds ``planted_return x decision_price / |entry - stop|`` to every paired placebo's ``r_cost``
+and ``net_excess_r`` (controls unchanged) and needs both P1 and P2 to hold, or the read is
+``inconclusive_underpowered``; it is computed before the legs' statistics. Diagnostics (spec section 8) decide
+nothing.
+
+``execute_runup_study`` writes ``protocol.json`` and ``manifest.json`` before ``build`` (the only provider
+access), refuses inputs whose ``provenance["cube_sha256"]`` differs from the entry's ``cube_sha256``, saves the
+frames, then ``planted.json`` before any placebo or leg criterion, then ``result.json``; any failure is
+``status: failed``. Research only: nothing here reads a database, a broker or the network, and nothing
+authorizes promotion.
 """
 
 from __future__ import annotations
 
+import asyncio
 import math
 from collections import Counter, defaultdict
-from collections.abc import Mapping
-from datetime import date
+from collections.abc import Awaitable, Callable, Mapping
+from datetime import UTC, date, datetime
+from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from agentic_trader.agent.earnings import EarningsTiming
 from agentic_trader.market.session import ET_TZ
-from agentic_trader.research.apriori.catalog import RunupEntry
+from agentic_trader.research.apriori.catalog import LoadedRunupEntry, RunupEntry
 from agentic_trader.research.apriori.exdiv_study import _regular_session_dates
 from agentic_trader.research.apriori.pead_base_rate import add_net_excess
 from agentic_trader.research.apriori.pead_events import atr_through, by_session, decision_at
-from agentic_trader.research.apriori.pead_study import decision_price, utc_index
-from agentic_trader.research.apriori.runup_events import MATCHED_ROLES, RUNUP_EVENT_COLUMNS, RunupInputs
+from agentic_trader.research.apriori.pead_study import decision_price, save_frame, utc_index
+from agentic_trader.research.apriori.runup_events import (
+    MATCHED_ROLES,
+    RUNUP_EVENT_COLUMNS,
+    RunupInputs,
+    build_runup_events,
+    match_controls,
+)
+from agentic_trader.research.apriori.statistics import mean_test, paired_test, trimmed_mean
 from agentic_trader.research.pooled.cube import _Hourly
 from agentic_trader.research.setups.labels import (
     BracketArm,
@@ -49,9 +77,21 @@ from agentic_trader.research.setups.labels import (
     label_bracket,
     regular_session_bars,
 )
+from agentic_trader.research.setups.study import _finite_json
+from agentic_trader.storage.artifacts import save_json_report
 
 
-__all__ = ["RUNUP_ARM", "RUNUP_CONTROL_COLUMNS", "cost_column", "label_runup", "runup_label_columns"]
+__all__ = [
+    "RUNUP_ARM",
+    "RUNUP_CONTROL_COLUMNS",
+    "RunupDecision",
+    "cost_column",
+    "evaluate_runup",
+    "execute_runup_study",
+    "label_runup",
+    "planted_check",
+    "runup_label_columns",
+]
 
 RUNUP_ARM = BracketArm(name="runup_time_exit", target_r=None, trail=None)
 RUNUP_CONTROL_COLUMNS = ("pair_id", "role", "session", "r_cost", "net_excess_r", "control_symbols")
@@ -351,3 +391,297 @@ def label_runup(
         "unpaired_by_year": {role: dict(sorted(years.items())) for role, years in unpaired_by_year.items()},
     }
     return labels, controls, counts
+
+
+# --- evaluation (spec section 7) -------------------------------------------------------------------
+
+
+class RunupDecision(StrEnum):
+    """The only outcomes of the development read (spec section 1); none authorizes a probe or a card."""
+
+    SURVIVES_DEVELOPMENT = "survives_development"
+    FAILED = "failed"
+    INCONCLUSIVE_UNDERPOWERED = "inconclusive_underpowered"
+
+
+def _numbers(frame: pd.DataFrame, column: str) -> np.ndarray:
+    return pd.to_numeric(frame[column], errors="coerce").to_numpy(float)
+
+
+def _as_r_cost(frame: pd.DataFrame, column: str) -> pd.DataFrame:
+    """The rows with a finite ``column``, as the ``session`` and ``r_cost`` frame the shared statistics read."""
+    values = _numbers(frame, column)
+    keep = np.isfinite(values)
+    return pd.DataFrame({"session": frame["session"].to_numpy(dtype=object)[keep], "r_cost": values[keep]})
+
+
+def _p1(rows: pd.DataFrame, entry: RunupEntry) -> dict:
+    """``mean_test`` on the rows' finite ``net_excess_r``."""
+    tested = _as_r_cost(rows, "net_excess_r")
+    if tested.empty:
+        return {"unit": "net_excess_r", "n": 0, "mean_r_cost": math.nan, "holds": False}
+    return {"unit": "net_excess_r", **mean_test(tested, entry.bootstrap)}
+
+
+def _p2(rows: pd.DataFrame, controls: pd.DataFrame, role: str, entry: RunupEntry) -> dict:
+    """``paired_test`` of the rows' ``r_cost`` against their ``role`` control rows (pairs by ``pair_id``)."""
+    own = controls[controls["role"] == role]
+    own = own[np.isfinite(_numbers(own, "r_cost"))]
+    rows = rows[np.isfinite(_numbers(rows, "r_cost"))]
+    paired = set(rows["pair_id"]) & set(own["pair_id"])
+    if not paired:
+        return {"unit": "r_cost", "n_leg": 0, "n_control": 0, "mean_diff": math.nan, "holds": False}
+    leg = _as_r_cost(rows[rows["pair_id"].isin(paired)], "r_cost")
+    control = _as_r_cost(own[own["pair_id"].isin(paired)], "r_cost")
+    return {"unit": "r_cost", **paired_test(leg, control, entry.bootstrap)}
+
+
+def _summary(values: pd.Series | np.ndarray) -> dict:
+    numbers = pd.to_numeric(pd.Series(values), errors="coerce").to_numpy(float)
+    finite = numbers[np.isfinite(numbers)]
+    return {"n": int(finite.size), "mean": float(finite.mean()) if finite.size else math.nan}
+
+
+def planted_check(labels: pd.DataFrame, controls: pd.DataFrame, entry: RunupEntry) -> dict:
+    """Spec section 7 (R3): whether P1 and P2 detect half the published effect planted in the placebos.
+
+    Every paired placebo row (one with a ``placebo`` control row) gains ``planted_return x decision_price /
+    |entry - stop|`` R in both ``r_cost`` and ``net_excess_r``; its controls are unchanged. P1 runs on the
+    shifted rows with a finite ``net_excess_r``, P2 on the shifted ``r_cost`` against their controls;
+    ``detected`` needs both to hold.
+    """
+    placebo = labels[labels["role"] == "placebo"]
+    paired = placebo[placebo["pair_id"].isin(set(controls.loc[controls["role"] == "placebo", "pair_id"]))]
+    risk = (pd.to_numeric(paired["entry"]) - pd.to_numeric(paired["stop"])).abs()
+    shift = entry.placebo.planted_return * pd.to_numeric(paired["decision_price"]) / risk
+    planted = paired.assign(
+        r_cost=pd.to_numeric(paired["r_cost"]) + shift,
+        net_excess_r=pd.to_numeric(paired["net_excess_r"]) + shift,
+    )
+    p1 = _p1(planted, entry)
+    p2 = _p2(planted, controls, "placebo", entry)
+    shift_values = shift.to_numpy(float)
+    return {
+        "planted_return": entry.placebo.planted_return,
+        "n_paired": len(paired),
+        "shift_r": {
+            **_summary(shift_values),
+            "min": float(shift_values.min()) if shift_values.size else math.nan,
+            "max": float(shift_values.max()) if shift_values.size else math.nan,
+        },
+        "P1": p1,
+        "P2": p2,
+        "detected": bool(p1["holds"] and p2["holds"]),
+    }
+
+
+def _criteria(legs: pd.DataFrame, controls: pd.DataFrame, entry: RunupEntry) -> dict:
+    """P1-P4 on the legs (spec section 7)."""
+    finite = _as_r_cost(legs, "net_excess_r")
+    recent_from = entry.window.recent_from
+    recent = finite[np.array([session >= recent_from for session in finite["session"]], dtype=bool)]
+    trimmed = trimmed_mean(finite["r_cost"].to_numpy(float), entry.pass_rule.trim_fraction)
+    recent_mean = float(recent["r_cost"].mean()) if len(recent) else math.nan
+    rule = entry.pass_rule
+    return {
+        "P1": _p1(legs, entry),
+        "P2": _p2(legs, controls, "leg", entry),
+        "P3": {
+            "unit": "net_excess_r",
+            "trim_fraction": rule.trim_fraction,
+            "trimmed_mean": trimmed,
+            "recent_from": recent_from.isoformat(),
+            "recent_mean": recent_mean,
+            "holds": bool(math.isfinite(trimmed) and trimmed > 0 and math.isfinite(recent_mean) and recent_mean > 0),
+        },
+        "P4": {
+            "n": len(finite),
+            "n_recent": len(recent),
+            "min_events": rule.min_events,
+            "min_recent_events": rule.min_recent_events,
+            "holds": len(finite) >= rule.min_events and len(recent) >= rule.min_recent_events,
+        },
+    }
+
+
+def _decision(planted: Mapping[str, Any], criteria: Mapping[str, Any], placebo: Mapping[str, Any]) -> RunupDecision:
+    if not planted["detected"]:
+        return RunupDecision.INCONCLUSIVE_UNDERPOWERED
+    if not all(criterion["holds"] for criterion in criteria.values()) or placebo["P2"]["holds"]:
+        return RunupDecision.FAILED
+    return RunupDecision.SURVIVES_DEVELOPMENT
+
+
+# --- descriptive diagnostics (spec section 8) --------------------------------------------------------
+
+
+def _both(frame: pd.DataFrame) -> dict:
+    return {"net_excess_r": _summary(frame["net_excess_r"]), "r_cost": _summary(frame["r_cost"])}
+
+
+def _dispersion(legs: pd.DataFrame) -> dict:
+    """The per-leg SD of ``net_excess_r`` and the session design effect the prospective power plan needs.
+
+    ``design_effect = var(session means) x mean(legs per session) / var(per-leg values)`` over the legs with a
+    finite value (sample variances, ``ddof=1``): about 1 when legs on a session are independent, up to the
+    legs per session when they move together. ``NaN`` without two sessions or with no per-leg variance.
+    """
+    finite = _as_r_cost(legs, "net_excess_r")
+    grouped = finite.groupby("session")["r_cost"]
+    means, sizes = grouped.mean(), grouped.size()
+    per_leg = float(finite["r_cost"].var(ddof=1)) if len(finite) > 1 else math.nan
+    between = float(means.var(ddof=1)) if len(means) > 1 else math.nan
+    per_session = float(sizes.mean()) if len(sizes) else math.nan
+    effect = between * per_session / per_leg if per_leg > 0 else math.nan
+    return {
+        "n": len(finite),
+        "n_sessions": len(means),
+        "legs_per_session": per_session,
+        "sd_per_leg": math.sqrt(per_leg) if per_leg >= 0 else math.nan,
+        "var_session_means": between,
+        "design_effect": effect,
+    }
+
+
+def _past_move_terciles(legs: pd.DataFrame) -> dict:
+    """Legs by tercile of ``past_move`` (ascending, rank ``r`` of ``n`` in ``floor(3r / n)``, stable on ties)."""
+    values = _numbers(legs, "past_move")
+    finite = np.flatnonzero(np.isfinite(values))
+    terciles: dict[str, dict] = {}
+    if finite.size >= 3:
+        order = finite[np.argsort(values[finite], kind="stable")]
+        group = np.arange(order.size) * 3 // order.size
+        for k, name in enumerate(("low", "mid", "high")):
+            terciles[name] = _both(legs.iloc[order[group == k]])
+    return {"n_missing": len(legs) - int(finite.size), "terciles": terciles}
+
+
+def _diagnostics(labels: pd.DataFrame, controls: pd.DataFrame, entry: RunupEntry) -> dict:
+    """Spec section 8; nothing here decides anything (the placebo's P1 is reported under ``placebo``)."""
+    legs = labels[labels["role"] == "leg"]
+    reports = labels[labels["role"].isin(("leg", "announcer"))]
+    paired = set(controls.loc[controls["role"] == "leg", "pair_id"])
+    years = pd.to_numeric(legs["year"])
+    return {
+        "announcers": {
+            "all": _both(reports),
+            "bottom_tercile": _both(reports[pd.to_numeric(reports["tercile"]) == 0]),
+        },
+        "legs": _both(legs),
+        "unpaired_legs": int((~legs["pair_id"].isin(paired)).sum()),
+        "by_year": {int(year): _both(group) for year, group in legs.groupby(years)},
+        "by_timing": {timing.value: _both(legs[legs["timing"] == timing.value]) for timing in EarningsTiming},
+        "by_bucket": {int(bucket): _both(group) for bucket, group in legs.groupby(pd.to_numeric(legs["bucket"]))},
+        "excluding_2020": _both(legs[years != 2020]),
+        "exits": {
+            "hits": {str(hit): int(n) for hit, n in legs["hit"].value_counts().sort_index().items()},
+            "by_hit": {str(hit): _both(group) for hit, group in legs.groupby("hit")},
+            "mean_holding_sessions": _summary(legs["holding_sessions"])["mean"],
+        },
+        "costs": {cost_column(cost): _summary(legs[cost_column(cost)]) for cost in entry.costs_bps_per_side},
+        "dispersion": _dispersion(legs),
+        "last_day_excess": _summary(legs["last_day_excess"]),
+        "past_move_terciles": _past_move_terciles(legs),
+    }
+
+
+def evaluate_runup(
+    labels: pd.DataFrame, controls: pd.DataFrame, entry: RunupEntry, *, planted: dict | None = None
+) -> dict:
+    """The planted check, the placebo, the frozen P1-P4 rule, the decision and the diagnostics (spec 7-8).
+
+    ``planted`` is the executor's already saved ``planted_check`` result; without it the check is computed
+    here, still before the placebo's and the legs' statistics.
+    """
+    if planted is None:
+        planted = planted_check(labels, controls, entry)
+    placebo_rows = labels[labels["role"] == "placebo"]
+    placebo_p2 = _p2(placebo_rows, controls, "placebo", entry)
+    placebo = {
+        "P1": _p1(placebo_rows, entry),
+        "P2": placebo_p2,
+        "negative_control_fails": bool(placebo_p2["holds"]),
+    }
+    criteria = _criteria(labels[labels["role"] == "leg"], controls, entry)
+    return {
+        "decision": _decision(planted, criteria, placebo).value,
+        "criteria": criteria,
+        "placebo": placebo,
+        "planted": planted,
+        "diagnostics": _diagnostics(labels, controls, entry),
+    }
+
+
+# --- the executor (spec section 9) --------------------------------------------------------------------
+
+
+def _failure(exc: BaseException) -> dict:
+    return {"status": "failed", "error": f"{type(exc).__name__}: {exc}", "authorizes_promotion": False}
+
+
+async def execute_runup_study(
+    loaded: LoadedRunupEntry,
+    directory: Path,
+    *,
+    build: Callable[[], Awaitable[RunupInputs]],
+    environment: dict,
+) -> dict:
+    entry = loaded.entry
+    directory.mkdir(mode=0o700, parents=True, exist_ok=False)
+    save_json_report({**entry.model_dump(mode="json"), "sha256": loaded.sha256}, directory / "protocol.json")
+    save_json_report(
+        {
+            "entry_id": entry.id,
+            "version": entry.version,
+            "sha256": loaded.sha256,
+            "path": str(loaded.path),
+            "pinned": {
+                "pooled_protocol": entry.pooled_protocol,
+                "pooled_protocol_sha256": entry.pooled_protocol_sha256,
+                "cube_sha256": entry.cube_sha256,
+            },
+            "environment": environment,
+            "started_at": datetime.now(UTC).isoformat(),
+            "authorizes_promotion": False,
+        },
+        directory / "manifest.json",
+    )
+    try:
+        inputs = await build()
+        digest = inputs.provenance.get("cube_sha256")
+        if digest != entry.cube_sha256:
+            raise ValueError(
+                f"the inputs' cube has SHA-256 {digest}, but the entry pins cube_sha256 {entry.cube_sha256}"
+            )
+        events, event_counts = await asyncio.to_thread(build_runup_events, inputs, entry)
+        candidates, matching_counts = await asyncio.to_thread(match_controls, events, inputs, entry)
+        labels, controls, label_counts = await asyncio.to_thread(label_runup, events, candidates, inputs, entry)
+        frames = {
+            "events": events,
+            "labels": labels,
+            "controls": controls,
+            "placebo": labels[labels["role"] == "placebo"],
+        }
+        for name, frame in frames.items():
+            await asyncio.to_thread(save_frame, frame, directory / f"{name}.csv.gz")
+        # Spec section 7: the planted check is computed and saved before any placebo or leg statistic.
+        planted = await asyncio.to_thread(planted_check, labels, controls, entry)
+        save_json_report(_finite_json(planted), directory / "planted.json")
+        evaluation = await asyncio.to_thread(evaluate_runup, labels, controls, entry, planted=planted)
+        result = {
+            "status": "completed",
+            **evaluation,
+            "events": event_counts,
+            "matching": matching_counts,
+            "labels": label_counts,
+            "inputs": dict(inputs.provenance),
+            "authorizes_promotion": False,
+        }
+    except Exception as exc:
+        result = _failure(exc)
+    try:
+        save_json_report(_finite_json(result), directory / "result.json")
+    except (TypeError, ValueError) as exc:  # a result that cannot be encoded is still recorded, as a failure
+        result = _failure(exc)
+        save_json_report(result, directory / "result.json")
+    return result

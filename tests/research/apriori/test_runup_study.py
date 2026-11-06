@@ -1,7 +1,9 @@
 """Run-up labels: the time-exit bracket, exclusions, cost columns, net excess, last-day excess and control rows."""
 
+import json
 import math
-from datetime import UTC, datetime, time
+from dataclasses import replace
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 
 import numpy as np
@@ -10,7 +12,7 @@ import pytest
 
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.apriori import runup_study
-from agentic_trader.research.apriori.catalog import load_runup_entry
+from agentic_trader.research.apriori.catalog import LoadedRunupEntry, load_runup_entry
 from agentic_trader.research.apriori.pead_base_rate import add_net_excess
 from agentic_trader.research.apriori.pead_events import decision_at
 from agentic_trader.research.apriori.runup_events import (
@@ -21,7 +23,12 @@ from agentic_trader.research.apriori.runup_events import (
 from agentic_trader.research.apriori.runup_study import (
     RUNUP_ARM,
     RUNUP_CONTROL_COLUMNS,
+    RunupDecision,
+    cost_column,
+    evaluate_runup,
+    execute_runup_study,
     label_runup,
+    planted_check,
     runup_label_columns,
 )
 from agentic_trader.research.pooled.cube import LabelCube
@@ -445,3 +452,506 @@ def test_inconsistent_inputs_raise():
             {"AAA": _rally(), **_control_hourly()},
             candidates=_candidates((leg["pair_id"], "leg", D + 1, CONTROLS)),
         )
+
+
+# --- evaluation: P1-P4, the placebo, the planted effect and the decision ---------------------------
+
+FAST = ENTRY.model_copy(update={"bootstrap": ENTRY.bootstrap.model_copy(update={"draws": 200})})
+OLD = tuple(day.date() for day in pd.bdate_range("2022-03-01", periods=120))
+NEW = tuple(day.date() for day in pd.bdate_range("2023-01-02", periods=60))  # every one from recent_from
+DECISIONS = {"survives_development", "failed", "inconclusive_underpowered"}
+SHIFT = ENTRY.placebo.planted_return * 100.0 / 2.0  # 0.315 R at decision price 100, entry 100 and stop 98
+
+
+def _row(pair_id, role, session, r_cost, net=None, **extra):
+    row = dict.fromkeys(runup_label_columns(ENTRY), math.nan)
+    row.update(
+        event_id=f"{pair_id}:placebo" if role == "placebo" else pair_id,
+        role=role,
+        pair_id=pair_id,
+        symbol=pair_id.split(":")[0],
+        session=session,
+        report_date=None if role == "placebo" else session,
+        timing=None if role == "placebo" else "unspecified",
+        tercile=0 if role == "announcer" else 2,
+        bucket=1,
+        decision_price=100.0,
+        entry=100.0,
+        stop=98.0,
+        hit="timeout",
+        holding_sessions=LEAD,
+        r_cost=r_cost,
+        net_excess_r=r_cost if net is None else net,
+        year=session.year,
+    )
+    row.update({cost_column(cost): r_cost for cost in ENTRY.costs_bps_per_side})
+    row.update(extra)
+    return row
+
+
+def _control(pair_id, role, session, r_cost):
+    return {
+        "pair_id": pair_id,
+        "role": role,
+        "session": session,
+        "r_cost": r_cost,
+        "net_excess_r": r_cost,
+        "control_symbols": "C1,C2,C3,C4,C5",
+    }
+
+
+def _frames(rows, controls=()):
+    return (
+        pd.DataFrame(list(rows), columns=list(runup_label_columns(ENTRY))),
+        pd.DataFrame(list(controls), columns=list(RUNUP_CONTROL_COLUMNS)),
+    )
+
+
+def _world(n=1200, recent=400, *, leg=0.5, leg_gap=0.5, placebo=0.0, placebo_gap=0.0, noise=0.2, seed=11):
+    """``n`` paired legs (the last ``recent`` from ``recent_from``), each with one paired placebo.
+
+    A leg's ``r_cost`` and ``net_excess_r`` are ``leg`` plus noise and its control is ``leg_gap`` below it;
+    a placebo is ``placebo`` plus noise and its control ``placebo_gap`` below it (``placebo=None``: none).
+    """
+    rng = np.random.default_rng(seed)
+    rows, controls = [], []
+    for i in range(n):
+        session = OLD[i % len(OLD)] if i < n - recent else NEW[i % len(NEW)]
+        pair = f"S{i}:{session.isoformat()}"
+        value = leg + rng.normal(0.0, noise)
+        rows.append(_row(pair, "leg", session, value))
+        controls.append(_control(pair, "leg", session, value - leg_gap))
+        if placebo is not None:
+            value = placebo + rng.normal(0.0, noise)
+            rows.append(_row(pair, "placebo", session, value))
+            controls.append(_control(pair, "placebo", session, value - placebo_gap))
+    return _frames(rows, controls)
+
+
+def _evaluate(labels, controls, entry=FAST):
+    result = evaluate_runup(labels, controls, entry)
+    assert {"criteria", "placebo", "planted", "decision", "diagnostics"} <= set(result)
+    assert set(result["criteria"]) == {"P1", "P2", "P3", "P4"}
+    assert {"P1", "P2"} <= set(result["placebo"]) and {"P1", "P2", "detected"} <= set(result["planted"])
+    assert result["decision"] in DECISIONS
+    assert "eligible_for_probe" not in json.dumps(result, default=str)
+    return result
+
+
+def test_the_decision_vocabulary_is_exactly_three_values():
+    assert {decision.value for decision in RunupDecision} == DECISIONS
+
+
+def test_everything_holding_survives_development():
+    result = _evaluate(*_world())
+    assert all(criterion["holds"] for criterion in result["criteria"].values())
+    assert result["planted"]["detected"] and not result["placebo"]["P2"]["holds"]
+    assert result["decision"] == "survives_development"
+
+
+def test_p1_uses_finite_net_excess_and_p2_paired_r_cost_minus_the_control_mean():
+    labels, controls = _world()
+    session = OLD[0]
+    unpaired = [_row(f"U{i}:x", "leg", session, 50.0, net=7.0) for i in range(5)]  # P1 only
+    no_net = [_row(f"N{i}:x", "leg", session, 3.0, net=math.nan) for i in range(5)]  # P2 only
+    extra_labels, extra_controls = _frames(
+        [*unpaired, *no_net], [_control(f"N{i}:x", "leg", session, 1.0) for i in range(5)]
+    )
+    labels = pd.concat([labels, extra_labels], ignore_index=True)
+    controls = pd.concat([controls, extra_controls], ignore_index=True)
+    criteria = _evaluate(labels, controls)["criteria"]
+
+    legs = labels[labels["role"] == "leg"]
+    finite = legs[np.isfinite(legs["net_excess_r"].astype(float))]
+    assert criteria["P1"]["n"] == 1205 and criteria["P4"]["n"] == 1205
+    assert criteria["P1"]["mean_r_cost"] == pytest.approx(finite["net_excess_r"].mean(), rel=1e-12)
+    paired = legs[legs["pair_id"].isin(set(controls.loc[controls["role"] == "leg", "pair_id"]))]
+    leg_controls = controls[controls["role"] == "leg"]
+    assert criteria["P2"]["n_leg"] == 1205 and criteria["P2"]["n_control"] == 1205
+    expected = paired["r_cost"].mean() - leg_controls["r_cost"].mean()
+    assert criteria["P2"]["mean_diff"] == pytest.approx(expected, rel=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("n", "recent", "nan_legs", "holds"),
+    [(1000, 300, 0, True), (999, 300, 0, False), (1000, 299, 0, False), (1001, 301, 1, True), (1000, 300, 1, False)],
+)
+def test_p4_counts_legs_with_a_finite_net_excess_at_its_boundaries(n, recent, nan_legs, holds):
+    labels, controls = _world(n, recent, placebo=None)
+    recent_rows = labels.index[labels["session"] >= ENTRY.window.recent_from][:nan_legs]
+    labels.loc[recent_rows, "net_excess_r"] = math.nan
+    p4 = _evaluate(labels, controls)["criteria"]["P4"]
+    assert p4["n"] == n - nan_legs and p4["n_recent"] == recent - nan_legs
+    assert p4["holds"] is holds
+
+
+def test_a_session_on_recent_from_counts_as_recent():
+    labels, controls = _world(1000, 300, placebo=None)
+    window = ENTRY.window.model_copy(update={"recent_from": NEW[0]})
+    p4 = _evaluate(labels, controls, FAST.model_copy(update={"window": window}))["criteria"]["P4"]
+    assert p4["n_recent"] == 300 and p4["holds"]  # NEW[0] is itself a leg session
+
+
+@pytest.mark.parametrize(("outliers", "holds"), [(10, False), (11, True)])
+def test_p3_trims_one_percent_of_net_excess_from_each_end(outliers, holds):
+    rows = [
+        _row(f"S{i}:x", "leg", NEW[i % len(NEW)] if i < outliers else OLD[i % len(OLD)], 9.0, net=net)
+        for i, net in enumerate([100.0] * outliers + [-0.01] * (1000 - outliers))
+    ]
+    p3 = _evaluate(*_frames(rows))["criteria"]["P3"]
+    assert p3["recent_mean"] > 0
+    assert (p3["trimmed_mean"] > 0) is holds and p3["holds"] is holds
+
+
+def test_p3_needs_a_positive_mean_from_recent_from():
+    rows = [_row(f"S{i}:x", "leg", OLD[i % len(OLD)], 0.0, net=1.0) for i in range(700)]
+    rows += [_row(f"R{i}:x", "leg", NEW[i % len(NEW)], 0.0, net=1.0 if i % 2 else -1.0) for i in range(300)]
+    p3 = _evaluate(*_frames(rows))["criteria"]["P3"]
+    assert p3["trimmed_mean"] > 0 and p3["recent_mean"] == 0.0 and p3["holds"] is False
+
+
+def test_a_placebo_whose_p2_holds_fails_the_read_even_when_p1_to_p4_hold():
+    result = _evaluate(*_world(placebo_gap=0.5))
+    assert all(criterion["holds"] for criterion in result["criteria"].values())
+    assert result["planted"]["detected"] and result["placebo"]["P2"]["holds"]
+    assert result["placebo"]["negative_control_fails"] is True
+    assert result["decision"] == "failed"
+
+
+@pytest.mark.parametrize("leg", [0.5, -0.5])
+def test_an_undetected_planted_effect_is_inconclusive_whatever_the_legs_show(leg):
+    result = _evaluate(*_world(leg=leg, placebo=-2.0))  # +0.315 R cannot lift a -2 R placebo above zero
+    assert not result["planted"]["detected"] and not result["planted"]["P1"]["holds"]
+    assert result["decision"] == "inconclusive_underpowered"
+
+
+def test_a_null_leg_with_a_detected_planted_effect_fails():
+    result = _evaluate(*_world(leg=0.0, leg_gap=0.0))
+    assert result["planted"]["detected"] and result["criteria"]["P2"]["mean_diff"] == 0.0
+    assert not result["criteria"]["P2"]["holds"] and result["decision"] == "failed"
+
+
+def test_the_placebo_statistics_are_the_legs_functions_on_placebo_rows():
+    labels, controls = _world(placebo=0.3, placebo_gap=0.1)
+    placebo = _evaluate(labels, controls)["placebo"]
+    rows = labels[labels["role"] == "placebo"]
+    assert placebo["P1"]["n"] == len(rows)
+    assert placebo["P1"]["mean_r_cost"] == pytest.approx(rows["net_excess_r"].mean(), rel=1e-12)
+    assert placebo["P2"]["mean_diff"] == pytest.approx(0.1, rel=1e-9) and placebo["P2"]["holds"]
+
+
+def test_the_planted_shift_is_the_planted_return_in_r_per_row_on_paired_placebos_only(monkeypatch):
+    s1, s2, s3 = OLD[:3]
+    rows = [
+        _row("A:1", "placebo", s1, 0.1, net=0.2),
+        _row("B:1", "placebo", s2, -0.3, net=0.0, decision_price=80.0, entry=80.5, stop=76.5),  # risk 4
+        _row("C:1", "placebo", s3, 0.4, net=math.nan, decision_price=20.0, entry=20.2, stop=19.0),  # risk 1.2
+        _row("D:1", "placebo", s3, 5.0, net=5.0),  # unpaired: never shifted, never tested
+        _row("A:1", "leg", s1, 9.0),  # a leg sharing the pair id is never shifted
+    ]
+    controls = [_control(p, "placebo", s, v) for p, s, v in (("A:1", s1, 0.0), ("B:1", s2, -0.1), ("C:1", s3, 0.2))]
+    controls.append(_control("A:1", "leg", s1, -7.0))
+    labels, controls = _frames(rows, controls)
+    seen = {}
+    for name in ("mean_test", "paired_test"):
+        real = getattr(runup_study, name)
+
+        def spy(*args, _real=real, _name=name):
+            seen[_name] = [frame.copy() for frame in args[:-1]]
+            return _real(*args)
+
+        monkeypatch.setattr(runup_study, name, spy)
+
+    planted = planted_check(labels, controls, FAST)
+
+    shifts = [0.0063 * 100.0 / 2.0, 0.0063 * 80.0 / 4.0, 0.0063 * 20.0 / 1.2]
+    p1_frame = seen["mean_test"][0]
+    assert list(p1_frame["session"]) == [s1, s2]  # C has no finite net excess
+    assert p1_frame["r_cost"].tolist() == pytest.approx([0.2 + shifts[0], 0.0 + shifts[1]], rel=1e-12)
+    leg_frame, control_frame = seen["paired_test"]
+    assert list(leg_frame["session"]) == [s1, s2, s3]
+    assert leg_frame["r_cost"].tolist() == pytest.approx([0.1 + shifts[0], -0.3 + shifts[1], 0.4 + shifts[2]])
+    assert control_frame["r_cost"].tolist() == [0.0, -0.1, 0.2]  # controls unchanged
+    assert planted["n_paired"] == 3
+    assert planted["shift_r"]["mean"] == pytest.approx(np.mean(shifts), rel=1e-12)
+    assert planted["detected"] is (planted["P1"]["holds"] and planted["P2"]["holds"])
+
+
+def test_the_diagnostics_describe_announcers_splits_exits_costs_dispersion_and_the_past_reaction():
+    s1, s2, s3 = date(2020, 3, 2), date(2021, 3, 1), date(2022, 3, 1)
+    specs = [  # pair, session, timing, bucket, net, r_cost, hit, holding, past_move, last_day_excess
+        ("L1:x", s1, "pre_market", 0, 1.0, 1.5, "stop", 4, 0.01, 0.2),
+        ("L2:x", s1, "after_hours", 1, 3.0, 3.5, "timeout", LEAD, 0.03, 0.4),
+        ("L3:x", s2, "unspecified", 2, 5.0, 5.5, "timeout", LEAD, 0.02, math.nan),
+        ("L4:x", s2, "unspecified", 2, 7.0, 7.5, "timeout", LEAD, math.nan, math.nan),
+        ("L5:x", s3, "pre_market", 0, 2.0, 2.5, "timeout", LEAD, 0.05, math.nan),
+        ("L6:x", s3, "pre_market", 0, math.nan, 9.0, "timeout", LEAD, 0.04, math.nan),
+    ]
+    rows = [
+        _row(
+            pair,
+            "leg",
+            session,
+            r_cost,
+            net=net,
+            timing=timing,
+            bucket=bucket,
+            hit=hit,
+            holding_sessions=holding,
+            past_move=past,
+            last_day_excess=last,
+            r_cost_5bps=r_cost + 0.1,
+            r_cost_25bps=r_cost - 0.1,
+        )
+        for pair, session, timing, bucket, net, r_cost, hit, holding, past, last in specs
+    ]
+    rows += [
+        _row("A1:x", "announcer", s1, -0.5, net=-1.0, tercile=0),
+        _row("A2:x", "announcer", s2, 0.5, net=0.0, tercile=1),
+        _row("A3:x", "announcer", s3, -2.5, net=-3.0, tercile=0),
+        _row("L1:x", "placebo", s1, 40.0),
+    ]
+    diagnostics = _evaluate(*_frames(rows))["diagnostics"]
+
+    assert diagnostics["announcers"]["all"] == {
+        "net_excess_r": {"n": 8, "mean": pytest.approx(1.75)},
+        "r_cost": {"n": 9, "mean": pytest.approx(3.0)},
+    }
+    assert diagnostics["announcers"]["bottom_tercile"]["net_excess_r"] == {"n": 2, "mean": pytest.approx(-2.0)}
+    assert diagnostics["announcers"]["bottom_tercile"]["r_cost"] == {"n": 2, "mean": pytest.approx(-1.5)}
+    by_year = diagnostics["by_year"]
+    assert set(by_year) == {2020, 2021, 2022}
+    assert by_year[2022] == {"net_excess_r": {"n": 1, "mean": 2.0}, "r_cost": {"n": 2, "mean": pytest.approx(5.75)}}
+    assert {k: v["net_excess_r"]["mean"] for k, v in diagnostics["by_timing"].items()} == {
+        "pre_market": pytest.approx(1.5),
+        "after_hours": pytest.approx(3.0),
+        "unspecified": pytest.approx(6.0),
+    }
+    assert {k: v["net_excess_r"]["n"] for k, v in diagnostics["by_bucket"].items()} == {0: 2, 1: 1, 2: 2}
+    assert diagnostics["excluding_2020"]["net_excess_r"] == {"n": 3, "mean": pytest.approx(14 / 3)}
+    assert diagnostics["excluding_2020"]["r_cost"] == {"n": 4, "mean": pytest.approx(6.125)}
+    exits = diagnostics["exits"]
+    assert exits["hits"] == {"stop": 1, "timeout": 5} and exits["mean_holding_sessions"] == pytest.approx(9.0)
+    assert exits["by_hit"]["stop"]["net_excess_r"] == {"n": 1, "mean": 1.0}
+    costs = diagnostics["costs"]
+    assert set(costs) == {"r_cost_5bps", "r_cost_15bps", "r_cost_25bps"}
+    assert costs["r_cost_5bps"]["mean"] == pytest.approx(29.5 / 6 + 0.1)
+    assert costs["r_cost_25bps"]["mean"] == pytest.approx(29.5 / 6 - 0.1)
+    assert diagnostics["last_day_excess"] == {"n": 2, "mean": pytest.approx(0.3)}
+
+    dispersion = diagnostics["dispersion"]
+    values = np.array([1.0, 3.0, 5.0, 7.0, 2.0])
+    session_means = np.array([2.0, 6.0, 2.0])
+    assert dispersion["n"] == 5 and dispersion["n_sessions"] == 3
+    assert dispersion["legs_per_session"] == pytest.approx(5 / 3)
+    assert dispersion["sd_per_leg"] == pytest.approx(values.std(ddof=1))
+    assert dispersion["var_session_means"] == pytest.approx(session_means.var(ddof=1))
+    expected = session_means.var(ddof=1) * (5 / 3) / values.var(ddof=1)
+    assert dispersion["design_effect"] == pytest.approx(expected) and expected == pytest.approx(1.5326, abs=1e-4)
+
+    past = diagnostics["past_move_terciles"]
+    assert past["n_missing"] == 1  # L4
+    assert past["terciles"]["low"]["net_excess_r"] == {"n": 2, "mean": pytest.approx(3.0)}  # L1, L3
+    assert past["terciles"]["mid"]["net_excess_r"] == {"n": 1, "mean": pytest.approx(3.0)}  # L2 (L6 has no net)
+    assert past["terciles"]["mid"]["r_cost"] == {"n": 2, "mean": pytest.approx(6.25)}
+    assert past["terciles"]["high"]["net_excess_r"] == {"n": 1, "mean": pytest.approx(2.0)}  # L5
+
+
+def test_the_design_effect_is_nan_without_two_sessions():
+    rows = [_row("L1:x", "leg", OLD[0], 1.0), _row("L2:x", "leg", OLD[0], 2.0)]
+    dispersion = _evaluate(*_frames(rows))["diagnostics"]["dispersion"]
+    assert dispersion["n_sessions"] == 1 and np.isnan(dispersion["design_effect"])
+
+
+def test_empty_frames_evaluate_to_inconclusive():
+    result = _evaluate(*_frames([]))
+    assert result["decision"] == "inconclusive_underpowered"
+    assert not any(criterion["holds"] for criterion in result["criteria"].values())
+
+
+# --- the executor -----------------------------------------------------------------------------------
+
+
+def _loaded(entry=FAST):
+    return LoadedRunupEntry(entry=entry, sha256="f" * 64, path=SHIPPED)
+
+
+def _pinned(**provenance):
+    return replace(_inputs({}), provenance={"cube_sha256": ENTRY.cube_sha256, **provenance})
+
+
+def _pipeline(monkeypatch, labels, controls):
+    """Replace events, control matching and labelling with ``labels``/``controls``; returns the call order."""
+    calls = []
+    events = labels[list(RUNUP_EVENT_COLUMNS)]
+
+    def events_of(inputs, entry):
+        calls.append("events")
+        return events, {"legs": int((events["role"] == "leg").sum())}
+
+    def matched(frame, inputs, entry):
+        assert frame is events
+        calls.append("controls")
+        return _candidates(), {"paired": {"leg": 0, "placebo": 0}}
+
+    def labelled(frame, candidates, inputs, entry):
+        assert frame is events
+        calls.append("labels")
+        return labels, controls, {"labelled": {"leg": int((labels["role"] == "leg").sum())}}
+
+    monkeypatch.setattr(runup_study, "build_runup_events", events_of)
+    monkeypatch.setattr(runup_study, "match_controls", matched)
+    monkeypatch.setattr(runup_study, "label_runup", labelled)
+    return calls
+
+
+def _json_texts(directory):
+    return {path.name: path.read_text() for path in sorted(directory.glob("*.json"))}
+
+
+async def test_the_executor_writes_protocol_and_manifest_before_build_and_records_its_failure(tmp_path):
+    directory = tmp_path / "run"
+    seen = {}
+
+    async def build():
+        seen["written"] = [(directory / name).exists() for name in ("protocol.json", "manifest.json")]
+        raise RuntimeError("cube cache missing")
+
+    result = await execute_runup_study(_loaded(), directory, build=build, environment={"e": 1})
+    assert seen == {"written": [True, True]}
+    assert result == {"status": "failed", "error": "RuntimeError: cube cache missing", "authorizes_promotion": False}
+    assert json.loads((directory / "result.json").read_text()) == result
+    manifest = json.loads((directory / "manifest.json").read_text())
+    assert manifest["entry_id"] == "runup" and manifest["version"] == 1 and manifest["sha256"] == "f" * 64
+    assert manifest["pinned"]["pooled_protocol_sha256"] == ENTRY.pooled_protocol_sha256
+    assert manifest["pinned"]["cube_sha256"] == ENTRY.cube_sha256
+    assert manifest["environment"] == {"e": 1} and manifest["authorizes_promotion"] is False
+    assert manifest["started_at"]
+    protocol = json.loads((directory / "protocol.json").read_text())
+    assert protocol["id"] == "runup" and protocol["sha256"] == "f" * 64
+    assert sorted(path.name for path in directory.iterdir()) == ["manifest.json", "protocol.json", "result.json"]
+
+
+@pytest.mark.parametrize("provenance", [{"cube_sha256": "0" * 64}, {"cube_sha256": None}])
+async def test_the_executor_refuses_inputs_whose_cube_differs_from_the_pinned_hash(tmp_path, monkeypatch, provenance):
+    calls = _pipeline(monkeypatch, *_world(10, 5))
+    directory = tmp_path / "run"
+
+    async def build():
+        return replace(_inputs({}), provenance=provenance)
+
+    result = await execute_runup_study(_loaded(), directory, build=build, environment={})
+    assert result["status"] == "failed" and result["authorizes_promotion"] is False
+    assert result["error"].startswith("ValueError: ") and ENTRY.cube_sha256 in result["error"]
+    assert str(provenance["cube_sha256"]) in result["error"]
+    assert calls == [] and not (directory / "events.csv.gz").exists()
+
+
+async def test_a_pipeline_exception_after_build_is_recorded_as_failed(tmp_path, monkeypatch):
+    _pipeline(monkeypatch, *_world(10, 5))
+
+    def broken(*args):
+        raise KeyError("decision_price")
+
+    monkeypatch.setattr(runup_study, "label_runup", broken)
+    directory = tmp_path / "run"
+
+    async def build():
+        return _pinned()
+
+    result = await execute_runup_study(_loaded(), directory, build=build, environment={})
+    assert result == {"status": "failed", "error": "KeyError: 'decision_price'", "authorizes_promotion": False}
+    assert not (directory / "planted.json").exists()
+
+
+async def test_a_result_that_cannot_be_encoded_is_recorded_as_failed(tmp_path, monkeypatch):
+    _pipeline(monkeypatch, *_world(10, 5))
+    directory = tmp_path / "run"
+
+    async def build():
+        return _pinned(read_on=date(2026, 11, 6))  # a date is not JSON
+
+    result = await execute_runup_study(_loaded(), directory, build=build, environment={})
+    assert result["status"] == "failed" and result["error"].startswith("TypeError: ")
+    assert json.loads((directory / "result.json").read_text()) == result
+
+
+async def test_the_executor_saves_frames_and_planted_before_the_criteria_and_result(tmp_path, monkeypatch):
+    labels, controls = _world()
+    calls = _pipeline(monkeypatch, labels, controls)
+    directory = tmp_path / "run"
+    written, tested = [], []
+    real_save = runup_study.save_json_report
+
+    def save(payload, path):
+        written.append(path.name)
+        return real_save(payload, path)
+
+    monkeypatch.setattr(runup_study, "save_json_report", save)
+    for name in ("mean_test", "paired_test"):
+        real = getattr(runup_study, name)
+
+        def spy(*args, _real=real, _name=name):
+            tested.append((_name, (directory / "planted.json").exists()))
+            return _real(*args)
+
+        monkeypatch.setattr(runup_study, name, spy)
+
+    async def build():
+        return _pinned(pages_sha256="p" * 64)
+
+    result = await execute_runup_study(_loaded(), directory, build=build, environment={})
+
+    assert calls == ["events", "controls", "labels"]
+    assert written == ["protocol.json", "manifest.json", "planted.json", "result.json"]
+    # The planted check (its P1 and P2) runs first; every placebo and leg criterion after planted.json exists.
+    assert tested[:2] == [("mean_test", False), ("paired_test", False)]
+    assert len(tested) == 6 and all(exists for _, exists in tested[2:])
+    assert result["status"] == "completed" and result["decision"] == "survives_development"
+    assert result["authorizes_promotion"] is False
+    assert result["inputs"] == {"cube_sha256": ENTRY.cube_sha256, "pages_sha256": "p" * 64}
+    assert result["events"] == {"legs": 1200} and result["labels"] == {"labelled": {"leg": 1200}}
+    saved = json.loads((directory / "result.json").read_text())
+    assert saved["planted"] == json.loads((directory / "planted.json").read_text())
+    assert saved["planted"]["detected"] is True
+    placebo = pd.read_csv(directory / "placebo.csv.gz")
+    assert len(placebo) == 1200 and set(placebo["role"]) == {"placebo"}
+    assert len(pd.read_csv(directory / "labels.csv.gz")) == 2400
+    assert len(pd.read_csv(directory / "controls.csv.gz")) == 2400
+    assert len(pd.read_csv(directory / "events.csv.gz")) == 2400
+    for name, text in _json_texts(directory).items():
+        assert "eligible_for_probe" not in text, name
+
+
+@pytest.mark.parametrize(
+    ("world", "decision"),
+    [({"placebo_gap": 0.5}, "failed"), ({"placebo": -2.0}, "inconclusive_underpowered")],
+)
+async def test_the_executor_never_writes_eligible_for_probe(tmp_path, monkeypatch, world, decision):
+    _pipeline(monkeypatch, *_world(**world))
+    directory = tmp_path / "run"
+
+    async def build():
+        return _pinned()
+
+    result = await execute_runup_study(_loaded(), directory, build=build, environment={})
+    assert result["decision"] == decision
+    texts = _json_texts(directory)
+    assert set(texts) == {"protocol.json", "manifest.json", "planted.json", "result.json"}
+    for name, text in texts.items():
+        assert "eligible_for_probe" not in text, name
+        assert '"authorizes_promotion": true' not in text, name
+
+
+async def test_the_real_pipeline_on_inputs_without_reports_completes_inconclusive(tmp_path):
+    directory = tmp_path / "run"
+
+    async def build():
+        return _pinned()
+
+    result = await execute_runup_study(_loaded(), directory, build=build, environment={})
+    assert result["status"] == "completed", result.get("error")
+    assert result["decision"] == "inconclusive_underpowered" and result["events"]["legs"] == 0
+    for name in ("events", "labels", "controls", "placebo"):
+        assert pd.read_csv(directory / f"{name}.csv.gz").empty
+    assert json.loads((directory / "result.json").read_text())["decision"] == "inconclusive_underpowered"
