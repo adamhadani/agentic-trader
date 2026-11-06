@@ -772,12 +772,16 @@ def test_empty_frames_evaluate_to_inconclusive():
 # --- the executor -----------------------------------------------------------------------------------
 
 
-def _loaded(entry=FAST):
+CUBE_SHA = _inputs({}).cube.sha256  # the fixture cube's real content hash
+PINNED = FAST.model_copy(update={"cube_sha256": CUBE_SHA})
+
+
+def _loaded(entry=PINNED):
     return LoadedRunupEntry(entry=entry, sha256="f" * 64, path=SHIPPED)
 
 
 def _pinned(**provenance):
-    return replace(_inputs({}), provenance={"cube_sha256": ENTRY.cube_sha256, **provenance})
+    return replace(_inputs({}), provenance={"cube_sha256": CUBE_SHA, **provenance})
 
 
 def _pipeline(monkeypatch, labels, controls):
@@ -824,7 +828,7 @@ async def test_the_executor_writes_protocol_and_manifest_before_build_and_record
     manifest = json.loads((directory / "manifest.json").read_text())
     assert manifest["entry_id"] == "runup" and manifest["version"] == 1 and manifest["sha256"] == "f" * 64
     assert manifest["pinned"]["pooled_protocol_sha256"] == ENTRY.pooled_protocol_sha256
-    assert manifest["pinned"]["cube_sha256"] == ENTRY.cube_sha256
+    assert manifest["pinned"]["cube_sha256"] == CUBE_SHA
     assert manifest["environment"] == {"e": 1} and manifest["authorizes_promotion"] is False
     assert manifest["started_at"]
     protocol = json.loads((directory / "protocol.json").read_text())
@@ -832,18 +836,23 @@ async def test_the_executor_writes_protocol_and_manifest_before_build_and_record
     assert sorted(path.name for path in directory.iterdir()) == ["manifest.json", "protocol.json", "result.json"]
 
 
-@pytest.mark.parametrize("provenance", [{"cube_sha256": "0" * 64}, {"cube_sha256": None}])
-async def test_the_executor_refuses_inputs_whose_cube_differs_from_the_pinned_hash(tmp_path, monkeypatch, provenance):
+@pytest.mark.parametrize("swapped", [False, True], ids=["entry-pins-another-cube", "runner-swapped-the-cube"])
+async def test_the_executor_hashes_the_cube_and_never_trusts_a_provenance_label(tmp_path, monkeypatch, swapped):
+    """Provenance claims the entry's digest every time; only the cube's own content hash decides."""
     calls = _pipeline(monkeypatch, *_world(10, 5))
+    entry = PINNED if swapped else FAST  # FAST pins the shipped cohort-v3 digest, not the fixture cube's
+    cube = _cube(["AAA"]) if swapped else _inputs({}).cube
+    assert cube.sha256 != entry.cube_sha256
     directory = tmp_path / "run"
 
     async def build():
-        return replace(_inputs({}), provenance=provenance)
+        return replace(_inputs({}), cube=cube, provenance={"cube_sha256": entry.cube_sha256})
 
-    result = await execute_runup_study(_loaded(), directory, build=build, environment={})
+    result = await execute_runup_study(_loaded(entry), directory, build=build, environment={})
     assert result["status"] == "failed" and result["authorizes_promotion"] is False
-    assert result["error"].startswith("ValueError: ") and ENTRY.cube_sha256 in result["error"]
-    assert str(provenance["cube_sha256"]) in result["error"]
+    assert result["error"] == (
+        f"ValueError: the loaded cube has SHA-256 {cube.sha256}, but the entry pins cube_sha256 {entry.cube_sha256}"
+    )
     assert calls == [] and not (directory / "events.csv.gz").exists()
 
 
@@ -909,7 +918,7 @@ async def test_the_executor_saves_frames_and_planted_before_the_criteria_and_res
     assert len(tested) == 6 and all(exists for _, exists in tested[2:])
     assert result["status"] == "completed" and result["decision"] == "survives_development"
     assert result["authorizes_promotion"] is False
-    assert result["inputs"] == {"cube_sha256": ENTRY.cube_sha256, "pages_sha256": "p" * 64}
+    assert result["inputs"] == {"cube_sha256": CUBE_SHA, "pages_sha256": "p" * 64}
     assert result["events"] == {"legs": 1200} and result["labels"] == {"labelled": {"leg": 1200}}
     saved = json.loads((directory / "result.json").read_text())
     assert saved["planted"] == json.loads((directory / "planted.json").read_text())
@@ -947,10 +956,11 @@ async def test_the_real_pipeline_on_inputs_without_reports_completes_inconclusiv
     directory = tmp_path / "run"
 
     async def build():
-        return _pinned()
+        return replace(_inputs({}), provenance={"pages_sha256": "p" * 64})  # no cube label at all
 
     result = await execute_runup_study(_loaded(), directory, build=build, environment={})
     assert result["status"] == "completed", result.get("error")
+    assert result["inputs"] == {"pages_sha256": "p" * 64, "cube_sha256": CUBE_SHA}  # the hashed cube's digest
     assert result["decision"] == "inconclusive_underpowered" and result["events"]["legs"] == 0
     for name in ("events", "labels", "controls", "placebo"):
         assert pd.read_csv(directory / f"{name}.csv.gz").empty

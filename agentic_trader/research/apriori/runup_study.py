@@ -34,9 +34,9 @@ and ``net_excess_r`` (controls unchanged) and needs both P1 and P2 to hold, or t
 nothing.
 
 ``execute_runup_study`` writes ``protocol.json`` and ``manifest.json`` before ``build`` (the only provider
-access), refuses inputs whose ``provenance["cube_sha256"]`` differs from the entry's ``cube_sha256``, saves the
-frames, then ``planted.json`` before any placebo or leg criterion, then ``result.json``; any failure is
-``status: failed``. Research only: nothing here reads a database, a broker or the network, and nothing
+access), hashes the cube it was given and refuses one whose SHA-256 differs from the entry's ``cube_sha256``
+(recording that digest in the result's ``inputs``), saves the frames, then ``planted.json`` before any placebo
+or leg criterion, then ``result.json``; any failure is ``status: failed``. Research only: nothing here reads a database, a broker or the network, and nothing
 authorizes promotion.
 """
 
@@ -648,10 +648,11 @@ async def execute_runup_study(
     )
     try:
         inputs = await build()
-        digest = inputs.provenance.get("cube_sha256")
+        # The cube actually used is hashed (cached on the cube); a provenance label is never trusted for it.
+        digest = await asyncio.to_thread(lambda: inputs.cube.sha256)
         if digest != entry.cube_sha256:
             raise ValueError(
-                f"the inputs' cube has SHA-256 {digest}, but the entry pins cube_sha256 {entry.cube_sha256}"
+                f"the loaded cube has SHA-256 {digest}, but the entry pins cube_sha256 {entry.cube_sha256}"
             )
         events, event_counts = await asyncio.to_thread(build_runup_events, inputs, entry)
         candidates, matching_counts = await asyncio.to_thread(match_controls, events, inputs, entry)
@@ -674,7 +675,7 @@ async def execute_runup_study(
             "events": event_counts,
             "matching": matching_counts,
             "labels": label_counts,
-            "inputs": dict(inputs.provenance),
+            "inputs": {**inputs.provenance, "cube_sha256": digest},
             "authorizes_promotion": False,
         }
     except Exception as exc:
