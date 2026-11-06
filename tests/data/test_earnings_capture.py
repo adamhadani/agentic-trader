@@ -448,3 +448,41 @@ async def test_reports_between_reads_an_unknown_timing_as_unspecified(store):
     await _seed_rows(store, FRIDAY, {FRIDAY: [_row("pbr", "evening")]})
     reports = await store.reports_between(FRIDAY, FRIDAY, today=FRIDAY)
     assert reports.rows == {FRIDAY: (("PBR", EarningsTiming.UNSPECIFIED),)}
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        {"columns": None},
+        {"columns": ["symbol", "fiscal_quarter"]},
+        {"rows": [["PBR", "after_hours"]]},
+        {"rows": {FRIDAY.isoformat(): "PBR"}},
+        {"rows": {FRIDAY.isoformat(): ["PBR"]}},
+        {"rows": {FRIDAY.isoformat(): [["PBR"]]}},
+        {"rows": {FRIDAY.isoformat(): [[None, "after_hours"]]}},
+        {"capture_date": "Friday"},
+    ],
+)
+async def test_reports_between_reads_a_malformed_capture_as_unusable(store, caplog, malformed):
+    payload = {
+        "capture_date": FRIDAY.isoformat(),
+        "columns": list(COLUMNS),
+        "pages": [],
+        "rows": {FRIDAY.isoformat(): [_row("PBR", "after_hours")]},
+        **malformed,
+    }
+    async with store.workflows.db.session_factory() as session, session.begin():
+        await store.workflows.lock(session)
+        await store.workflows.append(
+            session, stream=CAPTURE_STREAM, kind=EventKind.EARNINGS_CALENDAR_CAPTURE, payload=payload, key="bad"
+        )
+    with caplog.at_level(logging.WARNING, logger="copilot"):
+        assert await store.reports_between(FRIDAY, FRIDAY, today=FRIDAY) is None
+    [record] = [r for r in caplog.records if r.__dict__.get("event") == "earnings_capture_unreadable"]
+    assert record.__dict__["reason"] in {"KeyError", "IndexError", "TypeError", "ValueError"}
+
+
+async def test_reports_between_needs_the_columns(store):
+    payload = {"capture_date": FRIDAY.isoformat(), "pages": [], "rows": {FRIDAY.isoformat(): []}}
+    assert await store.record(payload, {}) is True
+    assert await store.reports_between(FRIDAY, FRIDAY, today=FRIDAY) is None

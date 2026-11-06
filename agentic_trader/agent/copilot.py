@@ -465,6 +465,8 @@ class TradingCopilot:
             captures=EarningsCaptureStore(self.db.workflows, default_capture_directory()),
             calendar=getattr(self.lifetime_service, "calendar", None),
             scope_of=self._release_exit_scope,
+            # Each close holds the lock every other daemon close path holds (monitor, /close, /flatten).
+            close_guard=lambda: self._reconciliation_lock,
         )
         # The PEAD catalog probe's drift source for the 10:35 suggestion scan. Construction
         # reads the frozen entry file only; every provider read happens inside a scan.

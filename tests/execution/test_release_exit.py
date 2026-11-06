@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -223,7 +224,9 @@ def scope_of(position: dict) -> str:
     return "alpha" if position.get("alpha_version") or position.get("alpha_policy") else "native"
 
 
-def service(db, *, mode="preview", earnings=None, captures=None, calendar=None, broker=None) -> ReleaseExitService:
+def service(
+    db, *, mode="preview", earnings=None, captures=None, calendar=None, broker=None, **extra
+) -> ReleaseExitService:
     return ReleaseExitService(
         ReleaseExitConfig(mode=mode),
         db,
@@ -232,6 +235,7 @@ def service(db, *, mode="preview", earnings=None, captures=None, calendar=None, 
         captures=captures or FakeCaptures(),
         calendar=calendar or FakeCalendar(),
         scope_of=scope_of,
+        **extra,
     )
 
 
@@ -389,6 +393,18 @@ async def test_the_capture_date_is_journaled(temp_db):
     assert "AAPL reports 2026-11-06 timing unspecified." in text
 
 
+async def test_a_short_would_close_notice_says_short(temp_db):
+    tsla = await position(temp_db, "TSLA", direction="SHORT")
+    release = service(temp_db, earnings=FakeEarnings({"TSLA": EarningsEvent("TSLA", MONDAY, UNSPEC)}))
+    assert await release.run(at(FRIDAY, 15, 30)) == "done"
+    assert await notices(temp_db) == {
+        f"release-exit/{tsla}/2026-11-09": (
+            "Release exit (preview): TSLA reports 2026-11-09 timing unspecified. In enforce the desk would close "
+            "this short at about 15:30 ET today. Nothing was sent to the broker; /flatten closes it manually."
+        )
+    }
+
+
 # --- enforce ---------------------------------------------------------------------------------------------------
 
 
@@ -430,6 +446,7 @@ async def test_enforce_closes_once_with_the_stable_request_id_and_context(temp_d
         "close_result": "Close submitted; awaiting a confirmed broker fill.",
         "close_status": CloseRequestStatus.SUBMITTED,
         "outcome": "submitted",
+        "notified": False,
     }
     assert not [key for key in await notices(temp_db) if key.startswith("release-exit")]
 
@@ -545,6 +562,99 @@ async def test_a_position_already_exiting_elsewhere_gets_no_failure_notice(temp_
     assert not [key for key in await notices(temp_db) if key.startswith("release-exit")]
 
 
+async def test_each_close_holds_the_guard_and_the_lookups_never_do(temp_db, monkeypatch):
+    await position(temp_db, "AAPL")
+    await position(temp_db, "MSFT", direction="SHORT")
+    lock = asyncio.Lock()
+    seen: list[tuple[str, bool]] = []
+
+    class WatchedEarnings(FakeEarnings):
+        async def next_earnings(self, symbol, now, horizon_days):
+            seen.append(("lookup", lock.locked()))
+            return await super().next_earnings(symbol, now, horizon_days)
+
+    class WatchedCaptures(FakeCaptures):
+        async def reports_between(self, start, end, *, today):
+            seen.append(("capture", lock.locked()))
+            return await super().reports_between(start, end, today=today)
+
+    events = {"AAPL": EarningsEvent("AAPL", FRIDAY, AH), "MSFT": EarningsEvent("MSFT", MONDAY, PM)}
+    release = service(
+        temp_db,
+        mode="enforce",
+        earnings=WatchedEarnings(events),
+        captures=WatchedCaptures(None),
+        broker=FakeBroker([held("AAPL"), held("MSFT", "SHORT")]),
+        close_guard=lambda: lock,
+    )
+    close_signal, record_close = release.close_service.close_signal, release.store.record_close
+
+    async def close_spy(signal_id, **kwargs):
+        seen.append(("close", lock.locked()))
+        return await close_signal(signal_id, **kwargs)
+
+    async def record_spy(*args, **kwargs):
+        seen.append(("record", lock.locked()))
+        return await record_close(*args, **kwargs)
+
+    monkeypatch.setattr(release.close_service, "close_signal", close_spy)
+    monkeypatch.setattr(release.store, "record_close", record_spy)
+    assert await release.run(at(FRIDAY, 15, 30)) == "done"
+    assert seen == [
+        ("capture", False),
+        ("lookup", False),
+        ("lookup", False),
+        ("close", True),
+        ("record", True),
+        ("close", True),
+        ("record", True),
+    ]
+    assert not lock.locked()
+
+
+async def _interrupted_enforce_pass(db, monkeypatch, broker) -> int:
+    """An ``enforce`` pass journaled at 15:30 whose closes never ran (a crash right after the journal)."""
+    signal_id = await position(db, "AAPL")
+    first = service(
+        db, mode="enforce", earnings=FakeEarnings({"AAPL": EarningsEvent("AAPL", FRIDAY, AH)}), broker=broker
+    )
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError("crash after the pass journal")
+
+    monkeypatch.setattr(first, "_finish_closes", crash)
+    assert await first.run(at(FRIDAY, 15, 30)) == "failed"
+    assert [e["kind"] for e in await release_events(db)] == [EventKind.RELEASE_EXIT_PASS] and broker.submits == []
+    return signal_id
+
+
+async def test_a_preview_restart_never_finishes_an_interrupted_enforce_pass(temp_db, monkeypatch):
+    broker = FakeBroker([held("AAPL")])
+    await _interrupted_enforce_pass(temp_db, monkeypatch, broker)
+    preview = service(temp_db, mode="preview", earnings=FakeEarnings(), broker=broker)
+    calls = []
+
+    async def spy(signal_id, **kwargs):
+        calls.append(signal_id)
+        return "unexpected"
+
+    monkeypatch.setattr(preview.close_service, "close_signal", spy)
+    assert await preview.run(at(FRIDAY, 15, 35)) == "present"
+    assert calls == [] and broker.submits == [] and await temp_db.active_close_requests() == []
+    assert [e["kind"] for e in await release_events(temp_db)] == [EventKind.RELEASE_EXIT_PASS]
+
+
+@pytest.mark.parametrize(("hour", "minute", "notified"), [(16, 30, True), (16, 31, False)])
+async def test_an_owed_close_failure_is_notified_only_until_close_plus_30(temp_db, monkeypatch, hour, minute, notified):
+    signal_id = await _interrupted_enforce_pass(temp_db, monkeypatch, FakeBroker([]))  # no broker position
+    restarted = service(temp_db, mode="enforce", broker=FakeBroker([]))
+    assert await restarted.run(at(FRIDAY, hour, minute)) == "present"
+    _, closed = await release_events(temp_db)
+    assert (closed["payload"]["outcome"], closed["payload"]["notified"]) == ("refused", notified)
+    queued = [key for key in await notices(temp_db) if key.startswith("release-exit")]
+    assert queued == ([f"release-exit/{signal_id}/2026-11-06/failed"] if notified else [])
+
+
 # --- failure of the pass itself --------------------------------------------------------------------------------
 
 
@@ -580,6 +690,21 @@ async def test_a_pass_that_never_completes_queues_one_unavailable_notice_at_the_
         )
     }
     assert await release_events(temp_db) == []
+
+
+@pytest.mark.parametrize(("hour", "minute", "queued"), [(16, 30, True), (16, 31, False)])
+async def test_the_unavailable_notice_is_queued_only_until_close_plus_30(temp_db, caplog, hour, minute, queued):
+    await position(temp_db, "AAPL")
+    captures = FakeCaptures(None, errors=[RuntimeError("secret capture detail")] * 10)
+    release = service(temp_db, captures=captures)
+    assert await release.run(at(FRIDAY, 15, 30)) == "failed"
+    with caplog.at_level(logging.WARNING):
+        assert await release.run(at(FRIDAY, hour, minute)) == "failed"
+        assert await release.run(at(FRIDAY, hour, minute) + timedelta(minutes=5)) == "failed"
+    assert list(await notices(temp_db)) == (["release-exit-unavailable/2026-11-06"] if queued else [])
+    logged = [r for r in caplog.records if r.__dict__.get("event") == "release_exit_unavailable"]
+    assert len(logged) == (0 if queued else 1)
+    assert "secret" not in caplog.text
 
 
 async def test_a_restart_after_the_close_skips_the_date(temp_db):

@@ -31,6 +31,7 @@ def test_the_service_reuses_the_desks_collaborators(desk, temp_db):
     assert release.earnings is desk.earnings_calendar
     assert release.calendar is desk.lifetime_service.calendar
     assert isinstance(release.captures, EarningsCaptureStore) and release.captures.workflows is temp_db.workflows
+    assert release.close_guard() is desk._reconciliation_lock
 
 
 @pytest.mark.parametrize(

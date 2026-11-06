@@ -397,4 +397,5 @@ __all__ = [
     "earnings_blackout_reason",
     "earnings_note",
     "parse_calendar_payload",
+    "timing_word",
 ]

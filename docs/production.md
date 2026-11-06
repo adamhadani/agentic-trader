@@ -1603,7 +1603,7 @@ never touches the trading halt and opens no lifetime review.
   unspecified time. A report on N after the close is N's own pass.
 - **Evidence.** The union of the live Nasdaq lookup (the earnings blackout's calendar and cache, over T to N) and
   the latest [earnings calendar capture](#earnings-calendar-capture) when it is at most 4 days old and holds every
-  weekday of T to N. A report in either source counts; on a timing disagreement the reading that exits today wins.
+  weekday of T to N (a malformed capture payload reads as unusable and is logged as `earnings_capture_unreadable`). A report in either source counts; on a timing disagreement the reading that exits today wins.
   `none` needs a verified live lookup or a usable capture; with neither the status is `unknown`, which is never
   closed and never read as "no report".
 - **Scope.** Tracked `EXECUTED` equity positions, both directions. A catalog card (`pead`, `insider_watch`), a
@@ -1620,20 +1620,32 @@ never touches the trading halt and opens no lifetime review.
 - **Enforce.** After the pass is journaled, each `close` entry goes once through `PositionCloseService.close_signal`
   with request ID `release-` plus the first 32 hex digits of `sha256("native/<signal id>/<report date>")` and context
   `{reason: release_exit, report_date, timing, sources}`; the close service keeps its intent, recovery and refusals.
+  Each close holds the desk's reconciliation lock (as the monitor, `/close` and `/flatten` do) for its own call and
+  journaled result only, never across the pass, so the earnings lookups never stall the position monitor.
   Each result is a `release_exit_close` event (key `release-exit/<ET date>/<signal id>`: `close_result`,
-  `close_status`, `outcome` `submitted`, `refused`, `failed`, `error` or `already_exiting`). A refused, failed or
+  `close_status`, `outcome` `submitted`, `refused`, `failed`, `error` or `already_exiting`, `notified`). A refused, failed or
   raising close queues "Release exit could not close SYMBOL: reason." with "The position keeps its stop; /flatten
   closes it manually." when the request never reached the broker, or "Check its protective orders at the broker;
   /flatten closes it manually." once it did (the reason then carries the broker's protection statement). A
   position that is already closed, or that another close or exit order owns, gets no notice. Nothing is retried:
   a restart re-calls only a close whose result was never journaled, and the stable request ID makes that call a
-  no-op.
-- **Failure.** A pass that raises before journaling is retried on the next tick until the close; a date whose
-  pass this process attempted and never completed queues one `release-exit-unavailable/<ET date>` notice at the
-  close, naming the exception type only. Readiness is unchanged.
+  no-op. Only a process whose configured mode is `enforce` makes those calls: a daemon restarted into `preview`
+  after an interrupted `enforce` pass never touches the broker.
+- **Failure.** A pass that raises before journaling is retried on the next tick until the close. If this process
+  attempted the date's pass and it never completed, its first tick at or after the close queues one
+  `release-exit-unavailable/<ET date>` notice naming the exception type only. Two cases queue **no** notice and
+  show only as a date missing from the `release_exit` block of `cards outcomes` (and as `release_exit_failed` in
+  the daemon log): the broker calendar unavailable through the close (the close time is then unknown), and a
+  host asleep, or a daemon down or restarted, through the whole window from close − `minutes_before_close` to
+  the close. Readiness is unchanged.
+- **Notice bound.** Notices are queued only up to the trading day's close + 30 minutes (16:30, the end of the
+  alert window; 13:30 on an early close). A failed owed close, or an unavailable date, found later is journaled
+  (`notified: false` on the `release_exit_close` event) and logged (`release_exit_close_not_submitted`,
+  `release_exit_unavailable`), never sent.
 - **Runbook.** Inspect with `uv run copilot db events --stream release-exit --limit 5` and the `release_exit`
   block of `uv run copilot cards outcomes` ([card evidence](card-evidence.md#release-exit)). The daemon log
-  carries `release_exit_failed` and `release_exit_lookup_failed` with type names. To act on a preview notice,
+  carries `release_exit_failed`, `release_exit_lookup_failed`, `release_exit_unavailable` and
+  `release_exit_close_not_submitted` with type names or fixed outcomes. To act on a preview notice,
   `/flatten` (or a `/close` of the signal) closes the position. To stop the job, set `release_exit.mode: off` and
   restart; `enforce` is a separate operator decision on the journaled preview counts.
 

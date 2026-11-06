@@ -23,6 +23,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -62,6 +63,9 @@ NATIVE_SCOPE = "native"
 SOURCE_LIVE, SOURCE_CAPTURE = "live", "capture"
 # Far enough ahead to reach the next session across any exchange-holiday cluster.
 NEXT_SESSION_SEARCH_DAYS = 10
+# Notices are queued only up to the trading day's close plus this bound (16:30 on a regular day, the end of the
+# operator alert window); later outcomes are journaled and logged only, never sent outside market hours.
+NOTICE_BOUND_AFTER_CLOSE = timedelta(minutes=30)
 _SUBMITTED = (CloseRequestStatus.SUBMITTED, CloseRequestStatus.COMPLETED)
 _EQUITY = normalize_asset_class(AssetClass.EQUITY)
 
@@ -282,6 +286,9 @@ class ReleaseExitService:
 
     ``scope_of`` names a tracked position's scope: ``native``, or the exempt kind (``pead``, ``insider_watch``,
     ``probe``, ``alpha``) that the desk derives from its catalog sources and the card's provenance.
+    ``close_guard`` returns the context held around each individual close (the ``close_signal`` call and its
+    journaled outcome): the desk's reconciliation lock, which every other daemon close path holds. It is never
+    held across the pass, so the earnings lookups never stall the position monitor.
     """
 
     def __init__(
@@ -294,11 +301,12 @@ class ReleaseExitService:
         captures: CapturedEarnings,
         calendar: MarketCalendarProtocol | None,
         scope_of: Callable[[Mapping[str, Any]], str],
+        close_guard: Callable[[], AbstractAsyncContextManager[Any]] = nullcontext,
         clock: Callable[[], datetime] | None = None,
     ):
         self.config, self.db = config, db
         self.close_service, self.earnings, self.captures = close_service, earnings, captures
-        self.calendar, self.scope_of = calendar, scope_of
+        self.calendar, self.scope_of, self.close_guard = calendar, scope_of, close_guard
         self.store = ReleaseExitStore(db.workflows)
         self._clock = clock or (lambda: datetime.now(UTC))
         self._lock = asyncio.Lock()
@@ -345,25 +353,37 @@ class ReleaseExitService:
             return "waiting"
         recorded = await self.store.recorded_pass(today)
         if recorded is not None:
-            await self._finish_closes(today, recorded)
+            await self._finish_closes(today, recorded, now, close_at)
             self._settled = today
             return "present"
         if now >= close_at:
-            return await self._missed(today)
+            return await self._missed(today, now, close_at)
         payload, notices = await self._pass(now, close_at)
         journaled = await self.store.record_pass(today, payload, notices)
         if not journaled:  # another process journaled the date between the read and the write
             payload = await self.store.recorded_pass(today) or {}
-        await self._finish_closes(today, payload)
+        await self._finish_closes(today, payload, now, close_at)
         self._settled = today
         return "done" if journaled else "present"
 
-    async def _missed(self, today: date) -> RunStatus:
-        """At or after the close with no pass: one unavailable notice if this process failed it, else skip the date."""
+    async def _missed(self, today: date, now: datetime, close_at: datetime) -> RunStatus:
+        """At or after the close with no pass: one unavailable notice if this process failed it, else skip the date.
+
+        The notice is queued only up to ``close_at + NOTICE_BOUND_AFTER_CLOSE``; later it is logged only.
+        """
         if self._failure is None or self._failure[0] != today:
             return "closed_market"  # a restart (or a wake) after the close: the date is skipped, as journaled
         if self._unavailable_queued != today:
-            await self.store.queue_unavailable(today, unavailable_notice(today, self._failure[1]))
+            reason = self._failure[1]
+            if now <= close_at + NOTICE_BOUND_AFTER_CLOSE:
+                await self.store.queue_unavailable(today, unavailable_notice(today, reason))
+            else:
+                logger.warning(
+                    "Release exit unavailable for %s (%s); past the notice bound, logged only",
+                    today.isoformat(),
+                    reason,
+                    extra={"event": "release_exit_unavailable", "date": today.isoformat(), "reason": reason},
+                )
             self._unavailable_queued = today
         return "failed"
 
@@ -443,18 +463,31 @@ class ReleaseExitService:
         }
         return payload, notices
 
-    async def _finish_closes(self, today: date, payload: Mapping[str, Any]) -> None:
-        """Close every journaled ``close`` entry that has no close result yet (all of them on the pass's own tick)."""
+    async def _finish_closes(self, today: date, payload: Mapping[str, Any], now: datetime, close_at: datetime) -> None:
+        """Close every journaled ``close`` entry that has no close result yet (all of them on the pass's own tick).
+
+        Only while the configured mode is ``enforce``: a process running ``preview`` (or restarted into it after an
+        interrupted ``enforce`` pass) never calls the broker. Each close holds ``close_guard`` for its own call
+        and journaled outcome only.
+        """
+        if self.config.mode != "enforce":
+            return
         owed = [entry for entry in payload.get("positions") or [] if entry.get("status") == "close"]
         if not owed:
             return
         done = await self.store.closed(today, [entry["signal_id"] for entry in owed])
+        notify = now <= close_at + NOTICE_BOUND_AFTER_CLOSE
         for entry in owed:
             if entry["signal_id"] not in done:
-                await self._close(today, entry)
+                async with self.close_guard():
+                    await self._close(today, entry, notify=notify)
 
-    async def _close(self, today: date, entry: Mapping[str, Any]) -> None:
-        """One ``close_signal`` call (never retried here) and its journaled outcome."""
+    async def _close(self, today: date, entry: Mapping[str, Any], *, notify: bool) -> None:
+        """One ``close_signal`` call (never retried here) and its journaled outcome.
+
+        A non-submitted outcome queues a notice only when ``notify`` (within the notice bound); otherwise the
+        outcome is journaled (``notified: false``) and logged.
+        """
         signal_id, symbol, request_id = entry["signal_id"], entry["symbol"], entry["request_id"]
         context = {
             "reason": "release_exit",
@@ -484,10 +517,18 @@ class ReleaseExitService:
         notice = None
         if outcome in ("refused", "failed", "error"):
             reason = f"the close raised {raised}" if raised is not None else result
-            notice = (
-                f"release-exit/{signal_id}/{entry['report_date']}/failed",
-                failure_notice(symbol, reason, broker_step=record is not None),
-            )
+            if notify:
+                notice = (
+                    f"release-exit/{signal_id}/{entry['report_date']}/failed",
+                    failure_notice(symbol, reason, broker_step=record is not None),
+                )
+            else:
+                logger.warning(
+                    "Release exit could not close %s (%s); past the notice bound, journaled only",
+                    symbol,
+                    outcome,
+                    extra={"event": "release_exit_close_not_submitted", "symbol": symbol, "outcome": outcome},
+                )
         await self.store.record_close(
             today,
             signal_id,
@@ -500,6 +541,7 @@ class ReleaseExitService:
                 "close_result": close_result,
                 "close_status": status,
                 "outcome": outcome,
+                "notified": notice is not None,
             },
             notice,
         )

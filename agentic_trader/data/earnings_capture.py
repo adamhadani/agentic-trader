@@ -115,6 +115,37 @@ def _captured_timing(value: Any) -> EarningsTiming:
         return EarningsTiming.UNSPECIFIED
 
 
+def _captured_reports(
+    payload: Mapping[str, Any], start: date, end: date, *, today: date, max_age_days: int
+) -> CapturedReports | None:
+    """``reports_between`` over one payload; raises KeyError/IndexError/TypeError/ValueError when it is malformed."""
+    capture_date = date.fromisoformat(payload["capture_date"])
+    if (today - capture_date).days > max_age_days:
+        return None
+    columns, served = payload["columns"], payload["rows"]
+    if not isinstance(columns, list) or not isinstance(served, dict):
+        raise TypeError("columns must be a list and rows an object")
+    symbol_at, timing_at = columns.index("symbol"), columns.index("timing")
+    rows: dict[date, tuple[tuple[str, EarningsTiming], ...]] = {}
+    day = start
+    while day <= end:
+        day_rows = served.get(day.isoformat())
+        if day_rows is None:
+            if day.weekday() < 5:
+                return None
+        else:
+            if not isinstance(day_rows, list):
+                raise TypeError("a day's rows must be a list")
+            parsed: list[tuple[str, EarningsTiming]] = []
+            for row in day_rows:
+                if not isinstance(row, list) or not isinstance(row[symbol_at], str) or not row[symbol_at]:
+                    raise TypeError("a row must be a list with a symbol")
+                parsed.append((row[symbol_at].upper(), _captured_timing(row[timing_at])))
+            rows[day] = tuple(parsed)
+        day += timedelta(days=1)
+    return CapturedReports(capture_date=capture_date, rows=rows)
+
+
 def default_capture_directory() -> Path:
     return state_directory() / "data" / "earnings_calendar"
 
@@ -175,30 +206,23 @@ class EarningsCaptureStore:
     ) -> CapturedReports | None:
         """The latest capture's reports for ``[start, end]``, or None when it cannot vouch for that range.
 
-        None when there is no capture, the latest is more than ``max_age_days`` before ``today`` (New York), or
-        a weekday of the range is missing from its ``rows``. A capture targets weekdays only
-        (``capture_targets``), so a weekend date is never required and has no key.
+        None when there is no capture, the latest is more than ``max_age_days`` before ``today`` (New York), a
+        weekday of the range is missing from its ``rows``, or the payload is malformed (logged by type name; the
+        capture is then unusable, never an error). A capture targets weekdays only (``capture_targets``), so a
+        weekend date is never required and has no key.
         """
         events = await self.workflows.events(CAPTURE_STREAM, limit=1)
         if not events:
             return None
-        payload = events[0]["payload"]
-        capture_date = date.fromisoformat(payload["capture_date"])
-        if (today - capture_date).days > max_age_days:
+        try:
+            return _captured_reports(events[0]["payload"], start, end, today=today, max_age_days=max_age_days)
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            logger.warning(
+                "Earnings capture payload unreadable (%s); treated as unusable",
+                type(exc).__name__,
+                extra={"event": "earnings_capture_unreadable", "reason": type(exc).__name__},
+            )
             return None
-        columns = list(payload.get("columns") or COLUMNS)
-        symbol_at, timing_at = columns.index("symbol"), columns.index("timing")
-        served: Mapping[str, list[list[Any]]] = payload.get("rows") or {}
-        rows: dict[date, tuple[tuple[str, EarningsTiming], ...]] = {}
-        day = start
-        while day <= end:
-            day_rows = served.get(day.isoformat())
-            if day_rows is not None:
-                rows[day] = tuple((str(row[symbol_at]).upper(), _captured_timing(row[timing_at])) for row in day_rows)
-            elif day.weekday() < 5:
-                return None
-            day += timedelta(days=1)
-        return CapturedReports(capture_date=capture_date, rows=rows)
 
     def _write(self, capture_date: date, bodies: Mapping[date, bytes]) -> None:
         folder = self.directory / capture_date.isoformat()
