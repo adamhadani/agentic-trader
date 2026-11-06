@@ -628,6 +628,7 @@ class TradingCopilot:
             card_stats_enabled=True,  # the daemon always runs the card-statistics worker
             corporate_actions_enabled=corporate_actions_live(config),
             insider_capture_enabled=config.insider_watch.enabled,
+            earnings_capture_enabled=config.earnings_capture.enabled,
             macro_calendar=lambda now: macro_calendar_readiness(
                 self.static_calendar.state(now),
                 renewal_days=config.risk.macro_calendar_renewal_days,

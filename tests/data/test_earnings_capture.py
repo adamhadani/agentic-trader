@@ -17,6 +17,7 @@ import pytest
 
 from agentic_trader.config import AppConfig
 from agentic_trader.data.earnings_capture import (
+    CAPTURE_MAX_AGE_SECONDS,
     CAPTURE_STREAM,
     COLUMNS,
     CaptureIncomplete,
@@ -26,6 +27,7 @@ from agentic_trader.data.earnings_capture import (
     capture_targets,
     run_earnings_capture_worker,
 )
+from agentic_trader.diagnostics.readiness import EARNINGS_CAPTURE_MAX_AGE_SECONDS
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.market.session import ET_TZ
 
@@ -314,3 +316,7 @@ async def test_failed_poll_without_capture_is_not_ready(store):
     observed = await _poll_failing(store)
     assert observed[0][0] is False
     assert observed[0][1].startswith("failed: CaptureIncomplete")
+
+
+def test_max_age_constants_agree():
+    assert EARNINGS_CAPTURE_MAX_AGE_SECONDS == CAPTURE_MAX_AGE_SECONDS == 4 * 86400

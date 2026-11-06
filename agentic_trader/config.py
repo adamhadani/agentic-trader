@@ -695,6 +695,7 @@ READINESS_CHECK_NAMES = frozenset(
         "card_stats",
         "corporate_actions",
         "insider_capture",
+        "earnings_capture",
         "daemon_started",
         "alpha_registry",
         "entry_recovery",

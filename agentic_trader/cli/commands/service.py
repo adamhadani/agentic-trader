@@ -22,6 +22,11 @@ from agentic_trader.config import AppConfig, ScanBudget, corporate_actions_live,
 from agentic_trader.constants import MAX_DAILY_COMPARISONS, AssetClass, AuditEventType
 from agentic_trader.data.corporate_actions import AlpacaCorporateActionsSource
 from agentic_trader.data.corporate_actions_worker import CorporateActionsWorker
+from agentic_trader.data.earnings_capture import (
+    EarningsCaptureStore,
+    default_capture_directory as earnings_capture_directory,
+    run_earnings_capture_worker,
+)
 from agentic_trader.data.insider_capture import (
     CaptureScope,
     InsiderCaptureStore,
@@ -462,6 +467,23 @@ async def run_insider_capture(copilot, config) -> None:
     await run_insider_capture_worker(config, store, observe, copilot._shutdown_event, scope=scope)
 
 
+async def run_earnings_capture(copilot, config) -> None:
+    """The daily dated Nasdaq earnings-calendar capture (data/earnings_capture.py)."""
+    store = EarningsCaptureStore(copilot.db.workflows, earnings_capture_directory())
+
+    async def observe(ok: bool, detail: str) -> None:
+        await copilot.readiness.observe(HealthComponent.EARNINGS_CAPTURE, ok, detail)
+
+    await run_earnings_capture_worker(config, store, observe, copilot._shutdown_event)
+
+
+def start_earnings_capture(copilot, config) -> asyncio.Task[None] | None:
+    """Start the capture task when ``earnings_capture.enabled``; otherwise none."""
+    if not config.earnings_capture.enabled:
+        return None
+    return asyncio.create_task(run_earnings_capture(copilot, config))
+
+
 def _slot_due_at(slot_et: str) -> datetime:
     """The instant a New York ``HH:MM`` suggestion-scan slot was due today."""
     return datetime.combine(datetime.now(ET_TZ).date(), dt_time.fromisoformat(slot_et), tzinfo=ET_TZ)
@@ -796,6 +818,7 @@ async def daemon(no_llm: bool) -> None:
     insider_capture_task = (
         asyncio.create_task(run_insider_capture(copilot, config)) if config.insider_watch.enabled else None
     )
+    earnings_capture_task = start_earnings_capture(copilot, config)
     if copilot.insider_watch_source is not None:
         # The pinned insider archive (about 16 s) is read once per process in a worker thread, from now.
         copilot.insider_watch_source.warm()
@@ -889,6 +912,18 @@ async def daemon(no_llm: bool) -> None:
                 logger.warning(
                     "Insider-capture worker ended with an error",
                     extra={"event": "insider_capture_task_failed", "reason": type(exc).__name__},
+                )
+        if earnings_capture_task is not None:
+            earnings_capture_task.cancel()
+            try:
+                await earnings_capture_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                # Type name only: an exception's text may carry a request header.
+                logger.warning(
+                    "Earnings-capture worker ended with an error",
+                    extra={"event": "earnings_capture_task_failed", "reason": type(exc).__name__},
                 )
         workflow_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

@@ -17,6 +17,8 @@ from agentic_trader.telemetry.collector import MetricsCollector
 # Duplicates agentic_trader/data/insider_capture.py:CAPTURE_MAX_AGE_SECONDS (4 days, the corporate-actions
 # limit) so readiness does not import the capture module; a test pins the two equal.
 INSIDER_CAPTURE_MAX_AGE_SECONDS = 4 * 86400
+# Duplicates agentic_trader/data/earnings_capture.py:CAPTURE_MAX_AGE_SECONDS for the same reason; a test pins it.
+EARNINGS_CAPTURE_MAX_AGE_SECONDS = 4 * 86400
 
 
 class HealthComponent(StrEnum):
@@ -32,6 +34,7 @@ class HealthComponent(StrEnum):
     CARD_STATS = "card_stats"
     CORPORATE_ACTIONS = "corporate_actions"
     INSIDER_CAPTURE = "insider_capture"
+    EARNINGS_CAPTURE = "earnings_capture"
 
 
 class ReadinessService:
@@ -48,6 +51,7 @@ class ReadinessService:
         card_stats_enabled: bool = False,
         corporate_actions_enabled: bool = False,
         insider_capture_enabled: bool = False,
+        earnings_capture_enabled: bool = False,
         macro_calendar: Callable[[datetime], Mapping[str, Any]] | None = None,
     ):
         self.store, self.config, self.metrics, self.run_id = store, config, metrics, run_id
@@ -58,6 +62,7 @@ class ReadinessService:
         self.card_stats_enabled = card_stats_enabled
         self.corporate_actions_enabled = corporate_actions_enabled
         self.insider_capture_enabled = insider_capture_enabled
+        self.earnings_capture_enabled = earnings_capture_enabled
         self.macro_calendar = macro_calendar
         self.stream_connected = stream_connected
         self._last_observation: dict[str, tuple[float, bool, str]] = {}
@@ -107,6 +112,9 @@ class ReadinessService:
             # The worker observes ready only while the latest captured filing date is within 4 days, so this
             # limit catches a worker that stopped observing (data/insider_capture.py, CAPTURE_MAX_AGE_SECONDS).
             limits[HealthComponent.INSIDER_CAPTURE] = INSIDER_CAPTURE_MAX_AGE_SECONDS
+        if self.earnings_capture_enabled:
+            # Ready while the latest capture is within 4 days; the limit catches a worker that stopped observing.
+            limits[HealthComponent.EARNINGS_CAPTURE] = EARNINGS_CAPTURE_MAX_AGE_SECONDS
         if self.accounting_enabled:
             limits[HealthComponent.ACCOUNTING] = self.config.accounting.max_age_seconds
         checks: dict[str, Any] = {"daemon_started": {"ready": self.started}}
