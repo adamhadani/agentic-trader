@@ -1,4 +1,4 @@
-"""Catalog entries (``pead`` and ``exdiv``): one frozen JSON file per a priori alpha under ``config/research/apriori/``.
+"""Catalog entries (``pead``, ``exdiv``, ``insider`` and ``runup``): one frozen JSON file per a priori alpha under ``config/research/apriori/``.
 
 An entry is committed before any data is read. Its identity is the SHA-256 of the file's
 bytes, recorded in every run manifest; a changed file is a new version (``pead-v2``) with a
@@ -39,11 +39,18 @@ __all__ = [
     "LoadedEntry",
     "LoadedExdivEntry",
     "LoadedInsiderEntry",
+    "LoadedRunupEntry",
     "PeadEntry",
+    "RunupControl",
+    "RunupEntry",
+    "RunupEvent",
+    "RunupPlacebo",
+    "RunupTrade",
     "catalog_entry_id",
     "load_exdiv_entry",
     "load_insider_entry",
     "load_pead_entry",
+    "load_runup_entry",
     "pead_execution_policy",
 ]
 
@@ -334,6 +341,91 @@ def load_insider_entry(path: Path) -> LoadedInsiderEntry:
     raw = path.read_bytes()
     return LoadedInsiderEntry(
         entry=InsiderEntry.model_validate_json(raw), sha256=hashlib.sha256(raw).hexdigest(), path=path
+    )
+
+
+class RunupEvent(BaseModel, frozen=True, extra="forbid"):
+    lead_sessions: int = Field(ge=1)  # the entry decision is this many sessions before the report session
+    vol_window: int = Field(ge=2)
+    min_vol_returns: int = Field(ge=2)
+    recent_previous_report_sessions: int = Field(ge=1)
+    structural_exclusion_days: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _enough_returns(self) -> RunupEvent:
+        if self.min_vol_returns > self.vol_window:
+            raise ValueError("min_vol_returns cannot exceed vol_window")
+        return self
+
+
+class RunupTrade(BaseModel, frozen=True, extra="forbid"):
+    """Stop only: the run-up leg has no target; it exits on the session before the report."""
+
+    stop_atr_multiple: float = Field(gt=0)
+    atr_window: int = Field(ge=2)
+
+
+class RunupControl(BaseModel, frozen=True, extra="forbid"):
+    matched_controls: int = Field(ge=1)
+    match_return_sessions: int = Field(ge=1)
+    liquidity_buckets: int = Field(ge=2)
+    coverage_sessions: int = Field(ge=1)
+
+
+class RunupPlacebo(BaseModel, frozen=True, extra="forbid"):
+    span_sessions: int = Field(ge=1)
+    seed: int
+    planted_return: float = Field(gt=0)  # fraction of the decision price
+
+
+class RunupEntry(BaseModel, frozen=True, extra="forbid"):
+    """The frozen pre-earnings run-up development protocol (catalog entry ``runup``)."""
+
+    id: Literal["runup"]
+    version: int = Field(ge=1)
+    title: str
+    references: tuple[str, ...]
+    hypotheses: str
+    decision_rule: str
+    window: PeadWindow
+    pooled_protocol: str = Field(min_length=1)
+    pooled_protocol_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cube_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    event: RunupEvent
+    trade: RunupTrade
+    costs_bps_per_side: tuple[float, ...] = Field(min_length=1)
+    decision_cost_bps: float = Field(ge=0)
+    control: RunupControl
+    placebo: RunupPlacebo
+    bootstrap: BootstrapSpec
+    pass_rule: PassRule
+
+    @model_validator(mode="after")
+    def _decisive_cost_is_reported(self) -> RunupEntry:
+        if self.decision_cost_bps not in self.costs_bps_per_side:
+            raise ValueError("decision_cost_bps must be one of costs_bps_per_side")
+        return self
+
+    def check_against(self, spec: CubeSpec) -> None:
+        """Refuse a cube whose decisions do not cover the window or whose ATR window differs."""
+        start, end = self.window.decisions
+        if start < spec.decisions[0] or end > spec.decisions[1]:
+            raise ValueError("window.decisions must lie inside the cube spec's decisions")
+        if self.trade.atr_window != spec.bracket.atr_window:
+            raise ValueError("trade.atr_window must equal the cube bracket's atr_window")
+
+
+@dataclass(frozen=True)
+class LoadedRunupEntry:
+    entry: RunupEntry
+    sha256: str
+    path: Path
+
+
+def load_runup_entry(path: Path) -> LoadedRunupEntry:
+    raw = path.read_bytes()
+    return LoadedRunupEntry(
+        entry=RunupEntry.model_validate_json(raw), sha256=hashlib.sha256(raw).hexdigest(), path=path
     )
 
 
