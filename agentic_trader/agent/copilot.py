@@ -88,6 +88,7 @@ from agentic_trader.data.corporate_actions import (
     between,
     position_note,
 )
+from agentic_trader.data.filings_capture import FilingsCaptureStore, FilingsLookup
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.data.providers import AlpacaDataProvider
@@ -185,6 +186,7 @@ from agentic_trader.risk import (
     RiskLimits,
     corporate_action_block,
     entry_session_open,
+    filing_veto_block,
     normalize_symbol,
     per_trade_risk,
     per_trade_risk_budget,
@@ -325,6 +327,7 @@ class TradingCopilot:
         earnings_drift: EarningsDriftService | None = None,
         card_stats: CardStatsRepository | None = None,
         corporate_actions: CorporateActionsStore | None = None,
+        filings_capture: FilingsCaptureStore | None = None,
         news_context: NewsContextService | None = None,
         book_sizer: BookSizer | None = None,
         bar_source: AlpacaDataProvider | None = None,
@@ -364,6 +367,10 @@ class TradingCopilot:
             corporate_actions
             if corporate_actions is not None
             else CorporateActionsStore(self.db.workflows, max_actions=config.corporate_actions.max_actions)
+        )
+        # Filing-veto captures (data/filings_capture.py); the daemon's worker writes, scans and taps read.
+        self.filings_capture = (
+            filings_capture if filings_capture is not None else FilingsCaptureStore(self.db.workflows)
         )
         # News as measured context (docs/news-context.md): a per-scan fetch and scorer, None when off or without keys.
         self.news_context: NewsContextService | None = (
@@ -1165,6 +1172,8 @@ class TradingCopilot:
             # One corporate-action read per scan: the deterministic COLLECT pass and the send phase
             # judge every equity candidate against the same capture (None when the feature is off).
             corporate_lookup = await self._corporate_actions_lookup(datetime.now(UTC))
+            # Likewise one filing-veto read per scan (None when the veto is off); no network in the scan path.
+            filings_lookup = await self._filings_lookup(datetime.now(UTC))
 
             # Synthetic dynamic contracts live for this scan only: config.contracts is never mutated.
             dynamic_selection: DynamicSelection | None = None
@@ -1407,6 +1416,7 @@ class TradingCopilot:
                             active_positions=active_positions,
                             dry_run=dry_run,
                             corporate_actions=corporate_lookup,
+                            filings=filings_lookup,
                         )
                         contract_classified += 1
                         if refusal is not None:
@@ -1449,6 +1459,7 @@ class TradingCopilot:
                             active_positions=active_positions,
                             dry_run=dry_run,
                             corporate_actions=corporate_lookup,
+                            filings=filings_lookup,
                         )
                         if refusal is not None:
                             # The catalog decision journals the refusal's text; the funnel counts natives only.
@@ -1732,6 +1743,7 @@ class TradingCopilot:
                         current_drawdown_pct=float(account_risk.drawdown_pct) if account_risk else 0.0,
                         current_equity=float(account_risk.equity) if account_risk else None,
                         corporate_actions=corporate_lookup,
+                        filings=filings_lookup,
                         news_context=news_by_rank[rank - 1],
                         skip_llm_reason=llm_breaker,
                     )
@@ -1883,6 +1895,7 @@ class TradingCopilot:
                             "llm_verdict": llm_by_rank[rank - 1],
                             "book_sizing": book_block,
                             "corporate_actions": eval_res.corporate_actions,
+                            "filings": eval_res.filings,
                             "news": self._news_block(eval_res),
                             "regime": regime_block,
                             **evidence_keys,
@@ -2305,6 +2318,7 @@ class TradingCopilot:
         active_positions: list[dict[str, Any]],
         dry_run: bool,
         corporate_actions: CorporateActionsLookup | None,
+        filings: FilingsLookup | None,
     ) -> tuple[tuple[Any, Any, Any] | None, AdmissionRefusal | None]:
         """Dedup, account risk and the deterministic evaluation shared by native and drift candidates.
 
@@ -2372,6 +2386,7 @@ class TradingCopilot:
             current_drawdown_pct=float(account_risk.drawdown_pct) if account_risk else 0.0,
             current_equity=float(account_risk.equity) if account_risk else None,
             corporate_actions=corporate_actions,
+            filings=filings,
         )
 
         if not det_res.approved:
@@ -3833,6 +3848,23 @@ class TradingCopilot:
             logger.exception("Corporate-action lookup failed", extra={"event": "corporate_actions_lookup_failed"})
             return CorporateActionsLookup("unavailable", None, ())
 
+    async def _filings_lookup(self, now: datetime) -> FilingsLookup | None:
+        """The latest filings-capture pass as one frozen read; None when the veto is off; a read failure (or an
+        unreadable pass) is ``unavailable``, which never refuses."""
+        policy = self.config.filing_veto
+        if policy.entry_block == "off":
+            return None
+        try:
+            return FilingsLookup.build(await self.filings_capture.latest(), now, policy.max_age_seconds)
+        except Exception as exc:
+            logger.warning(
+                "Filings lookup failed (%s); filing veto evidence unavailable",
+                type(exc).__name__,
+                exc_info=exc,
+                extra={"event": "filings_lookup_failed", "error_type": type(exc).__name__},
+            )
+            return FilingsLookup("unavailable", None)
+
     async def _earnings_blackout_reason(self, contract: str, now: datetime) -> str | None:
         """The evaluator's equity earnings gate, failing open on a calendar failure exactly as it does."""
         blackout_days = self.config.risk.earnings_blackout_days
@@ -3868,10 +3900,25 @@ class TradingCopilot:
         )
         return rejection.reason if rejection is not None else None
 
+    async def _filing_veto_reason(self, contract: str, direction: str, now: datetime) -> str | None:
+        """The evaluator's filing veto at tap time: enforce refuses a long; preview, a short, stale or missing
+        evidence and a symbol the latest pass did not cover (uncovered) never do."""
+        policy = self.config.filing_veto
+        if policy.entry_block != "enforce" or str(direction).upper() != Direction.LONG:
+            return None
+        lookup = await self._filings_lookup(now)
+        if lookup is None or lookup.status != "ok" or not lookup.covers(contract):
+            return None
+        rejection = filing_veto_block(
+            lookup.for_symbol(contract), contract, now.astimezone(ET_TZ).date(), windows=policy.windows()
+        )
+        return rejection.reason if rejection is not None else None
+
     async def _tap_gate_reason(
         self, request: OrderRequest, sig: dict[str, Any], regime: Any, *, asset_class: str, now: datetime
     ) -> str | None:
-        """First failing tap-time gate: macro/regime/reward:risk, then equity earnings and corporate-action gates."""
+        """First failing tap-time gate: macro/regime/reward:risk, then the equity earnings, corporate-action and
+        filing-veto gates."""
         assert request.entry_price is not None and request.stop_loss is not None
         # Degenerate levels are MISSED by the assessment itself; the macro gate divides by the risk.
         if abs(request.entry_price - request.stop_loss) > 0:
@@ -3880,7 +3927,8 @@ class TradingCopilot:
                 return reason
         if asset_class.upper() == AssetClass.EQUITY:
             reason = await self._earnings_blackout_reason(sig["contract"], now)
-            return reason or await self._corporate_action_reason(sig["contract"], now)
+            reason = reason or await self._corporate_action_reason(sig["contract"], now)
+            return reason or await self._filing_veto_reason(sig["contract"], sig["direction"], now)
         return None
 
     async def _journal_card_tap(

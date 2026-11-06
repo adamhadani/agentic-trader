@@ -495,8 +495,12 @@ class FilingVetoConfig(BaseModel):
         # YAML 1.1 reads a bare `off` as False; that spelling means "off". `on`/True stays invalid.
         return "off" if value is False else value
 
-    def windows(self) -> dict[FilingCategory, int]:
-        """Each veto category's window before the decision date, in calendar days (``filing_date`` inclusive)."""
+    def windows(self) -> dict[str, int]:
+        """Each veto category's window before the decision date, in calendar days (``filing_date`` inclusive).
+
+        Keyed by the ``FilingCategory`` members, typed ``str`` so it is the ``Mapping[str, int]`` the
+        ``filing_veto`` rule reads (``Mapping`` is invariant in its key type).
+        """
         return {
             FilingCategory.LATE_FILING: self.late_filing_days,
             FilingCategory.ADVERSE_8K: self.adverse_8k_days,

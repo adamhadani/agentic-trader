@@ -116,6 +116,7 @@ paths are under `tests/`.
 | `macro_lockout` | one `CalendarCheck` from the union tier-1 calendar (`agent/calendar.py:UnionTier1Calendar.check`: the digest-pinned static calendar's events when it is verified, plus live ForexFactory tier-1 events with no static match) giving the tier-1 event (title, timezone-aware time), now, `calendar_verified` (the static calendar's status is `ok`) and that status; `risk.lockout_pre_event_minutes` / `lockout_post_event_minutes`; `risk.macro_calendar_unknown` | whole-scan check and evaluator gate | tap gate | preflight macro check, on both broker branches | `Macro event lockout: {title} at {HH:MM} UTC.` An untitled event prints `scheduled release`. Under `risk.macro_calendar_unknown: closed`, an unverified static calendar refuses before the window test: `Macro calendar unverified: the static tier-1 calendar is {expired \| invalid}; new entries refused (risk.macro_calendar_unknown: closed).` Under `open` (the default) it never refuses; the prompt says `Lockout UNVERIFIED` and the card `Macro Check: Unverified — {note}`. | `risk/test_rules.py`, `agent/test_calendar.py`, `agent/test_macro_lockout_sites.py`, `agent/test_tap_risk_policy.py`, `workflows/test_entries_macro.py`, `agent/test_risk_policy_integration.py`, `agent/test_shipped_calendar.py` |
 | `earnings_blackout` | next earnings date, the New York date, `risk.earnings_blackout_days` (predicate `earnings_days_out`) | evaluator gate, equities | tap gate, equities | — | `Earnings Blackout: {SYMBOL} reports {YYYY-MM-DD} {before open \| after close \| timing unspecified} (in {n} day(s)) — within {days}-day blackout` (the prefix `Earnings Blackout: ` is added by the caller) | `risk/test_rules.py`, `agent/test_earnings.py`, `agent/test_evaluator.py`, `agent/test_card_freshness_tap.py` |
 | `corporate_action` | the latest fresh corporate-action capture and the symbols it covers, the New York date, `corporate_actions.pre_days` / `post_days` (predicate `blocking_corporate_action`) | evaluator gate, equities; preview annotates, enforce refuses; stale, missing or uncovered evidence never refuses | tap gate, equities, enforce only | — | `Corporate action: {SYMBOL} {describe} effective {YYYY-MM-DD} ({in n day(s) \| n day(s) ago \| today}) — within the {pre}/{post}-day blackout.` | `risk/test_rules.py`, `agent/test_evaluator.py`, `agent/test_card_freshness_tap.py` |
+| `filing_veto` | the latest fresh filings-capture pass (`data/filings_capture.py`) and the symbols it covered, the New York date, the category windows `filing_veto.late_filing_days` / `adverse_8k_days` / `offering_days` (predicate `blocking_filing`: the newest filing with `0 ≤ today − filing_date ≤ window`) | evaluator gate, long equities only (a short never evaluates it); preview annotates, enforce refuses; stale, missing or uncovered evidence never refuses | tap gate, long equities, enforce only | — | `Filing veto: {SYMBOL} filed {form}[ Items {items}] on {YYYY-MM-DD} ({n day(s) ago \| today}) — within the {N}-day {category} window.` | `risk/test_rules.py`, `agent/test_evaluator.py`, `agent/test_card_freshness_tap.py`, `notifier/test_filing_veto_line.py` |
 | `session_closed` | the session's `is_open`, the provider's detail | evaluator gate | tap, re-evaluate, `/scan`, card validity, expired-card reply | — | `Market session closed: {detail}.` (`Market session closed.` without detail) | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_tap_risk_policy.py` |
 | `session_not_rth` | the session's `is_rth`, `session.enforce_rth` | evaluator gate | as `session_closed` | — | `Outside regular trading hours.` | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_tap_risk_policy.py`, `agent/test_risk_policy_integration.py` |
 | `regime_breakout` | strategy, `regime.breakout_allowed` | evaluator gate | tap regime gate | preflight regime gate, on both broker branches | `Volatility/macro policy suppresses breakout entries.` | `risk/test_rules.py`, `agent/test_tap_risk_policy.py`, `agent/test_evaluator.py` |
@@ -175,11 +176,15 @@ Most layers show the rule's text unchanged. Some layers wrap it:
    when the static calendar is unverified, the card's macro note.
 6. The earnings blackout (equities).
 7. The corporate-action rule (equities; `corporate_actions.entry_block`: `off` skips it, `preview` annotates, `enforce` refuses; stale, missing or uncovered evidence never refuses).
-8. The regime rules: `regime_breakout`, then `reward_risk` on the bracket at the
+8. The filing veto (long equities; a short never evaluates it; `filing_veto.entry_block`: `off` skips it and
+   reads nothing, `preview` annotates, `enforce` refuses; stale, missing or uncovered evidence never refuses).
+   Its block is `decision_provenance["filings"]`; a preview block that would block adds the card line
+   `🗂 Filing veto (preview): … — card unchanged`.
+9. The regime rules: `regime_breakout`, then `reward_risk` on the bracket at the
    required ratio (the tap-time regime gate's order and text). A native target is built
    at that ratio and always passes; a versioned alpha-policy bracket can fail it.
-9. `entry_session_open` (`session_closed`, `session_not_rth`).
-10. The LLM, when enabled, then the final-bracket check.
+10. `entry_session_open` (`session_closed`, `session_not_rth`).
+11. The LLM, when enabled, then the final-bracket check.
 
 A refusal by a shared rule sets `LLMTradeEvaluation.rejection_reason` to the rule's text
 and `rejection_rule` to its id. Sizing, the bracket check, the statistical check and an
@@ -212,7 +217,8 @@ the scan observation `Macro gate checked: {reason}; entry alerts paused` and log
    (`regime_breakout`; `reward_risk` at `required_reward_risk` for the cached regime;
    `per_trade_risk` against the budget on configured cash with the regime multiplier),
    then the earnings blackout for equities, then the `corporate_action` rule for equities
-   (`enforce` only). A refusal makes the card `MISSED`.
+   (`enforce` only), then the `filing_veto` rule for long equities (`enforce` only; it reads the
+   latest filings-capture pass at tap time). A refusal makes the card `MISSED`.
 4. Freshness: `EXECUTE` within the fresh bounds; past them, `REPRICE` when the current
    price still meets the required ratio (`meets_min_reward_risk`), otherwise `MISSED`.
 5. The re-priced quantity (`_capped_replacement_quantity`) is the smallest of the tapped

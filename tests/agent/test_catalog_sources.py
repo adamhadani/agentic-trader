@@ -185,6 +185,7 @@ async def test_a_sent_drift_card_is_pinned_whole(drift_desk, temp_db, app_config
         "llm_verdict": None,
         "book_sizing": None,
         "corporate_actions": None,
+        "filings": None,
         "news": None,
         "pead_event": drift_event("WINR"),
         "pead_base_rate": {"status": "unavailable"},

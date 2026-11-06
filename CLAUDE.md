@@ -72,6 +72,10 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    (digest-pinned by `risk.macro_calendar_sha256`) plus the live ForexFactory feed, so a feed outage
    never reads as an empty calendar. A static calendar that is expired, not yet valid or invalid is
    unverified: `risk.macro_calendar_unknown` `open` (default) labels it, `closed` refuses all entries.
+   `filing_veto` (`filing_veto.entry_block`, code default `off`) is built like `corporate_action` and applies to long
+   equity entries only (a short never evaluates it): the scan reads the latest journaled filings-capture pass once,
+   `preview` records `decision_provenance["filings"]` and a card line, `enforce` refuses at the evaluator and tap gates
+   (admission does not apply it), and stale, missing or uncovered filing evidence never refuses.
    Book-aware sizing (`book_sizing`, code default `preview`, config ships `enforce` since 2026-10-20) scales native equity cards by a
    closed-form factor ≤ 1 against a daily dollar-vol budget at card construction only; the
    shadow optimiser cross-check never reaches size or orders.
