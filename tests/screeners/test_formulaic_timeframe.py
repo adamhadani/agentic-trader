@@ -91,3 +91,63 @@ def test_formulaic_strategy_routes_to_1h():
     cand = candidates[0]
     assert cand.timeframe == "1h"
     assert cand.strategy == "alpha_test_1h"
+
+
+# Scan bars on delayed SIP: every request ends 16 minutes back, so at 10:35 New York the 10:15 15m bar holds
+# data only to 10:19. It must not count as complete; the 10:00 bar (closed 10:15) is the latest complete one.
+DECISION = datetime(2026, 11, 9, 15, 35, tzinfo=UTC)  # 10:35 New York
+LAST_BAR = pd.Timestamp("2026-11-09 15:15", tz="UTC")  # the 10:15 New York bar, truncated by the delay
+LAST_COMPLETE = LAST_BAR - pd.Timedelta(minutes=15)  # the 10:00 New York bar
+
+
+def _fifteen_minute_through_ten_fifteen() -> ContractMarketData:
+    index = pd.date_range(end=LAST_BAR, periods=50, freq="15min")
+    closes = 100.0 + np.arange(50) * 0.01
+    closes[-2:] += 25.0  # both candidate last bars spike, so either one triggers
+    frame = pd.DataFrame(
+        {"Open": closes, "High": closes + 1.0, "Low": closes - 1.0, "Close": closes, "Volume": 10_000.0}, index=index
+    )
+    return ContractMarketData(contract="SPY", ticker="SPY", fifteen_minute=frame)
+
+
+def _fifteen_minute_alpha() -> AlphaDefinition:
+    return AlphaDefinition(
+        alpha_id="alpha_test_15m_clock",
+        name="Test 15m clock",
+        expression="close - ts_min(close, 5)",
+        timeframe="15m",
+        direction="long",
+        entry_threshold=0.5,
+    )
+
+
+def test_under_a_bar_delay_the_truncated_15m_bar_is_not_complete():
+    strategy = FormulaicAlphaStrategy(
+        _fifteen_minute_alpha(), clock=lambda: DECISION, bars_end_delay=timedelta(minutes=16)
+    )
+
+    [candidate] = strategy.evaluate(_fifteen_minute_through_ten_fifteen(), asset_class=AssetClass.EQUITY)
+
+    assert pd.Timestamp(candidate.candle_timestamp) == LAST_COMPLETE
+
+
+def test_without_a_bar_delay_completeness_is_unchanged():
+    strategy = FormulaicAlphaStrategy(_fifteen_minute_alpha(), clock=lambda: DECISION)
+
+    [candidate] = strategy.evaluate(_fifteen_minute_through_ten_fifteen(), asset_class=AssetClass.EQUITY)
+
+    assert pd.Timestamp(candidate.candle_timestamp) == LAST_BAR
+
+
+def test_under_a_bar_delay_the_cap_uses_the_receipt_not_a_later_evaluation_time():
+    """Evaluation runs after the whole universe is fetched, possibly minutes later: the bars hold nothing after
+    their receipt - delay, so a later evaluation clock must not admit the truncated 10:15 bar."""
+    data = _fifteen_minute_through_ten_fifteen()
+    data.received_at = DECISION
+    strategy = FormulaicAlphaStrategy(
+        _fifteen_minute_alpha(), clock=lambda: DECISION + timedelta(minutes=12), bars_end_delay=timedelta(minutes=16)
+    )
+
+    [candidate] = strategy.evaluate(data, asset_class=AssetClass.EQUITY)
+
+    assert pd.Timestamp(candidate.candle_timestamp) == LAST_COMPLETE

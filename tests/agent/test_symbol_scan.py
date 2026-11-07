@@ -69,7 +69,7 @@ async def journal_reference(
         "members": [],
         "scanned": [],
         "excluded": {},
-        "feed": feed or desk.config.market_data.alpaca_feed,
+        "feed": feed or desk.config.market_data.bars_feed,
         "threshold": value if threshold is _DEFAULT else threshold,
         "reference": {"percentile": percentile, "names": names, "value": value, "floor": 0},
     }
@@ -486,6 +486,23 @@ async def test_a_newer_wrong_feed_reference_never_shadows_an_older_valid_one(ope
 
     reference = operator_desk.run_scan.await_args.kwargs["operator_dynamic"].reference
     assert reference == StaticReference(percentile=0.25, names=25, value=6.0e7)
+
+
+async def test_under_sip_delayed_a_cached_iex_reference_is_ignored(operator_desk, app_config):
+    """The liquidity threshold is in the scan bars' units: an IEX reference never gates a SIP-scanned name."""
+    app_config.market_data.alpaca_feed = "iex"
+    app_config.market_data.scan_bars = "sip_delayed"
+    await journal_reference(operator_desk, value=6.0e7, feed="iex")
+
+    assert await refusal_notice(operator_desk, "NEWA") == NO_REFERENCE
+
+    await journal_reference(operator_desk, value=8.0e7, feed="sip", built_at=datetime.now(UTC) - timedelta(days=1))
+    operator_desk.run_scan = AsyncMock(return_value={"sent": 1, "runners_up": []})
+    await operator_desk.request_symbol_scan("NEWA")
+    await finish_background_scans(operator_desk)
+
+    reference = operator_desk.run_scan.await_args.kwargs["operator_dynamic"].reference
+    assert reference == StaticReference(percentile=0.25, names=25, value=8.0e7)
 
 
 async def test_the_latest_usable_reference_is_reconstructed_and_passed_to_run_scan(operator_desk, caplog):

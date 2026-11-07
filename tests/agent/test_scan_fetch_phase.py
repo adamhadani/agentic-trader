@@ -1,15 +1,19 @@
 import logging
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import numpy as np
 import pandas as pd
+import pytest
 
 from agentic_trader.constants import ExecutionMode
+from agentic_trader.data.market_data import ContractMarketData
 from agentic_trader.diagnostics.readiness import HealthComponent
 from agentic_trader.research.alpha.models import AlphaDefinition, RegistrySnapshot
+from agentic_trader.research.alpha.shadow import AlphaShadowService
 
 
 def frame(rows=30):
@@ -195,6 +199,79 @@ async def test_shadow_observe_uses_each_symbols_fetch_receipt_as_of(scan_desk, a
     assert before <= as_of <= after
 
 
+RECEIPT = datetime(2026, 11, 9, 15, 35, tzinfo=UTC)  # 10:35 New York
+TRUNCATED_BAR = pd.Timestamp("2026-11-09 15:15", tz="UTC")  # 10:15 New York: data only to 10:19 on delayed SIP
+
+
+class RecordingForecasts:
+    """The shadow repository: records each observation; no calibration exists."""
+
+    def __init__(self):
+        self.observations: list[dict] = []
+
+    async def record_forecast(self, key, payload):
+        self.observations.append(payload)
+
+    async def get(self, key):
+        return None
+
+
+def fifteen_minute_market_data(contract: str) -> ContractMarketData:
+    index = pd.date_range(end=TRUNCATED_BAR, periods=60, freq="15min")
+    fifteen = pd.DataFrame({"Close": 100.0 + np.arange(60) * 0.1}, index=index)
+    fifteen.attrs.update(feed="alpaca:sip", adjustment="raw", timeframe="15m")
+    return ContractMarketData(
+        contract=contract, symbol=contract, daily=frame(), four_hour=frame(), fifteen_minute=fifteen
+    )
+
+
+@pytest.mark.parametrize(
+    ("scan_bars", "candle"),
+    [("sip_delayed", TRUNCATED_BAR - pd.Timedelta(minutes=15)), ("configured", TRUNCATED_BAR)],
+)
+async def test_shadow_completeness_is_judged_at_the_delayed_bar_horizon(
+    scan_desk, app_config, monkeypatch, scan_bars, candle
+):
+    """At 10:35 under sip_delayed the scan bars end at 10:19, so the 10:15 15m bar is partial: a clock-less
+    shadow alpha observes the 10:00 bar. Under configured the 10:15 bar (closed 10:30) is complete, as before."""
+    app_config.contracts = {"AAA": instrument("AAA")}
+    app_config.market_data.alpaca_feed = "sip"
+    app_config.market_data.scan_bars = scan_bars
+    definition = AlphaDefinition("alpha_15m_sip", "Fifteen", "close", timeframe="15m", data_feed="alpaca:sip")
+    scan_desk.alpha_repository.snapshot.return_value = RegistrySnapshot(1, (), (definition,))
+    forecasts = RecordingForecasts()
+    scan_desk.alpha_shadow = AlphaShadowService(forecasts)
+    scan_desk.data_fetcher.fetch_data.side_effect = lambda contract, ticker, include_fifteen_min=True: (
+        fifteen_minute_market_data(contract)
+    )
+    fetch_universe = scan_desk._fetch_universe
+
+    async def received_at_ten_thirty_five(instruments, *, include_fifteen_min):
+        datasets, _ = await fetch_universe(instruments, include_fifteen_min=include_fifteen_min)
+        return datasets, dict.fromkeys(datasets, RECEIPT)
+
+    monkeypatch.setattr(scan_desk, "_fetch_universe", received_at_ten_thirty_five)
+
+    await scan_desk.run_scan(use_llm=False, dry_run=False)
+
+    [observation] = forecasts.observations
+    assert observation["valid"] is True, observation.get("reason")
+    assert pd.Timestamp(observation["candle_timestamp"]) == candle
+    assert pd.Timestamp(observation["completed_at"]) == candle + pd.Timedelta(minutes=15)
+
+
+@pytest.mark.parametrize(("scan_bars", "delay"), [("sip_delayed", timedelta(minutes=16)), ("configured", None)])
+async def test_registry_alphas_are_installed_with_the_scan_bar_delay(scan_desk, app_config, scan_bars, delay):
+    app_config.contracts = {"AAA": instrument("AAA")}
+    app_config.market_data.scan_bars = scan_bars
+    scan_desk.data_fetcher.fetch_data.return_value = SimpleNamespace(daily=frame(), four_hour=frame(), hourly=frame())
+
+    await scan_desk.run_scan(use_llm=False, dry_run=True)
+
+    install = scan_desk.strategy_engine.registry.install_alphas
+    assert install.call_args.kwargs["bars_end_delay"] == delay
+
+
 async def test_swing_scan_still_fetches_fifteen_minutes_when_a_15m_alpha_is_installed(scan_desk, app_config):
     """I5: include_fifteen_min must OR in any active/shadow/probe 15m definition,
     even for a swing scan with no explicit timeframe requested."""
@@ -258,3 +335,19 @@ async def test_last_scan_summary_is_reset_before_an_early_return(scan_desk, app_
     scan_desk.session_provider.is_session_active.return_value = (False, "closed")
     await scan_desk.run_scan(use_llm=False, dry_run=True)
     assert scan_desk.last_scan_summary == {}
+
+
+async def test_the_fetch_phase_stamps_each_datasets_receipt(scan_desk):
+    """Each contract's data carries its own fetch receipt, so a later evaluation can cap bar completeness at
+    receipt - delay rather than at its own (possibly minutes later) clock."""
+    scan_desk.data_fetcher.fetch_data.side_effect = lambda contract, ticker, **_: ContractMarketData(
+        contract=contract, symbol=contract, daily=frame(), four_hour=frame()
+    )
+
+    datasets, receipts = await scan_desk._fetch_universe(
+        [("AAA", instrument("AAA")), ("BBB", instrument("BBB"))], include_fifteen_min=False
+    )
+
+    assert set(receipts) == {"AAA", "BBB"}
+    for contract, data in datasets.items():
+        assert data.received_at == receipts[contract]

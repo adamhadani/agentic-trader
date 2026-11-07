@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 
 import pandas as pd
 
@@ -48,6 +49,9 @@ class ContractMarketData:
     symbol: str = ""
     one_hour: pd.DataFrame = field(default_factory=pd.DataFrame)
     session_bars: dict[str, SessionSnapshot] = field(default_factory=dict)
+    # When the scan's fetch for this contract completed (set by the copilot's fetch phase); delayed scan bars
+    # hold nothing after received_at - market_data.bars_end_delay.
+    received_at: datetime | None = None
 
     def __post_init__(self):
         if not self.contract and self.symbol:
@@ -78,12 +82,15 @@ class MarketDataFetcher:
             self.provider = provider
         else:
             cfg = config or load_config()
+            # Scan bars: the effective feed and end delay (delayed SIP never sends a recent end, so the
+            # composite never falls back to yfinance on an entitlement refusal).
             alpaca_prov = AlpacaDataProvider(
                 api_key=cfg.alpaca_api_key,
                 api_secret=cfg.alpaca_api_secret,
-                feed=cfg.market_data.alpaca_feed,
+                feed=cfg.market_data.bars_feed,
                 request_timeout=cfg.market_data.timeout_seconds,
                 evidence=BarEvidenceStore(state_directory() / "market-data", cfg.market_data.evidence),
+                end_delay=cfg.market_data.bars_end_delay,
             )
             yf_prov = YFinanceDataProvider()
 

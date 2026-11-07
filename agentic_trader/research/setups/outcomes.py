@@ -716,7 +716,10 @@ def label_journaled(
     runner uses, so a wide symbol population cannot exceed the configured provider rate.
     A fetch failure for a symbol marks every one of its candidates ``FETCH_FAILED_HIT``
     -- distinct from IMMATURE, which means "not enough elapsed bars yet" -- rather than
-    raising: this is a best-effort report, not an admission or execution path.
+    raising: this is a best-effort report, not an admission or execution path. A delayed
+    provider (``AlpacaDataProvider(end_delay=...)``) returns no bars, without a request, for a
+    window that starts at or after its clamped end, so a candidate decided within the delay
+    is IMMATURE, not a fetch failure.
     The tape (SPY daily, ``TAPE_HISTORY_DAYS`` calendar days before the earliest decision, raw,
     one request after the hourly ones) is computed per decision session with ``tape_state``; a
     failed fetch records ``tape_reason`` on every row.

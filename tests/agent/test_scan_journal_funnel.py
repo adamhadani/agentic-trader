@@ -293,6 +293,33 @@ async def test_the_funnel_counts_each_contract_gate_once(dynamic_desk, temp_db, 
     assert {c["contract"] for c in event["payload"]["candidates"]} == {"DDD", "EEE", "NEWA"}
 
 
+@pytest.mark.parametrize(
+    ("scan_bars", "bars"),
+    [
+        ("sip_delayed", {"feed": "alpaca:sip", "end_delay_minutes": 16}),
+        ("configured", {"feed": "alpaca:iex", "end_delay_minutes": None}),
+    ],
+)
+async def test_every_journaled_scan_records_its_scan_bar_source(budget_desk, temp_db, app_config, scan_bars, bars):  # noqa: F811
+    """The IEX-to-SIP boundary is explicit in the evidence: completed and gated events alike carry ``bars``."""
+    app_config.market_data.alpaca_feed = "iex"
+    app_config.market_data.scan_bars = scan_bars
+
+    await suggestion(budget_desk)
+    budget_desk.calendar = union_double(
+        lockout_check(
+            "FOMC Press Conference",
+            datetime(2026, 10, 28, 18, 30, tzinfo=UTC),
+            kind=Tier1Kind.FOMC_PRESS_CONFERENCE,
+        )
+    )
+    await suggestion(budget_desk)
+
+    events = await ranked_events(temp_db)
+    assert sorted(event["payload"]["status"] for event in events) == ["completed", "macro_lockout"]
+    assert [event["payload"]["bars"] for event in events] == [bars, bars]
+
+
 # --- gated scans: status, gate and a null funnel -------------------------------------------
 
 

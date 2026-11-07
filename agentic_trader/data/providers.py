@@ -107,8 +107,24 @@ def parse_period_to_timedelta(period: str) -> timedelta:
 DAILY_BATCH_SYMBOLS = 100
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _as_utc(moment: datetime) -> datetime:
+    """A naive request bound is UTC, as the SDK reads it; an aware one is kept."""
+    return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
+
+
 class AlpacaDataProvider:
-    """Market data provider fetching US equities, ETFs, and crypto from Alpaca Data API."""
+    """Market data provider fetching US equities, ETFs, and crypto from Alpaca Data API.
+
+    With ``end_delay`` every bar request (``fetch_bars``, ``fetch_daily_many``) ends no later than
+    ``clock() - end_delay``: a missing or later end takes that bound, an earlier one is kept, and a naive
+    bound reads as UTC. Delayed SIP needs it, since without the SIP subscription a request ending under 15
+    minutes ago is refused. A start at or after the clamped end sends no request and returns no bars (an empty
+    frame, or no symbols): nothing in that window has aged past the delay yet.
+    """
 
     def __init__(
         self,
@@ -119,9 +135,13 @@ class AlpacaDataProvider:
         feed: str = "sip",
         request_timeout: float = DEFAULT_DATA_TIMEOUT_SECONDS,
         evidence: BarEvidenceStore | None = None,
+        end_delay: timedelta | None = None,
+        clock: Callable[[], datetime] = _utc_now,
     ):
         self._name = "alpaca"
         self.evidence = evidence
+        self.end_delay = end_delay
+        self.clock = clock
         self.request_timeout = request_timeout
         self.feed = DataFeed(feed)
         self.api_key = api_key
@@ -192,21 +212,38 @@ class AlpacaDataProvider:
         is_crypto = "/" in symbol
         if is_crypto and adjustment_kind != Adjustment.RAW:
             raise ValueError("Corporate-action adjustments apply only to equities")
+        now = self.clock()
         if start is None:
             delta = parse_period_to_timedelta(
                 period
                 or (DEFAULT_DAILY_LOOKBACK_PERIOD if timeframe in ("1d", "daily") else DEFAULT_INTRADAY_LOOKBACK_PERIOD)
             )
-            start = datetime.now(UTC) - delta
+            start = now - delta
+        unsent = False
+        if self.end_delay is not None:
+            bound = now - self.end_delay
+            start = _as_utc(start)
+            requested_end = None if end is None else _as_utc(end)
+            clamped = requested_end is None or requested_end > bound
+            end = bound if requested_end is None or clamped else requested_end
+            unsent = clamped and start >= end
 
         tf = self._map_timeframe(timeframe)
         clean_sym = symbol.strip().upper()
+        source_feed = "alpaca:crypto" if is_crypto else f"alpaca:{self.feed.value}"
 
         client = self.crypto_client if is_crypto else self.stock_client
         if client is None:
             raise UnsupportedSymbolError("No Alpaca client available")
         if self.evidence is not None and not isinstance(client, BoundedTransport):
             raise TypeError("Evidence capture requires the observed SDK transport")
+        if unsent:
+            # A window that starts at or after the clamped end (a decision made within the delay) holds no bar
+            # old enough to request: no request and no evidence capture, just no bars.
+            empty, _ = self._normalize_bars(pd.DataFrame(), clean_sym)
+            empty.attrs[SOURCE_QUALITY_ATTR] = BarSourceQuality(0, 0, 0).document()
+            empty.attrs.update(feed=source_feed, adjustment=adjustment_kind.value, timeframe=timeframe)
+            return empty
         capture = (
             self.evidence.begin(
                 {
@@ -215,7 +252,7 @@ class AlpacaDataProvider:
                     "sdk_timeframe": str(tf),
                     "start": start.isoformat(),
                     "end_inclusive": end.isoformat() if end is not None else None,
-                    "feed": "alpaca:crypto" if is_crypto else f"alpaca:{self.feed.value}",
+                    "feed": source_feed,
                     "adjustment": adjustment_kind.value,
                 }
             )
@@ -263,11 +300,7 @@ class AlpacaDataProvider:
                 normalization["normalized_rows"],
             )
             df.attrs[SOURCE_QUALITY_ATTR] = normalization[SOURCE_QUALITY_ATTR] = quality.document()
-            df.attrs.update(
-                feed="alpaca:crypto" if is_crypto else f"alpaca:{self.feed.value}",
-                adjustment=adjustment_kind.value,
-                timeframe=timeframe,
-            )
+            df.attrs.update(feed=source_feed, adjustment=adjustment_kind.value, timeframe=timeframe)
             if capture:
                 df.attrs["evidence"] = capture.finish(normalization=normalization)
         except Exception as exc:
@@ -317,6 +350,13 @@ class AlpacaDataProvider:
         """
         if self.stock_client is None:
             raise UnsupportedSymbolError("No Alpaca stock client available")
+        if self.end_delay is not None:
+            bound = self.clock() - self.end_delay
+            start, requested_end = _as_utc(start), _as_utc(end)
+            end = min(requested_end, bound)
+            if requested_end > bound and start >= end:
+                # Only a window the clamp inverted is unsent; a caller's own inverted window is sent as before.
+                return {}
         clean = sorted({symbol.strip().upper() for symbol in symbols if "/" not in symbol})
         frames: dict[str, pd.DataFrame] = {}
         for index in range(0, len(clean), DAILY_BATCH_SYMBOLS):

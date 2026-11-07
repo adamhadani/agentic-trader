@@ -181,25 +181,22 @@ async def check_tradovate(config: AppConfig) -> ComponentHealth:
         )
 
 
-async def check_market_data(
-    config: AppConfig, *, client: StockHistoricalDataClient | None = None, now: datetime | None = None
-) -> ComponentHealth:
-    """Probe exact recent-feed access, without fallback or a freshness claim.
+async def _probe_bar_access(
+    config: AppConfig, client: StockHistoricalDataClient | None, *, feed: str, end: datetime, name: str
+) -> dict[str, Any]:
+    """One exact one-minute bar request on ``feed`` ending at ``end``, with no retry or fallback.
 
-    An empty successful response proves request access, not current price coverage.
-    Owned clients close inside the worker, even when the caller deadline expires.
+    Returns ``{access: True, observations}`` or ``{access: False, error_type, http_status}``. An empty
+    successful response proves request access, not current price coverage. An owned client closes inside the
+    worker, even when the caller deadline expires.
     """
-    feed = f"alpaca:{config.market_data.alpaca_feed}"
-    if client is None and not (config.alpaca_api_key and config.alpaca_api_secret):
-        return ComponentHealth(name="market_data", status="DISABLED", message="Alpaca data credentials not configured")
-    now = now or datetime.now(UTC)
     request = StockBarsRequest(
         symbol_or_symbols=config.market_data.probe_symbol,
         timeframe=TimeFrame.Minute,
-        start=now - RECENT_ACCESS_WINDOW,
-        end=now,
+        start=end - RECENT_ACCESS_WINDOW,
+        end=end,
         limit=1,
-        feed=DataFeed(config.market_data.alpaca_feed),
+        feed=DataFeed(feed),
         adjustment=Adjustment.RAW,
     )
 
@@ -220,29 +217,88 @@ async def check_market_data(
             if client is None:
                 reader._session.close()
 
-    details: dict[str, Any] = {"feed": feed, "recent_access": False, "freshness_verified": False}
     try:
         observations = await RunnableWithFallbacks(
             probe,
-            primary_name="alpaca_recent_access",
+            primary_name=name,
             retry_policy=RetryPolicy(max_retries=0, timeout_seconds=config.market_data.timeout_seconds),
         ).ainvoke()
-        details.update(recent_access=True, observations=observations)
-        return ComponentHealth(
-            name="market_data",
-            status="OK",
-            message=f"Recent {feed} request permitted; price freshness requires separate observations",
-            details=details,
-        )
+        return {"access": True, "observations": observations}
     except AllFallbacksExhaustedError as failure:
         error = failure.errors[-1]
-        details.update(error_type=type(error).__name__, http_status=getattr(error, "status_code", None))
+        return {"access": False, "error_type": type(error).__name__, "http_status": getattr(error, "status_code", None)}
+
+
+async def check_market_data(
+    config: AppConfig, *, client: StockHistoricalDataClient | None = None, now: datetime | None = None
+) -> ComponentHealth:
+    """Probe exact Alpaca data access, without fallback or a freshness claim.
+
+    Under ``scan_bars: configured`` one probe: a recent request on the configured feed, which is both the scan
+    bars and (with ``ALPACA_DATA_FEED`` setting both) the stand-in for broker quotes; ``details["recent_access"]``
+    is its result. Under ``sip_delayed`` two probes in this one component, run together: the scan bars (delayed
+    SIP, ending ``sip_delay_minutes`` before now) and a recent request on ``alpaca_data_feed``, standing in for
+    admission's real-time latest trade and quote. The status is the worse of the two, the message names both,
+    and ``details["access"]`` holds each probe's result with its feed and a ``delayed`` flag.
+    """
+    market_data = config.market_data
+    feed = f"alpaca:{market_data.bars_feed}"
+    if client is None and not (config.alpaca_api_key and config.alpaca_api_secret):
+        return ComponentHealth(name="market_data", status="DISABLED", message="Alpaca data credentials not configured")
+    now = now or datetime.now(UTC)
+    delay = market_data.bars_end_delay
+    if delay is None:
+        result = await _probe_bar_access(
+            config, client, feed=market_data.bars_feed, end=now, name="alpaca_recent_access"
+        )
+        details: dict[str, Any] = {"feed": feed, "recent_access": result.pop("access"), "freshness_verified": False}
+        details.update(result)
+        if details["recent_access"]:
+            return ComponentHealth(
+                name="market_data",
+                status="OK",
+                message=f"Recent {feed} request permitted; price freshness requires separate observations",
+                details=details,
+            )
         return ComponentHealth(
             name="market_data",
             status="ERROR",
             message=f"Recent {feed} request failed; verify feed entitlement and transport. No fallback used",
             details=details,
         )
+
+    minutes = delay // timedelta(minutes=1)
+    quotes_feed = f"alpaca:{config.alpaca_data_feed}"
+    scan_bars, quotes = await asyncio.gather(
+        _probe_bar_access(config, client, feed=market_data.bars_feed, end=now - delay, name="alpaca_delayed_access"),
+        _probe_bar_access(config, client, feed=config.alpaca_data_feed, end=now, name="alpaca_recent_access"),
+    )
+    details = {
+        "feed": feed,
+        "end_delay_minutes": minutes,
+        "freshness_verified": False,
+        "access": {
+            "scan_bars": {"feed": feed, "delayed": True, **scan_bars},
+            "quotes": {"feed": quotes_feed, "delayed": False, **quotes},
+        },
+    }
+    probed = (
+        f"Delayed {feed} request (ending {minutes} min ago) {'permitted' if scan_bars['access'] else 'failed'}; "
+        f"recent {quotes_feed} request {'permitted' if quotes['access'] else 'failed'}"
+    )
+    if scan_bars["access"] and quotes["access"]:
+        return ComponentHealth(
+            name="market_data",
+            status="OK",
+            message=f"{probed}; price freshness requires separate observations",
+            details=details,
+        )
+    return ComponentHealth(
+        name="market_data",
+        status="ERROR",
+        message=f"{probed}; verify feed entitlement and transport. No fallback used",
+        details=details,
+    )
 
 
 async def check_finnhub(config: AppConfig) -> ComponentHealth:

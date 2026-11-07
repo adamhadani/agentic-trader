@@ -1,7 +1,7 @@
 """Read paths for journaled full-universe-scan evidence, shared by the CLI and the daemon.
 
 ``copilot cards outcomes`` and the daemon's ``card_stats`` worker both read the
-``scan_candidates_ranked`` journal and label it on the configured feed; neither imports the other.
+``scan_candidates_ranked`` journal and label it on the scan-bar feed; neither imports the other.
 Both read beta and per-name cost inputs from SIP daily bars that end ``SIP_HISTORY_DELAY`` before now.
 """
 
@@ -44,16 +44,20 @@ class DelayedBars:
 
 
 def build_bar_source(config: AppConfig, *, feed: str | None = None) -> AlpacaDataProvider:
-    """The suggestion scan's own market-data provider path: raw adjustment, the configured feed.
+    """The suggestion scan's own market-data provider path: raw adjustment, the scan-bar feed.
 
-    ``feed`` overrides ``config.market_data.alpaca_feed`` when given.
+    By default the feed and request-end delay are the scan fetcher's (``market_data.bars_feed`` and
+    ``bars_end_delay``), so these reads stay in the scan's units. An explicit ``feed`` gets no delay: its caller
+    bounds its own reads (``build_daily_bar_source`` wraps it in ``DelayedBars``).
     """
+    market_data = config.market_data
     return AlpacaDataProvider(
         api_key=config.alpaca_api_key,
         api_secret=config.alpaca_api_secret,
-        feed=feed if feed is not None else config.market_data.alpaca_feed,
-        request_timeout=config.market_data.timeout_seconds,
-        evidence=BarEvidenceStore(state_directory() / "market-data", config.market_data.evidence),
+        feed=market_data.bars_feed if feed is None else feed,
+        request_timeout=market_data.timeout_seconds,
+        evidence=BarEvidenceStore(state_directory() / "market-data", market_data.evidence),
+        end_delay=market_data.bars_end_delay if feed is None else None,
     )
 
 

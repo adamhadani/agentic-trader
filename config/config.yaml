@@ -457,6 +457,12 @@ market_data:
   retry_backoff_factor: 0.5
   scan_concurrency: 8
   max_requests_per_minute: 150
+  # 2026-11-07: IEX bars hid ~2/3 of setups; see docs/native-supply-2026-11-07.md. Scan bars, and every reader
+  # in their units (dynamic universe, card labellers, doctor probe), read SIP with each request ending
+  # sip_delay_minutes back (the free plan refuses a SIP end under 15 minutes old). Broker quotes stay real-time
+  # IEX (ALPACA_DATA_FEED). "configured" restores bars on alpaca_feed.
+  scan_bars: "sip_delayed"
+  sip_delay_minutes: 16
 
 scan:
   max_cards_per_scan: 1
