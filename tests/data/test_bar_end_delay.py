@@ -185,3 +185,15 @@ def test_the_scan_fetcher_reads_the_configured_feed_undelayed_by_default(feed):
     alpaca = _alpaca(MarketDataFetcher(config=config))
 
     assert (alpaca.feed, alpaca.end_delay) == (DataFeed(feed), None)
+
+
+def test_a_callers_own_inverted_window_is_still_sent_under_a_delay():
+    """Only a window the clamp inverted is unsent: a caller's explicit end earlier than its start reaches the
+    provider exactly as it would without a delay (Alpaca refuses it), never a silent empty frame."""
+    bars, client = provider()
+    start, end = THROUGH - timedelta(hours=1), THROUGH - timedelta(hours=2)
+
+    bars.fetch_bars("AAPL", "1h", start=start, end=end)
+    bars.fetch_daily_many(["AAPL"], start, end, adjustment="raw")
+
+    assert [(r.start, r.end) for r in client.requests] == [(sent(start), sent(end)), (sent(start), sent(end))]

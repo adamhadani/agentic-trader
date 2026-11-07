@@ -37,6 +37,9 @@ def observe_definition(definition, data, as_of):
         if definition.clock
         else source.attrs.get("bar_layout", FIXED_BAR_LAYOUT),
     }
+    if definition.clock is None and getattr(data, "received_at", None) is not None:
+        # observed_at may be receipt - bars_end_delay under delayed scan bars; keep the actual receipt beside it.
+        payload["received_at"] = data.received_at.isoformat()
     if definition.clock is not None and (snapshot := data.session_bars.get(definition.timeframe)) is not None:
         payload.update(requested_at=snapshot.requested_at.isoformat(), received_at=snapshot.received_at.isoformat())
     try:

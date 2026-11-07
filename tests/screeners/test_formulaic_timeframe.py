@@ -137,3 +137,17 @@ def test_without_a_bar_delay_completeness_is_unchanged():
     [candidate] = strategy.evaluate(_fifteen_minute_through_ten_fifteen(), asset_class=AssetClass.EQUITY)
 
     assert pd.Timestamp(candidate.candle_timestamp) == LAST_BAR
+
+
+def test_under_a_bar_delay_the_cap_uses_the_receipt_not_a_later_evaluation_time():
+    """Evaluation runs after the whole universe is fetched, possibly minutes later: the bars hold nothing after
+    their receipt - delay, so a later evaluation clock must not admit the truncated 10:15 bar."""
+    data = _fifteen_minute_through_ten_fifteen()
+    data.received_at = DECISION
+    strategy = FormulaicAlphaStrategy(
+        _fifteen_minute_alpha(), clock=lambda: DECISION + timedelta(minutes=12), bars_end_delay=timedelta(minutes=16)
+    )
+
+    [candidate] = strategy.evaluate(data, asset_class=AssetClass.EQUITY)
+
+    assert pd.Timestamp(candidate.candle_timestamp) == LAST_COMPLETE

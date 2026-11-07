@@ -223,8 +223,10 @@ class AlpacaDataProvider:
         if self.end_delay is not None:
             bound = now - self.end_delay
             start = _as_utc(start)
-            end = bound if end is None else min(_as_utc(end), bound)
-            unsent = start >= end
+            requested_end = None if end is None else _as_utc(end)
+            clamped = requested_end is None or requested_end > bound
+            end = bound if requested_end is None or clamped else requested_end
+            unsent = clamped and start >= end
 
         tf = self._map_timeframe(timeframe)
         clean_sym = symbol.strip().upper()
@@ -349,8 +351,11 @@ class AlpacaDataProvider:
         if self.stock_client is None:
             raise UnsupportedSymbolError("No Alpaca stock client available")
         if self.end_delay is not None:
-            start, end = _as_utc(start), min(_as_utc(end), self.clock() - self.end_delay)
-            if start >= end:
+            bound = self.clock() - self.end_delay
+            start, requested_end = _as_utc(start), _as_utc(end)
+            end = min(requested_end, bound)
+            if requested_end > bound and start >= end:
+                # Only a window the clamp inverted is unsent; a caller's own inverted window is sent as before.
                 return {}
         clean = sorted({symbol.strip().upper() for symbol in symbols if "/" not in symbol})
         frames: dict[str, pd.DataFrame] = {}

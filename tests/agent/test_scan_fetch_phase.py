@@ -335,3 +335,19 @@ async def test_last_scan_summary_is_reset_before_an_early_return(scan_desk, app_
     scan_desk.session_provider.is_session_active.return_value = (False, "closed")
     await scan_desk.run_scan(use_llm=False, dry_run=True)
     assert scan_desk.last_scan_summary == {}
+
+
+async def test_the_fetch_phase_stamps_each_datasets_receipt(scan_desk):
+    """Each contract's data carries its own fetch receipt, so a later evaluation can cap bar completeness at
+    receipt - delay rather than at its own (possibly minutes later) clock."""
+    scan_desk.data_fetcher.fetch_data.side_effect = lambda contract, ticker, **_: ContractMarketData(
+        contract=contract, symbol=contract, daily=frame(), four_hour=frame()
+    )
+
+    datasets, receipts = await scan_desk._fetch_universe(
+        [("AAA", instrument("AAA")), ("BBB", instrument("BBB"))], include_fifteen_min=False
+    )
+
+    assert set(receipts) == {"AAA", "BBB"}
+    for contract, data in datasets.items():
+        assert data.received_at == receipts[contract]

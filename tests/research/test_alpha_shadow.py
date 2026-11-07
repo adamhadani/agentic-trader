@@ -157,3 +157,16 @@ async def test_explicit_as_of_is_used_as_the_observation_time_not_the_live_clock
     await AlphaShadowService(repository).observe(RegistrySnapshot(1, (), (definition,)), data, as_of=explicit)
     payload = repository.record_forecast.call_args.args[1]
     assert payload["observed_at"] == explicit.isoformat()
+
+
+def test_a_clock_less_observation_keeps_the_actual_receipt_beside_observed_at(shadow_inputs):
+    """Under delayed scan bars observed_at is receipt - delay; the payload still records the actual receipt."""
+    definition, data, now = shadow_inputs
+    received = datetime(2026, 9, 16, 12, 16, tzinfo=UTC)
+
+    stamped = observe_definition(definition, SimpleNamespace(**vars(data), received_at=received), now)
+    unstamped = observe_definition(definition, data, now)
+
+    assert stamped["received_at"] == received.isoformat()
+    assert stamped["observed_at"] == now.isoformat()
+    assert "received_at" not in unstamped

@@ -34,8 +34,8 @@ class FormulaicAlphaStrategy(BaseStrategy):
     Stamps every generated ScreenerCandidate with its unique, immutable alpha_id.
 
     ``bars_end_delay`` is the scan bars' request-end delay (``market_data.bars_end_delay``): those bars hold no
-    data after ``clock() - bars_end_delay``, so a fixed-clock bar is complete only if it closes by then, never
-    a bar the delay truncated. Session-clock definitions read their own receipt-stamped snapshots instead.
+    data after the data's ``received_at - bars_end_delay`` (``clock()`` when unstamped), so a fixed-clock bar is
+    complete only if it closes by then, never a bar the delay truncated. Session-clock definitions read their own receipt-stamped snapshots instead.
     """
 
     def __init__(
@@ -83,7 +83,8 @@ class FormulaicAlphaStrategy(BaseStrategy):
 
         as_of = self.clock()
         if self.bars_end_delay is not None and self.definition.clock is None:
-            as_of -= self.bars_end_delay
+            # The bars hold nothing after their receipt - delay (evaluation can run minutes after the fetch).
+            as_of = (getattr(data, "received_at", None) or as_of) - self.bars_end_delay
         try:
             df, _ = closed_alpha_bars(self.definition, data, as_of=as_of)
         except (TypeError, ValueError) as exc:

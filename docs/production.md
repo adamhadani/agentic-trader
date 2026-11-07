@@ -1789,8 +1789,8 @@ evidence (the card-stats prior, the setup base rates, the bracket counterfactual
     worker's own receipt-stamped bars.
 - **Research mining.** `download_bars` (`alpha mine --feed alpaca`) and `alpha replay` still default to
   `market_data.alpaca_feed`, which `ALPACA_DATA_FEED` sets (IEX in production). New Alpaca definitions mined
-  that way are pinned to `alpaca:iex` and will not match scan bars. Pass `alpha replay --feed sip` (its
-  `--end` date is in the past), or pin SIP for the mining command (`ALPACA_DATA_FEED=sip`). `download_bars`
+  that way are pinned to `alpaca:iex` and will not match scan bars. Pass `alpha replay --feed sip` with an
+  `--end` before today (replay requests through the day after `--end`, capped at now), or pin SIP for the mining command (`ALPACA_DATA_FEED=sip`). `download_bars`
   sends no end and has no end delay, so the subscription can refuse such a SIP read as recent: a charged
   `bar_acquisition_failed` run, never a fallback.
 - **`doctor` covers both feeds.** Under `sip_delayed` the `market_data` component runs two probes: a

@@ -91,7 +91,7 @@ from agentic_trader.data.corporate_actions import (
 )
 from agentic_trader.data.earnings_capture import EarningsCaptureStore, default_capture_directory
 from agentic_trader.data.filings_capture import FilingsCaptureStore, FilingsLookup
-from agentic_trader.data.market_data import MarketDataFetcher
+from agentic_trader.data.market_data import ContractMarketData, MarketDataFetcher
 from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
@@ -2937,6 +2937,8 @@ class TradingCopilot:
                     include_fifteen_min=include_fifteen_min,
                 )
                 receipts[contract] = datetime.now(UTC)
+                if isinstance(result, ContractMarketData):
+                    result.received_at = receipts[contract]
                 return result
 
         results = await asyncio.gather(*(one(c, i) for c, i in instruments), return_exceptions=True)
