@@ -5,7 +5,8 @@ import httpx
 from click.testing import CliRunner
 
 from agentic_trader.cli.commands import alpha_insider_filings as cmd
-from agentic_trader.research.insider_filings import INDEX_URL, TICKERS_URL
+from agentic_trader.data.edgar_http import TICKERS_URL
+from agentic_trader.research.insider_filings import INDEX_URL
 from tests.research.insider_fixtures import make_archive
 
 

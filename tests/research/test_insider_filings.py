@@ -4,11 +4,11 @@ from datetime import UTC, date, datetime
 import httpx
 import pytest
 
+from agentic_trader.data.edgar_http import TICKERS_URL
 from agentic_trader.research import insider_filings as mod
 from agentic_trader.research.insider_filings import (
     DROP_RULES,
     INDEX_URL,
-    TICKERS_URL,
     InsiderFilingStore,
     InsiderTransaction,
     acquire_insider_filings,

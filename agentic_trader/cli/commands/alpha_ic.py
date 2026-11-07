@@ -22,13 +22,14 @@ from agentic_trader.cli.commands.alpha import (
     research_environment,
 )
 from agentic_trader.cli.utils import coro
+from agentic_trader.data.edgar_http import REQUESTS_PER_SECOND
 from agentic_trader.research.ic.arrays import load_spy
 from agentic_trader.research.ic.checks import execute_checks
 from agentic_trader.research.ic.gate import execute_gate
 from agentic_trader.research.ic.protocol import load_composite
 from agentic_trader.research.ic.rescore import LoadedRescore, RescoreBatch, execute_rescore, load_rescore
 from agentic_trader.research.ic.sectors import UNKNOWN, acquire_sectors, load_ff12, load_sectors
-from agentic_trader.research.insider_filings import _TIMEOUT_SECONDS, REQUESTS_PER_SECOND
+from agentic_trader.research.insider_filings import _TIMEOUT_SECONDS
 from agentic_trader.research.pooled.cohort import load_cohort
 from agentic_trader.research.pooled.entry import REPO_ROOT
 from agentic_trader.research.pooled.runner import cube_cache_path

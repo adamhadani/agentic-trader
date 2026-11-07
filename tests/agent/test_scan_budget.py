@@ -69,6 +69,7 @@ def evaluation(candidate_, approved=True):
         asset_class=AssetClass.EQUITY,
         quantity=1.0,
         corporate_actions=None,  # as LLMTradeEvaluation: no corporate-action block
+        filings=None,  # as LLMTradeEvaluation: no filing-veto block
         model_dump_json=lambda: "{}",
         model_dump=lambda mode=None: {},
     )

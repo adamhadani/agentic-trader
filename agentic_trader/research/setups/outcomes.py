@@ -68,6 +68,7 @@ __all__ = [
     "label_journaled",
     "market_r",
     "operator_block",
+    "release_exit_summary",
     "scan_supply",
     "summarize",
     "with_recurrence",
@@ -174,6 +175,7 @@ _COLUMNS = (
     "timing_r",
     *_CF_COLUMNS,
     "market_reason",
+    "filings_would_block",
     "decided_at",
     "reason",
 )
@@ -363,6 +365,18 @@ def _would_withhold(entry: dict[str, Any]) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+def _filings_block(entry: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    block = entry.get("filings")
+    return block if isinstance(block, dict) else None
+
+
+def _filings_would_block(entry: dict[str, Any]) -> bool | None:
+    """The journaled filing-veto verdict, or None unless the candidate's evidence status was ok."""
+    block = _filings_block(entry)
+    value = block.get("would_block") if block is not None and block.get("status") == "ok" else None
+    return value if isinstance(value, bool) else None
+
+
 NEWS_ALIGNMENTS = ("aligned", "opposed", "neutral", "none")
 RESOLVED_HITS = (BracketHit.TARGET.value, BracketHit.STOP.value, BracketHit.TIMEOUT.value)
 PRIOR_OUTCOMES = (*RESOLVED_HITS, "none")
@@ -467,6 +481,7 @@ def _row(
         "news_catalyst": score.get("catalyst"),
         "news_relevance": score.get("relevance"),
         "news_alignment": news_alignment(entry.get("direction"), score.get("tone")),
+        "filings_would_block": _filings_would_block(entry),
         "regime_vix": regime.get("vix"),
         "regime_vix_regime": regime.get("vix_regime"),
         "regime_risk_multiplier": regime.get("risk_multiplier"),
@@ -1379,6 +1394,125 @@ def scan_supply(events: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]
             for key, value in entry["funnel"].items()
         }
     return dict(sorted(supply.items()))
+
+
+FILING_VETO_GROUPS = ("static", "dynamic")
+
+
+def _filing_veto_group(blocks: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """``n``, ``by_status``, ``coverage`` (the ok share; None with none) and the ok-status ``would_block`` count
+    with its ``by_category`` and ``rate`` (over ok-status candidates; None with none)."""
+    by_status: dict[str, int] = {}
+    by_category: dict[str, int] = {}
+    n_ok = n_block = 0
+    for block in blocks:
+        status = str(block.get("status"))
+        _count(by_status, status)
+        if status != "ok":
+            continue
+        n_ok += 1
+        if block.get("would_block") is True:
+            n_block += 1
+            _count(by_category, block.get("category"))
+    return {
+        "n": len(blocks),
+        "by_status": dict(sorted(by_status.items())),
+        "coverage": n_ok / len(blocks) if blocks else None,
+        "would_block": n_block,
+        "by_category": dict(sorted(by_category.items())),
+        "rate": n_block / n_ok if n_ok else None,
+    }
+
+
+def filing_veto_summary(events: Sequence[Mapping[str, Any]], frame: pd.DataFrame) -> dict[str, Any]:
+    """The descriptive ``filing_veto`` block: what the late-filing / adverse 8-K / offering veto saw.
+
+    ``candidates``: ``n`` journaled candidates with a ``filings`` block (the ranked long equity candidates of a
+    scan judged while the veto was on), their ``by_status`` and ``coverage`` (the share whose status is ``ok``;
+    None with none); ``would_block``: the ok-status candidates the rule would refuse, with ``by_category`` and
+    ``rate`` (over ok-status candidates; None with none); ``by_universe``: the same counts (``n``, ``by_status``,
+    ``coverage``, ``would_block``, ``by_category``, ``rate``) for ``static`` names and for ``dynamic`` ones (a
+    candidate journaled with ``dynamic: true``), side by side, because the filings capture does not cover
+    dynamic-universe names in v1 and they journal ``uncovered`` by design; ``cards``: the sent cards the rule
+    would have refused, with ``n_matured`` and ``mean_net_excess_r`` over the matured ones. Reads the events for
+    the candidate counts (so a scan's candidates count whether or not they were labelled) and the frame's
+    ``filings_would_block`` column for the cards. Never a gate: nothing in ``risk/``, ``card_policy`` or admission
+    reads it.
+    """
+    groups: dict[str, list[Mapping[str, Any]]] = {group: [] for group in FILING_VETO_GROUPS}
+    for payload in _universe_scan_payloads(events):
+        for candidate in payload.get("candidates") or []:
+            block = _filings_block(candidate)
+            if block is not None:
+                groups["dynamic" if candidate.get("dynamic") is True else "static"].append(block)
+    total = _filing_veto_group([block for blocks in groups.values() for block in blocks])
+    n_cards = n_matured = 0
+    mean_excess: float | None = None
+    if not frame.empty and "filings_would_block" in frame:
+        would = frame["filings_would_block"].map(lambda value: value is True).astype(bool)
+        cards = frame.loc[would & frame["sent"].astype(bool)]
+        matured = cards.loc[~cards["hit"].isin([BracketHit.IMMATURE.value, FETCH_FAILED_HIT])]
+        n_cards, n_matured = len(cards), len(matured)
+        mean_excess = _finite_mean(matured, "net_excess_r") if n_matured else None
+    return {
+        "candidates": {"n": total["n"], "by_status": total["by_status"], "coverage": total["coverage"]},
+        "would_block": {"total": total["would_block"], "by_category": total["by_category"], "rate": total["rate"]},
+        "by_universe": {group: _filing_veto_group(blocks) for group, blocks in groups.items()},
+        "cards": {"n_would_block": n_cards, "mean_net_excess_r": mean_excess, "n_matured": n_matured},
+    }
+
+
+def _count(counts: dict[str, int], key: Any) -> None:
+    counts[str(key)] = counts.get(str(key), 0) + 1
+
+
+def release_exit_summary(events: Sequence[Mapping[str, Any]], *, since: date | None = None) -> dict[str, Any]:
+    """The descriptive ``release_exit`` block: what the daily release-exit passes saw and did.
+
+    Reads the ``release-exit`` journal (``execution/release_exit.py``): each ``release_exit_pass`` event's entries
+    counted ``by_status`` (``would_close``, ``close``, ``none``, ``unknown``, ``exempt``), ``by_scope`` (``native``
+    or the exempt kind) and ``by_date`` (with the pass's ``mode``); ``exempt_through_report`` counts the exempt
+    positions whose decision was ``exit`` (held through a report by design); ``closes`` counts the enforce close
+    results ``by_outcome``. ``since`` keeps the passes and closes of New York trading days on or after it. Never a
+    gate: nothing in ``risk/``, ``card_policy`` or admission reads it.
+    """
+    by_status: dict[str, int] = {}
+    by_scope: dict[str, int] = {}
+    by_date: dict[str, dict[str, Any]] = {}
+    by_outcome: dict[str, int] = {}
+    passes = positions = exempt_through_report = 0
+    for event in events:
+        payload = event.get("payload") or {}
+        trading_day = payload.get("trading_day")
+        if since is not None and (not trading_day or date.fromisoformat(trading_day) < since):
+            continue
+        if event.get("kind") == EventKind.RELEASE_EXIT_CLOSE:
+            _count(by_outcome, payload.get("outcome"))
+            continue
+        if event.get("kind") != EventKind.RELEASE_EXIT_PASS:
+            continue
+        passes += 1
+        day = by_date.setdefault(str(trading_day), {"mode": payload.get("mode"), "by_status": {}})
+        day_exempt = 0
+        for entry in payload.get("positions") or []:
+            positions += 1
+            _count(by_status, entry.get("status"))
+            _count(by_scope, entry.get("scope"))
+            _count(day["by_status"], entry.get("status"))
+            if entry.get("status") == "exempt" and entry.get("decision") == "exit":
+                day_exempt += 1
+        day["by_status"] = dict(sorted(day["by_status"].items()))
+        day["exempt_through_report"] = day_exempt
+        exempt_through_report += day_exempt
+    return {
+        "passes": passes,
+        "positions": positions,
+        "by_status": dict(sorted(by_status.items())),
+        "by_scope": dict(sorted(by_scope.items())),
+        "exempt_through_report": exempt_through_report,
+        "by_date": dict(sorted(by_date.items())),
+        "closes": {"n": sum(by_outcome.values()), "by_outcome": dict(sorted(by_outcome.items()))},
+    }
 
 
 def summarize(

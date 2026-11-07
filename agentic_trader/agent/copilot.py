@@ -38,6 +38,7 @@ from agentic_trader.agent.earnings import (
     earnings_blackout_reason,
 )
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
+from agentic_trader.agent.filing_veto import filing_veto_evidence, journal_filings_block
 from agentic_trader.agent.insider_watch import CARDED_THIS_SCAN, InsiderWatchSource, build_insider_watch_source
 from agentic_trader.agent.llm_gate import (
     LLM_UNAVAILABLE_EARLIER_IN_SCAN,
@@ -88,6 +89,8 @@ from agentic_trader.data.corporate_actions import (
     between,
     position_note,
 )
+from agentic_trader.data.earnings_capture import EarningsCaptureStore, default_capture_directory
+from agentic_trader.data.filings_capture import FilingsCaptureStore, FilingsLookup
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.data.providers import AlpacaDataProvider
@@ -140,6 +143,7 @@ from agentic_trader.execution.freshness import (
 )
 from agentic_trader.execution.lifetime_policy import NATIVE_ENTRY_LIFETIME_KEY, native_entry_lifetime_marker
 from agentic_trader.execution.lifetimes import RestingCancelResult, TradeLifetimeService
+from agentic_trader.execution.release_exit import NATIVE_SCOPE, ReleaseExitService, RunStatus
 from agentic_trader.market.session import (
     ET_TZ,
     AlpacaCalendarProvider,
@@ -167,6 +171,7 @@ from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG, is_paper_scope
 from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.research.alpha.strategy import execution_policy_from_dict, policy_trails, trailing_price
 from agentic_trader.research.apriori.pead_base_rate import BaseRateUnavailable, load_pead_base_rate
+from agentic_trader.research.apriori.watch_contract import INSIDER_WATCH_STRATEGY_ID
 from agentic_trader.research.pooled.entry import REPO_ROOT
 from agentic_trader.research.setups.card_stats import CardStatsSnapshot
 from agentic_trader.research.setups.net_excess import NET_EXCESS_UNIT
@@ -325,6 +330,7 @@ class TradingCopilot:
         earnings_drift: EarningsDriftService | None = None,
         card_stats: CardStatsRepository | None = None,
         corporate_actions: CorporateActionsStore | None = None,
+        filings_capture: FilingsCaptureStore | None = None,
         news_context: NewsContextService | None = None,
         book_sizer: BookSizer | None = None,
         bar_source: AlpacaDataProvider | None = None,
@@ -364,6 +370,10 @@ class TradingCopilot:
             corporate_actions
             if corporate_actions is not None
             else CorporateActionsStore(self.db.workflows, max_actions=config.corporate_actions.max_actions)
+        )
+        # Filing-veto captures (data/filings_capture.py); the daemon's worker writes, scans and taps read.
+        self.filings_capture = (
+            filings_capture if filings_capture is not None else FilingsCaptureStore(self.db.workflows)
         )
         # News as measured context (docs/news-context.md): a per-scan fetch and scorer, None when off or without keys.
         self.news_context: NewsContextService | None = (
@@ -444,6 +454,19 @@ class TradingCopilot:
                 # surface as a lifecycle review, never a guessed holiday calendar.
                 calendar=AlpacaCalendarProvider(trading_client=alpaca_client) if alpaca_client is not None else None,
             )
+        )
+        # The release exit (execution/release_exit.py): one journaled pass per New York trading day shortly
+        # before the close, on the lifetime service's broker calendar and the blackout's earnings calendar.
+        self.release_exit = ReleaseExitService(
+            config.release_exit,
+            self.db,
+            close_service=self.close_service,
+            earnings=self.earnings_calendar,
+            captures=EarningsCaptureStore(self.db.workflows, default_capture_directory()),
+            calendar=getattr(self.lifetime_service, "calendar", None),
+            scope_of=self._release_exit_scope,
+            # Each close holds the lock every other daemon close path holds (monitor, /close, /flatten).
+            close_guard=lambda: self._reconciliation_lock,
         )
         # The PEAD catalog probe's drift source for the 10:35 suggestion scan. Construction
         # reads the frozen entry file only; every provider read happens inside a scan.
@@ -629,6 +652,7 @@ class TradingCopilot:
             corporate_actions_enabled=corporate_actions_live(config),
             insider_capture_enabled=config.insider_watch.enabled,
             earnings_capture_enabled=config.earnings_capture.enabled,
+            filings_capture_enabled=config.filing_veto.capture,
             macro_calendar=lambda now: macro_calendar_readiness(
                 self.static_calendar.state(now),
                 renewal_days=config.risk.macro_calendar_renewal_days,
@@ -763,6 +787,25 @@ class TradingCopilot:
 
     def _catalog_strategy_ids(self) -> frozenset[str]:
         return frozenset(source.strategy_id for source in self.catalog_sources)
+
+    def _release_exit_scope(self, position: Mapping[str, Any]) -> str:
+        """A tracked position's release-exit scope: ``native``, or the exempt kind that keeps its own exits.
+
+        A catalog card is its source's id (``pead``, ``insider_watch``; a watch position stays exempt while its
+        source is disabled), then a paper probe (``probe``), then an alpha-versioned card (``alpha``).
+        """
+        catalog = {INSIDER_WATCH_STRATEGY_ID: "insider_watch"} | {
+            source.strategy_id: source.source_id for source in self.catalog_sources
+        }
+        strategy = position.get("strategy")
+        if strategy in catalog:
+            return catalog[strategy]
+        provenance = position.get("decision_provenance")
+        if isinstance(provenance, Mapping) and provenance.get(PAPER_PROBE_TAG):
+            return "probe"
+        if position.get("alpha_policy") or position.get("alpha_version"):
+            return "alpha"
+        return NATIVE_SCOPE
 
     def _counts_as_dynamic(self, row: Mapping[str, Any]) -> bool:
         """Whether a card recorded today counts toward the ``dynamic`` group.
@@ -1164,6 +1207,8 @@ class TradingCopilot:
             # One corporate-action read per scan: the deterministic COLLECT pass and the send phase
             # judge every equity candidate against the same capture (None when the feature is off).
             corporate_lookup = await self._corporate_actions_lookup(datetime.now(UTC))
+            # Likewise one filing-veto read per scan (None when the veto is off); no network in the scan path.
+            filings_lookup = await self._filings_lookup(datetime.now(UTC))
 
             # Synthetic dynamic contracts live for this scan only: config.contracts is never mutated.
             dynamic_selection: DynamicSelection | None = None
@@ -1406,6 +1451,7 @@ class TradingCopilot:
                             active_positions=active_positions,
                             dry_run=dry_run,
                             corporate_actions=corporate_lookup,
+                            filings=filings_lookup,
                         )
                         contract_classified += 1
                         if refusal is not None:
@@ -1448,6 +1494,7 @@ class TradingCopilot:
                             active_positions=active_positions,
                             dry_run=dry_run,
                             corporate_actions=corporate_lookup,
+                            filings=filings_lookup,
                         )
                         if refusal is not None:
                             # The catalog decision journals the refusal's text; the funnel counts natives only.
@@ -1731,6 +1778,7 @@ class TradingCopilot:
                         current_drawdown_pct=float(account_risk.drawdown_pct) if account_risk else 0.0,
                         current_equity=float(account_risk.equity) if account_risk else None,
                         corporate_actions=corporate_lookup,
+                        filings=filings_lookup,
                         news_context=news_by_rank[rank - 1],
                         skip_llm_reason=llm_breaker,
                     )
@@ -1882,6 +1930,7 @@ class TradingCopilot:
                             "llm_verdict": llm_by_rank[rank - 1],
                             "book_sizing": book_block,
                             "corporate_actions": eval_res.corporate_actions,
+                            "filings": eval_res.filings,
                             "news": self._news_block(eval_res),
                             "regime": regime_block,
                             **evidence_keys,
@@ -2024,6 +2073,7 @@ class TradingCopilot:
                     shadow_by_rank=shadow_by_rank[:native_count],
                     llm_by_rank=llm_by_rank[:native_count],
                     news_by_rank=news_by_rank[:native_count],
+                    filings_lookup=filings_lookup,
                     signal_ids_by_rank=signal_ids_by_rank[:native_count],
                     card_policy_by_rank=policy_by_rank[:native_count],
                     book_by_rank=book_by_rank[:native_count],
@@ -2205,6 +2255,7 @@ class TradingCopilot:
                 shadow_by_rank=[],
                 llm_by_rank=[],
                 news_by_rank=[],
+                filings_lookup=None,
                 signal_ids_by_rank=[],
                 card_policy_by_rank=[],
                 book_by_rank=[],
@@ -2304,6 +2355,7 @@ class TradingCopilot:
         active_positions: list[dict[str, Any]],
         dry_run: bool,
         corporate_actions: CorporateActionsLookup | None,
+        filings: FilingsLookup | None,
     ) -> tuple[tuple[Any, Any, Any] | None, AdmissionRefusal | None]:
         """Dedup, account risk and the deterministic evaluation shared by native and drift candidates.
 
@@ -2371,6 +2423,7 @@ class TradingCopilot:
             current_drawdown_pct=float(account_risk.drawdown_pct) if account_risk else 0.0,
             current_equity=float(account_risk.equity) if account_risk else None,
             corporate_actions=corporate_actions,
+            filings=filings,
         )
 
         if not det_res.approved:
@@ -2472,6 +2525,24 @@ class TradingCopilot:
         ]
         return list(shadow_blocks(vectors, ranker))
 
+    def _journal_filings(
+        self, candidate: Any, lookup: FilingsLookup | None, decided_at: datetime
+    ) -> dict[str, Any] | None:
+        """The candidate's journaled filing-veto summary from the scan's in-memory lookup (no I/O); null for a
+        short, a non-equity, a veto that is off or no lookup. Independent of the evaluator's outcome, so a
+        candidate rejected before gate 2d still carries it."""
+        policy = self.config.filing_veto
+        if (
+            lookup is None
+            or policy.entry_block == "off"
+            or normalize_asset_class(str(getattr(candidate, "asset_class", "")))
+            != normalize_asset_class(AssetClass.EQUITY)
+            or str(candidate.direction).upper() != Direction.LONG
+        ):
+            return None
+        block, _ = filing_veto_evidence(lookup, candidate.contract, decided_at.astimezone(ET_TZ).date(), policy)
+        return journal_filings_block(block)
+
     async def _journal_scan_ranking(
         self,
         *,
@@ -2491,6 +2562,7 @@ class TradingCopilot:
         shadow_by_rank: list[dict[str, Any] | None],
         llm_by_rank: list[dict[str, Any] | None],
         news_by_rank: list[dict[str, Any] | None],
+        filings_lookup: FilingsLookup | None,
         signal_ids_by_rank: list[int | None],
         card_policy_by_rank: list[CardPolicyDecision | None],
         book_by_rank: list[BookSizingDecision | None],
@@ -2520,6 +2592,9 @@ class TradingCopilot:
                     "shadow": shadow_by_rank[rank - 1],
                     "llm": llm_by_rank[rank - 1],
                     "news": news_by_rank[rank - 1],
+                    # The filing-veto evidence the evaluator saw ({status, would_block, category}); null for a
+                    # short, a non-equity, a veto that is off or no lookup. Descriptive, never a gate.
+                    "filings": self._journal_filings(candidate, filings_lookup, decided_at),
                     "signal_id": signal_ids_by_rank[rank - 1],
                     "card_policy": journal_block(card_policy_by_rank[rank - 1], policy.mode),
                     "book_sizing": self.book_sizer.journal_block(book_by_rank[rank - 1]),
@@ -3832,6 +3907,23 @@ class TradingCopilot:
             logger.exception("Corporate-action lookup failed", extra={"event": "corporate_actions_lookup_failed"})
             return CorporateActionsLookup("unavailable", None, ())
 
+    async def _filings_lookup(self, now: datetime) -> FilingsLookup | None:
+        """The latest filings-capture pass as one frozen read; None when the veto is off; a read failure (or an
+        unreadable pass) is ``unavailable``, which never refuses."""
+        policy = self.config.filing_veto
+        if policy.entry_block == "off":
+            return None
+        try:
+            return FilingsLookup.build(await self.filings_capture.latest(), now, policy.max_age_seconds)
+        except Exception as exc:
+            logger.warning(
+                "Filings lookup failed (%s); filing veto evidence unavailable",
+                type(exc).__name__,
+                exc_info=exc,
+                extra={"event": "filings_lookup_failed", "error_type": type(exc).__name__},
+            )
+            return FilingsLookup("unavailable", None)
+
     async def _earnings_blackout_reason(self, contract: str, now: datetime) -> str | None:
         """The evaluator's equity earnings gate, failing open on a calendar failure exactly as it does."""
         blackout_days = self.config.risk.earnings_blackout_days
@@ -3867,10 +3959,23 @@ class TradingCopilot:
         )
         return rejection.reason if rejection is not None else None
 
+    async def _filing_veto_reason(self, contract: str, direction: str, now: datetime) -> str | None:
+        """The evaluator's filing veto at tap time: enforce refuses a long; preview, a short, stale or missing
+        evidence and a symbol the latest pass did not cover (uncovered) never do."""
+        policy = self.config.filing_veto
+        if policy.entry_block != "enforce" or str(direction).upper() != Direction.LONG:
+            return None
+        lookup = await self._filings_lookup(now)
+        if lookup is None or lookup.status != "ok" or not lookup.covers(contract):
+            return None
+        _, rejection = filing_veto_evidence(lookup, contract, now.astimezone(ET_TZ).date(), policy)
+        return rejection.reason if rejection is not None else None
+
     async def _tap_gate_reason(
         self, request: OrderRequest, sig: dict[str, Any], regime: Any, *, asset_class: str, now: datetime
     ) -> str | None:
-        """First failing tap-time gate: macro/regime/reward:risk, then equity earnings and corporate-action gates."""
+        """First failing tap-time gate: macro/regime/reward:risk, then the equity earnings, corporate-action and
+        filing-veto gates."""
         assert request.entry_price is not None and request.stop_loss is not None
         # Degenerate levels are MISSED by the assessment itself; the macro gate divides by the risk.
         if abs(request.entry_price - request.stop_loss) > 0:
@@ -3879,7 +3984,8 @@ class TradingCopilot:
                 return reason
         if asset_class.upper() == AssetClass.EQUITY:
             reason = await self._earnings_blackout_reason(sig["contract"], now)
-            return reason or await self._corporate_action_reason(sig["contract"], now)
+            reason = reason or await self._corporate_action_reason(sig["contract"], now)
+            return reason or await self._filing_veto_reason(sig["contract"], sig["direction"], now)
         return None
 
     async def _journal_card_tap(
@@ -5115,6 +5221,10 @@ class TradingCopilot:
     def _is_suggestion_scan(summary: dict[str, Any]) -> bool:
         """A scheduled suggestion scan's summary (``make_suggestion_scan``), completed or gated."""
         return summary.get("trigger") == ScanTrigger.SUGGESTION_SCAN
+
+    async def run_release_exit(self, now: datetime | None = None) -> RunStatus:
+        """One release-exit tick (the daemon's five-minute job); it never raises into the scheduler."""
+        return await self.release_exit.run(now)
 
     async def publish_auto_entry_digest(self, now: datetime | None = None) -> bool:
         """Queue today's paper auto-entry digest once, from regular close + 15 minutes; True when queued.

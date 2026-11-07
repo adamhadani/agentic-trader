@@ -19,6 +19,7 @@ from agentic_trader.agent.earnings import (
     earnings_blackout_reason,
     earnings_note,
 )
+from agentic_trader.agent.filing_veto import filing_veto_evidence
 from agentic_trader.agent.llm_gate import LLM_KEY_MISSING, classify_gate_reply, llm_unavailable_reason
 from agentic_trader.agent.position_sizing import PositionSizingResult, calculate_dynamic_sizing
 from agentic_trader.agent.prompts import USER_EVALUATION_TEMPLATE, build_system_prompt, gate_prompt_sha256
@@ -56,6 +57,7 @@ from agentic_trader.screeners.base import ScreenerCandidate
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from agentic_trader.data.filings_capture import FilingsLookup
     from agentic_trader.data.market_data import MarketDataFetcher
 
 
@@ -116,6 +118,8 @@ class LLMTradeEvaluation(BaseModel):
     # "Unverified — {note}" instead of "Cleared". Never taken from the LLM; ``macro_clearance`` is unchanged.
     macro_note: str | None = None
     corporate_actions: dict[str, Any] | None = None  # the scan's corporate-action block (docs/corporate-actions.md)
+    # The scan's filing-veto block (docs/risk-policy.md, ``filing_veto``); None for a short or a non-equity.
+    filings: dict[str, Any] | None = None
     # The scan's news block (docs/news-context.md): labelled context on the card and in the journal, never read as a gate.
     news_context: dict[str, Any] | None = None
     # Every LLM-evaluated card (approval, veto or error): approved/rejection_reason, the bracket as it
@@ -377,6 +381,7 @@ class RiskEvaluator:
         current_drawdown_pct: float = 0.0,
         current_equity: float | None = None,
         corporate_actions: CorporateActionsLookup | None = None,
+        filings: FilingsLookup | None = None,
         news_context: Mapping[str, Any] | None = None,
         skip_llm_reason: str | None = None,
     ) -> LLMTradeEvaluation:
@@ -386,7 +391,9 @@ class RiskEvaluator:
         (``agentic_trader.risk.book_gates``) on ``active_positions`` -- open positions plus the
         cards this scan already sent; the statistical return-correlation check; macro lockout;
         earnings blackout; corporate action (``enforce`` only, from the scan's ``corporate_actions``
-        lookup; ``preview`` and stale evidence only annotate); the regime rules (breakout suppression,
+        lookup; ``preview`` and stale evidence only annotate); filing veto (long equities only, ``enforce``
+        only, from the scan's ``filings`` lookup; ``preview`` and stale, missing or uncovered evidence only
+        annotate); the regime rules (breakout suppression,
         then ``reward_risk`` at the required ratio, which only a versioned alpha bracket can fail);
         session. A refusal by a shared rule carries that rule's text and ``rejection_rule``.
         ``current_open_notional`` bounds the sizing notional ceiling; the book's own notional is what
@@ -652,6 +659,30 @@ class RiskEvaluator:
                         corporate_actions=corporate_block,
                     )
 
+        # 2d. Filing veto (agentic_trader.risk.filing_veto_block; long equities only, a short never evaluates
+        # it). A missing or stale capture, or one that did not cover this symbol ("uncovered"), never refuses;
+        # preview annotates; enforce refuses a late-filing notice, adverse 8-K or offering inside its window.
+        filings_block: dict[str, Any] | None = None
+        filing_policy = self.config.filing_veto
+        if (
+            asset_class == AssetClass.EQUITY
+            and str(candidate.direction).upper() == Direction.LONG
+            and filings is not None
+            and filing_policy.entry_block != "off"
+        ):
+            filings_block, rejection = filing_veto_evidence(
+                filings, candidate.contract, evaluated_at.astimezone(ET_TZ).date(), filing_policy
+            )
+            if rejection is not None and filing_policy.entry_block == "enforce":
+                return _rejected(
+                    rejection.reason,
+                    rejection.rule,
+                    thesis=f"Rejected: filing veto for {candidate.contract}.",
+                    earnings_note=earnings_note_value,
+                    corporate_actions=corporate_block,
+                    filings=filings_block,
+                )
+
         # 3. Regime breakout suppression (agentic_trader.risk.regime_breakout); the regime detail
         #    stays in the thesis.
         if rejection := regime_breakout(candidate.strategy, regime.breakout_allowed):
@@ -666,6 +697,7 @@ class RiskEvaluator:
                 ),
                 earnings_note=earnings_note_value,
                 corporate_actions=corporate_block,
+                filings=filings_block,
             )
         # 3b. The regime's reward/risk (agentic_trader.risk.reward_risk at required_rr), the tap-time regime
         #     gate's next rule: a native target is built at required_rr and always passes; a versioned alpha
@@ -677,6 +709,7 @@ class RiskEvaluator:
                 thesis=f"Rejected by risk manager: {rejection.reason}",
                 earnings_note=earnings_note_value,
                 corporate_actions=corporate_block,
+                filings=filings_block,
             )
 
         # 4. Session (agentic_trader.risk.entry_session_open): a closed session refuses; an open
@@ -695,6 +728,7 @@ class RiskEvaluator:
                     session_type=current_session_type,
                     earnings_note=earnings_note_value,
                     corporate_actions=corporate_block,
+                    filings=filings_block,
                 )
 
         macro_summary = calendar_check.prompt_text()
@@ -720,6 +754,7 @@ class RiskEvaluator:
             "earnings_note": earnings_note_value,
             "macro_note": macro_note,
             "corporate_actions": corporate_block,
+            "filings": filings_block,
             "news_context": news_block,
         }
         if not use_llm:
@@ -970,11 +1005,12 @@ class RiskEvaluator:
                 sizing_tiers=card_tiers,
                 gating_reasons=card_gating,
                 session_type=current_session_type,
-                # Never asked of the LLM: the earnings, macro, corporate-action and news context
-                # are attached deterministically.
+                # Never asked of the LLM: the earnings, macro, corporate-action, filing-veto and news
+                # context are attached deterministically.
                 earnings_note=earnings_note_value,
                 macro_note=macro_note,
                 corporate_actions=corporate_block,
+                filings=filings_block,
                 news_context=news_block,
                 llm_verdict=verdict(
                     approved,

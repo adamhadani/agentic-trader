@@ -67,6 +67,9 @@ class EventKind(StrEnum):
     CARD_STATS_SNAPSHOT = "card_stats_snapshot"
     INSIDER_FORM4_CAPTURE = "insider_form4_capture"
     EARNINGS_CALENDAR_CAPTURE = "earnings_calendar_capture"
+    FILINGS_CAPTURE = "filings_capture"
+    RELEASE_EXIT_PASS = "release_exit_pass"
+    RELEASE_EXIT_CLOSE = "release_exit_close"
     INSIDER_WATCH_DECISION = "insider_watch_decision"
     AUTO_ENTRY_ATTEMPTED = "auto_entry_attempted"
 

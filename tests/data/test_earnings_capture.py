@@ -16,12 +16,14 @@ from datetime import UTC, date, datetime, timedelta
 import httpx
 import pytest
 
+from agentic_trader.agent.earnings import EarningsTiming
 from agentic_trader.config import AppConfig
 from agentic_trader.data import earnings_capture
 from agentic_trader.data.earnings_capture import (
     CAPTURE_MAX_AGE_SECONDS,
     CAPTURE_STREAM,
     COLUMNS,
+    CapturedReports,
     CaptureIncomplete,
     EarningsCaptureStore,
     EarningsCaptureWorker,
@@ -383,3 +385,104 @@ async def test_failed_poll_without_capture_is_not_ready(store):
 
 def test_max_age_constants_agree():
     assert EARNINGS_CAPTURE_MAX_AGE_SECONDS == CAPTURE_MAX_AGE_SECONDS == 4 * 86400
+
+
+def _row(symbol: str, timing: str) -> list:
+    return [symbol, timing, "Sep/2026", 1.0, 3, None, None, None]
+
+
+async def _seed_rows(store, capture_date: date, rows: dict[date, list[list]]):
+    payload = {
+        "capture_date": capture_date.isoformat(),
+        "columns": list(COLUMNS),
+        "pages": [{"date": day.isoformat()} for day in rows],
+        "rows": {day.isoformat(): day_rows for day, day_rows in rows.items()},
+    }
+    assert await store.record(payload, {}) is True
+
+
+MONDAY = FRIDAY + timedelta(days=3)
+
+
+async def test_reports_between_groups_rows_by_date(store):
+    thursday = FRIDAY - timedelta(days=1)
+    await _seed_rows(
+        store,
+        thursday,
+        {
+            thursday: [_row("OLD", "after_hours")],
+            FRIDAY: [_row("PBR", "after_hours"), _row("AAPL", "unspecified")],
+            MONDAY: [_row("MSFT", "pre_market")],
+            MONDAY + timedelta(days=1): [_row("LATER", "pre_market")],
+        },
+    )
+    reports = await store.reports_between(FRIDAY, MONDAY, today=FRIDAY)
+    assert reports == CapturedReports(
+        capture_date=thursday,
+        rows={
+            FRIDAY: (("PBR", EarningsTiming.AFTER_HOURS), ("AAPL", EarningsTiming.UNSPECIFIED)),
+            MONDAY: (("MSFT", EarningsTiming.PRE_MARKET),),
+        },
+    )
+
+
+async def test_reports_between_needs_a_capture_young_enough(store):
+    assert await store.reports_between(FRIDAY, MONDAY, today=FRIDAY) is None
+    captured_on = MONDAY - timedelta(days=5)
+    await _seed_rows(store, captured_on, {FRIDAY: [], MONDAY: []})
+    assert await store.reports_between(FRIDAY, MONDAY, today=MONDAY - timedelta(days=1)) is not None
+    assert await store.reports_between(MONDAY, MONDAY, today=MONDAY) is None
+    assert await store.reports_between(MONDAY, MONDAY, today=MONDAY, max_age_days=5) is not None
+
+
+async def test_reports_between_refuses_a_range_with_a_missing_weekday(store):
+    await _seed_rows(store, FRIDAY, {FRIDAY: [_row("PBR", "after_hours")]})
+    assert await store.reports_between(FRIDAY, MONDAY, today=FRIDAY) is None
+    # Weekends are never capture targets (capture_targets), so they are never required.
+    assert (await store.reports_between(FRIDAY, FRIDAY + timedelta(days=2), today=FRIDAY)).rows == {
+        FRIDAY: (("PBR", EarningsTiming.AFTER_HOURS),)
+    }
+
+
+async def test_reports_between_reads_an_unknown_timing_as_unspecified(store):
+    await _seed_rows(store, FRIDAY, {FRIDAY: [_row("pbr", "evening")]})
+    reports = await store.reports_between(FRIDAY, FRIDAY, today=FRIDAY)
+    assert reports.rows == {FRIDAY: (("PBR", EarningsTiming.UNSPECIFIED),)}
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        {"columns": None},
+        {"columns": ["symbol", "fiscal_quarter"]},
+        {"rows": [["PBR", "after_hours"]]},
+        {"rows": {FRIDAY.isoformat(): "PBR"}},
+        {"rows": {FRIDAY.isoformat(): ["PBR"]}},
+        {"rows": {FRIDAY.isoformat(): [["PBR"]]}},
+        {"rows": {FRIDAY.isoformat(): [[None, "after_hours"]]}},
+        {"capture_date": "Friday"},
+    ],
+)
+async def test_reports_between_reads_a_malformed_capture_as_unusable(store, caplog, malformed):
+    payload = {
+        "capture_date": FRIDAY.isoformat(),
+        "columns": list(COLUMNS),
+        "pages": [],
+        "rows": {FRIDAY.isoformat(): [_row("PBR", "after_hours")]},
+        **malformed,
+    }
+    async with store.workflows.db.session_factory() as session, session.begin():
+        await store.workflows.lock(session)
+        await store.workflows.append(
+            session, stream=CAPTURE_STREAM, kind=EventKind.EARNINGS_CALENDAR_CAPTURE, payload=payload, key="bad"
+        )
+    with caplog.at_level(logging.WARNING, logger="copilot"):
+        assert await store.reports_between(FRIDAY, FRIDAY, today=FRIDAY) is None
+    [record] = [r for r in caplog.records if r.__dict__.get("event") == "earnings_capture_unreadable"]
+    assert record.__dict__["reason"] in {"KeyError", "IndexError", "TypeError", "ValueError"}
+
+
+async def test_reports_between_needs_the_columns(store):
+    payload = {"capture_date": FRIDAY.isoformat(), "pages": [], "rows": {FRIDAY.isoformat(): []}}
+    assert await store.record(payload, {}) is True
+    assert await store.reports_between(FRIDAY, FRIDAY, today=FRIDAY) is None

@@ -856,7 +856,9 @@ without modifying the process environment. Explicit environment values (even emp
 ones) win. `COPILOT_ENV_FILE=''` disables dotenv. `COPILOT_CONFIG` selects a YAML.
 
 Database precedence: `DB_PATH` → `DATABASE_URL` → explicit `DB_NAME` → YAML →
-production default. `--db-path` accepts a URL or SQLite path; `--db-name` explicitly
+production default. Neither the shipped YAML URL nor the production default names a
+database user: asyncpg takes it from `PGUSER` or the account running the daemon. To name
+one, set `DATABASE_URL` in `.envrc`; never commit a user or password to the YAML. `--db-path` accepts a URL or SQLite path; `--db-name` explicitly
 selects a SQLite sandbox. There is no automatic SQLite failover. `data/signals.db`
 is historical and must not be mistaken for the current PostgreSQL database.
 
@@ -1515,8 +1517,10 @@ The [watch cards](apriori-alphas.md#watch-cards) read SEC Form 4 filings from a 
 ### Earnings calendar capture
 
 A daemon worker (`agentic_trader/data/earnings_capture.py`), enabled with `earnings_capture.enabled` (shipped
-`true`), keeps a dated record of the Nasdaq forward earnings calendar. Nothing reads it yet; it exists so
-that each season's forward dates are kept as they were published.
+`true`), keeps a dated record of the Nasdaq forward earnings calendar, so that each season's forward dates are
+kept as they were published. The [release exit](#release-exit) reads the latest capture
+(`EarningsCaptureStore.reports_between`) beside the live Nasdaq lookup; with the capture off or stale, a failed
+live lookup leaves a position `unknown` (never closed), so turning the capture off makes `unknown` more likely.
 
 - **Schedule.** On each New York weekday after 06:00, outside the suggestion-scan windows (which are never
   delayed), it takes one capture dated that day. A poll runs every 30 minutes until one is journaled.
@@ -1539,7 +1543,156 @@ that each season's forward dates are kept as they were published.
   target date and the reason, an HTTP status, `rCode`, fixed string or exception type name; for any other failure the
   exception type only). A missed day cannot be recovered afterwards, because a later fetch shows the calendar as
   revised since, not as it was published that day. To
-  stop the worker, set `earnings_capture.enabled: false` and restart.
+  stop the worker, set `earnings_capture.enabled: false` and restart (the release exit then has the live lookup
+  only).
+
+### Filings capture
+
+A daemon worker (`agentic_trader/data/filings_capture.py`), enabled with `filing_veto.capture` (code default
+`false`), journals each covered symbol's recent negative EDGAR filings as the evidence of the `filing_veto` entry
+rule ([spec](superpowers/specs/2026-11-06-release-exit-filing-veto-design.md)).
+
+- **Symbols.** The corporate-actions worker's list, read on each pass: the universe, held equities (tracked and
+  broker-held) and `corporate_actions.extra_symbols`. Dynamic-universe names (up to 20 per scan) are not on it,
+  so in v1 they are uncovered by design: their candidates journal `uncovered` and are never refused, and the
+  `filing_veto` block of `cards outcomes` reports them apart (`by_universe.dynamic`) from the static names.
+- **Schedule.** On each New York weekday, one pass per slot: `open` at the first poll from 06:00, and
+  `pre-HHMM` `filing_veto.pre_scan_minutes` (30) before each suggestion scan (with 10:35 and 14:35: `pre-1005`
+  and `pre-1405`). The worker polls every 5 minutes and runs only the latest due slot, so a slot missed while
+  the daemon was down is skipped once a later one is due. It never runs inside a suggestion-scan window (which
+  is never delayed): a window that opens between two requests stops the pass and journals nothing, and the
+  slot runs after the window.
+- **Requests.** The SEC ticker map (`www.sec.gov/files/company_tickers.json`) once per pass, then each mapped
+  CIK's `data.sec.gov/submissions/CIK##########.json` (only `filings.recent` is read; symbols sharing a CIK
+  share its request). Two requests per second; one retry after 5 seconds, only after a transport error, HTTP
+  429 or a 5xx; only those two hosts, no redirects, the 16 MiB body budget and a 120 s deadline per request.
+- **Outcomes.** Each requested symbol is `covered`, `unmapped` (absent from the ticker map, or under two CIKs:
+  never guessed) or `failed` (`http_<status>` or the exception type name). A failed ticker map, or five CIKs
+  failing in a row (`consecutive_failures`: an EDGAR outage rather than a few bad symbols; a success resets the
+  count), fails the whole pass: nothing is journaled and the next poll retries the slot.
+- **Journal.** One `filings/capture/<ET date>/<slot>` event on stream `filings/capture` per pass: `requested`,
+  `covered`, `unmapped`, `failed`, `ticker_map_sha256`, `fetched_at`, `lookback_days` and `filings`. A covered
+  symbol's list holds its `NT 10-K`/`NT 10-Q`/`NT 20-F` (and `/A`), adverse 8-K (Items 2.04, 2.05, 2.06, 4.02,
+  5.01) and `424B4`/`424B5` filings dated within the widest window (60 days); an empty list is the evidence of
+  no such filing. Each filing carries its `primary_document` and `primary_doc_description` (EDGAR's
+  `primaryDocument` and `primaryDocDescription`; null when absent), so an offering match can be read as debt or
+  equity: `424B4`/`424B5` cover equity, convertible and debt offerings alike, and the cited negative drift is
+  for convertibles. Raw bodies are not kept.
+- **Credential.** `EDGAR_USER_AGENT`, as for the insider capture: read from the daemon's environment only, sent as
+  the `User-Agent`, never printed, logged, journaled or committed. Without it the worker sends nothing and
+  `filings_capture` reports `missing_user_agent` (not ready).
+- **Readiness.** `filings_capture` is ready while the newest pass that covered at least one symbol and at least
+  90% of its mapped (requested minus unmapped) symbols is at most `filing_veto.max_age_seconds` (4 days) old.
+  The detail counts the newest pass's covered, unmapped and failed symbols, failures by status or type name,
+  and names the last 90% pass when the newest one fell short. A failed poll is observed by type name and stays ready while such
+  a pass exists. With no pass yet it reads ready (`not_due; no capture yet`) only until a poll has passed the
+  weekend, scan-window and 06:00 gates in this process. It is an ordinary component under quiet hours. It is
+  not a data-quality check of EDGAR itself.
+- **Runbook.** Inspect with `uv run copilot doctor --readiness` and
+  `uv run copilot db events --stream filings/capture --limit 1`. `low coverage` means many mapped symbols
+  failed: read the failure breakdown in the detail and the daemon log (`filings_capture_failed`, with the
+  pass's reason in `detail`: the ticker map's status or type name, or `consecutive_failures`); `http_403`
+  usually means SEC rejected the user agent, `http_429` throttling. `stale` means no recent pass at all: check
+  `EDGAR_USER_AGENT` and SEC reachability. Evidence that is stale,
+  missing or does not cover a symbol never refuses an entry. To stop the worker, set `filing_veto.capture:
+  false` and restart.
+- **Before enforce.** The filing veto and the release exit ship together in `preview`; each `enforce` is an
+  operator decision on the journaled evidence. Items 1–3 come before `filing_veto.entry_block: enforce`, item 4
+  before `release_exit.mode: enforce` (the same list is in the [release exit](#release-exit) section):
+  1. Cover dynamic-universe names, which the filings capture leaves uncovered by design in v1 (their rate is
+     reported apart, `by_universe.dynamic` of the `filing_veto` block).
+  2. Review the preview offering matches by `primary_document` (debt versus equity) and decide whether
+     `offering` stays a veto category.
+  3. Decide whether catalog cards (the PEAD probe, insider watch) are exempt from the filing veto at both gates.
+     The release exit already exempts them. Today an `enforce` refusal would change a frozen probe's entry
+     population, and watch cards carry no preview `filings` block.
+  4. Route the release exit's silent gaps to the morning operations summary: a broker calendar down through the
+     close, the host asleep through the window, an `enforce` pass resumed after the close + 30 minutes, and
+     `unknown` native positions. Today these show only in the journal, the daemon log and `cards outcomes`.
+
+### Release exit
+
+The release exit (`agentic_trader/execution/release_exit.py`, `release_exit.mode`, code default `off`) keeps a
+native equity position from being held through an earnings release
+([spec](superpowers/specs/2026-11-06-release-exit-filing-veto-design.md), section 3). It changes no entry rule,
+never touches the trading halt and opens no lifetime review.
+
+- **When.** A five-minute daemon job (`release_exit`) runs one pass per New York trading day, on its first tick
+  at or after the close minus `release_exit.minutes_before_close` (30, valid 10–120): 15:30, or 12:30 on a 13:00
+  early close. The close and the next session come from the lifetime service's
+  broker calendar. A daemon started after that day's close skips the date and journals nothing for it. The job is
+  registered unless the mode is `off` or the desk has no broker trading calendar (no Alpaca credentials, as in a
+  simulator without keys); without one the daemon logs `release_exit_disabled` once at startup and runs no pass.
+- **Which reports.** With T today and N the next trading day: a report on T after the close or at an unspecified
+  time, any report dated after T and before N (a weekend or holiday), or a report on N before the open or at an
+  unspecified time. A report on N after the close is N's own pass.
+- **Evidence.** The union of the live Nasdaq lookup (the earnings blackout's calendar and cache, over T to N) and
+  the latest [earnings calendar capture](#earnings-calendar-capture) when it is at most 4 days old and holds every
+  weekday of T to N (a malformed capture payload reads as unusable and is logged as `earnings_capture_unreadable`). A report in either source counts; on a timing disagreement the reading that exits today wins.
+  `none` needs a verified live lookup or a usable capture; with neither the status is `unknown`, which is never
+  closed and never read as "no report".
+- **Scope.** Tracked `EXECUTED` equity positions, both directions. A catalog card (`pead`, `insider_watch`), a
+  paper probe (`probe`) or an alpha-versioned card (`alpha`) is journaled `exempt` with its decision and never
+  closed; non-equity positions are skipped.
+- **Journal.** One `release_exit_pass` event per date (stream `release-exit`, key `release-exit/<ET date>`):
+  `mode`, `trading_day`, `next_trading_day`, `close_at`, `capture_date` and one entry per position (`signal_id`,
+  `symbol`, `direction`, `scope`, `status` (`would_close`, `close`, `none`, `unknown` or `exempt`), `decision`,
+  `report_date`, `timing`, `sources`, `live_verified`, and `request_id` for a `close`).
+- **Preview.** Each `would_close` position gets one notice in the pass's transaction (key
+  `release-exit/<ET date>/<signal id>/<report date>`, so a report that qualifies on two passes, such as one on the
+  next session at an unspecified time, is noticed on each): "Release exit (preview): SYMBOL reports DATE before
+  open. In enforce the desk would close this long at about 15:30 ET today. Nothing was sent to the broker;
+  /close SIGNAL_ID closes it manually." It names `/close` with the position's signal ID, the single-position
+  close: `/flatten` would close every broker position, the exempt PEAD, probe and insider-watch ones included. It
+  is an ordinary outbox message sent during market hours.
+- **Enforce.** After the pass is journaled, each `close` entry goes once through `PositionCloseService.close_signal`
+  with request ID `release-` plus the first 32 hex digits of
+  `sha256("native/<signal id>/<report date>/<ET date>")` (stable across ticks and restarts within the trading day,
+  new on the next day's pass, so a close that failed on one pass never blocks the next) and context
+  `{reason: release_exit, report_date, timing, sources}`; the close service keeps its intent, recovery and refusals.
+  Each close holds the desk's reconciliation lock (as the monitor, `/close` and `/flatten` do) for its own call and
+  journaled result only, never across the pass, so the earnings lookups never stall the position monitor.
+  Each result is a `release_exit_close` event (key `release-exit/<ET date>/<signal id>`: `close_result`,
+  `close_status`, `outcome` `submitted`, `refused`, `failed`, `error` or `already_exiting`, `notified`). A refused, failed or
+  raising close queues "Release exit could not close SYMBOL: reason." (key
+  `release-exit/<ET date>/<signal id>/<report date>/failed`) with "The position keeps its stop; /close SIGNAL_ID
+  closes it manually." when the request never reached the broker, or "Check its protective orders at the broker;
+  /close SIGNAL_ID closes it manually." once it did (the reason then carries the broker's protection statement). A
+  position that is already closed, or that another close or exit order owns, gets no notice. Nothing is retried:
+  a restart re-calls only a close whose result was never journaled, and the stable request ID makes that call a
+  no-op. Only a process whose configured mode is `enforce` makes those calls: a daemon restarted into `preview`
+  after an interrupted `enforce` pass never touches the broker.
+- **Failure.** A pass that raises before journaling is retried on the next tick until the close. If this process
+  attempted the date's pass and it never completed, its first tick at or after the close queues one
+  `release-exit-unavailable/<ET date>` notice naming the exception type only. Two cases queue **no** notice and
+  show only as a date missing from the `release_exit` block of `cards outcomes` (and as `release_exit_failed` in
+  the daemon log): the broker calendar unavailable through the close (the close time is then unknown), and a
+  host asleep, or a daemon down or restarted, through the whole window from close − `minutes_before_close` to
+  the close. Readiness is unchanged.
+- **Notice bound.** Notices are queued only up to the trading day's close + 30 minutes (16:30, the end of the
+  alert window; 13:30 on an early close). A failed owed close, or an unavailable date, found later is journaled
+  (`notified: false` on the `release_exit_close` event) and logged (`release_exit_close_not_submitted`,
+  `release_exit_unavailable`), never sent.
+- **Runbook.** Inspect with `uv run copilot db events --stream release-exit --limit 5` and the `release_exit`
+  block of `uv run copilot cards outcomes` ([card evidence](card-evidence.md#release-exit)). The daemon log
+  carries `release_exit_failed`, `release_exit_lookup_failed`, `release_exit_unavailable` and
+  `release_exit_close_not_submitted` with type names or fixed outcomes. To act on a preview notice,
+  `/close SIGNAL_ID` (the notice names it) closes that one position; `/flatten` would close every broker position,
+  exempt ones included. To stop the job, set `release_exit.mode: off` and restart; `enforce` is a separate
+  operator decision on the journaled preview counts.
+- **Before enforce.** The release exit and the filing veto ship together in `preview`; each `enforce` is an
+  operator decision on the journaled evidence. Items 1–3 come before `filing_veto.entry_block: enforce`, item 4
+  before `release_exit.mode: enforce` (the same list is in the [filings capture](#filings-capture) section):
+  1. Cover dynamic-universe names, which the filings capture leaves uncovered by design in v1 (their rate is
+     reported apart, `by_universe.dynamic` of the `filing_veto` block).
+  2. Review the preview offering matches by `primary_document` (debt versus equity) and decide whether
+     `offering` stays a veto category.
+  3. Decide whether catalog cards (the PEAD probe, insider watch) are exempt from the filing veto at both gates.
+     The release exit already exempts them. Today an `enforce` refusal would change a frozen probe's entry
+     population, and watch cards carry no preview `filings` block.
+  4. Route the release exit's silent gaps to the morning operations summary: a broker calendar down through the
+     close, the host asleep through the window, an `enforce` pass resumed after the close + 30 minutes, and
+     `unknown` native positions. Today these show only in the journal, the daemon log and `cards outcomes`.
 
 ## Provider read and forecast hardening
 

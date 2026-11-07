@@ -178,6 +178,19 @@ def _corporate_action_line(block: dict[str, Any] | None, *, markup: bool) -> str
     return (html.escape(text) if markup else text) + "\n"
 
 
+def _filing_veto_line(block: dict[str, Any] | None, *, markup: bool) -> str:
+    """The filing-veto line, newline-terminated: only a fresh preview block that would block (in ``enforce`` that
+    card is never sent). The rule's reason is shown without its own "Filing veto: " lead and closing period."""
+    if not block or block.get("status") != "ok" or block.get("mode") != "preview" or not block.get("would_block"):
+        return ""
+    reason = block.get("reason")
+    if not isinstance(reason, str) or not reason:
+        return ""
+    detail = reason.removeprefix("Filing veto: ").removesuffix(".")
+    text = f"🗂 Filing veto (preview): {detail} — card unchanged"
+    return (html.escape(text) if markup else text) + "\n"
+
+
 NEWS_LABEL = "📰 News (context, not a gate): "
 # Insider watch cards (agent/insider_watch.py): the header and the frozen v1 study's result, verbatim.
 WATCH_HEADER = "👀 INSIDER WATCH — unvalidated"
@@ -469,6 +482,7 @@ def format_alert_card(
         _evidence_block(card_evidence, strategy, eval_res, markup=True)
         + _book_line(book_sizing, markup=True)
         + _corporate_action_line(eval_res.corporate_actions, markup=True)
+        + _filing_veto_line(eval_res.filings, markup=True)
         + _news_line(eval_res.news_context, markup=True)
     )
 
@@ -629,6 +643,7 @@ def format_terminal_card(
         _evidence_block(card_evidence, strategy, eval_res, markup=False)
         + _book_line(book_sizing, markup=False)
         + _corporate_action_line(eval_res.corporate_actions, markup=False)
+        + _filing_veto_line(eval_res.filings, markup=False)
         + _news_line(eval_res.news_context, markup=False)
     )
 

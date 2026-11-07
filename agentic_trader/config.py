@@ -56,6 +56,7 @@ from agentic_trader.constants import (
     RuntimeEnvironment,
     SizingMode,
 )
+from agentic_trader.data.edgar_filings import FilingCategory
 from agentic_trader.market.bars import BAR_DURATIONS
 from agentic_trader.research.alpha.probe import MAX_PROBE_TERM_DAYS
 from agentic_trader.research.alpha.universe import ETF_RESEARCH_UNIVERSE
@@ -459,13 +460,74 @@ class EarningsCaptureConfig(BaseModel):
     """Dated earnings-calendar capture (docs/superpowers/specs/2026-11-06-earnings-capture-design.md).
 
     The daemon captures the Nasdaq forward earnings calendar once per New York weekday for the next
-    ``horizon_days`` calendar days and journals it. Research and context only.
+    ``horizon_days`` calendar days and journals it. Research and context, and the release exit's second source
+    beside the live Nasdaq lookup (off, it leaves the live lookup only, so ``unknown`` is more likely).
     """
 
     model_config = {"extra": "forbid"}
 
     enabled: bool = False
     horizon_days: int = Field(default=28, ge=7, le=42)
+
+
+class FilingVetoConfig(BaseModel):
+    """The filing veto (docs/superpowers/specs/2026-11-06-release-exit-filing-veto-design.md, section 4).
+
+    With ``capture`` the daemon journals each covered symbol's recent negative EDGAR filings (late-filing
+    notices, adverse 8-K items, offering prospectuses) after 06:00 New York and ``pre_scan_minutes`` before
+    each suggestion scan. ``entry_block`` ``preview`` labels a long equity card whose issuer filed one within
+    its category's window (calendar days); ``enforce`` refuses it. Stale, missing or uncovered evidence never
+    refuses, and a short never evaluates the rule.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    capture: bool = False
+    entry_block: EntryBlockMode = "off"
+    late_filing_days: int = Field(default=30, ge=1, le=120)
+    adverse_8k_days: int = Field(default=60, ge=1, le=120)
+    offering_days: int = Field(default=7, ge=1, le=120)
+    pre_scan_minutes: int = Field(default=30, ge=10, le=120)
+    max_age_seconds: int = Field(default=345600, gt=0)
+
+    @field_validator("entry_block", mode="before")
+    @classmethod
+    def yaml_off(cls, value: Any) -> Any:
+        # YAML 1.1 reads a bare `off` as False; that spelling means "off". `on`/True stays invalid.
+        return "off" if value is False else value
+
+    def windows(self) -> dict[str, int]:
+        """Each veto category's window before the decision date, in calendar days (``filing_date`` inclusive).
+
+        Keyed by the ``FilingCategory`` members, typed ``str`` so it is the ``Mapping[str, int]`` the
+        ``filing_veto`` rule reads (``Mapping`` is invariant in its key type).
+        """
+        return {
+            FilingCategory.LATE_FILING: self.late_filing_days,
+            FilingCategory.ADVERSE_8K: self.adverse_8k_days,
+            FilingCategory.OFFERING: self.offering_days,
+        }
+
+
+class ReleaseExitConfig(BaseModel):
+    """The release exit (docs/superpowers/specs/2026-11-06-release-exit-filing-veto-design.md, section 3).
+
+    Once per New York trading day, at the first five-minute tick from ``minutes_before_close`` before the
+    calendar's close (an early close honoured), one pass finds every tracked native equity position whose next
+    earnings report falls before the next session's open. ``preview`` journals the pass and sends one notice per
+    such position; ``enforce`` closes it through ``PositionCloseService``. An ``unknown`` status never closes.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    mode: EntryBlockMode = "off"
+    minutes_before_close: int = Field(default=30, ge=10, le=120)
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def yaml_off(cls, value: Any) -> Any:
+        # YAML 1.1 reads a bare `off` as False; that spelling means "off". `on`/True stays invalid.
+        return "off" if value is False else value
 
 
 class InsiderWatchConfig(BaseModel):
@@ -696,6 +758,7 @@ READINESS_CHECK_NAMES = frozenset(
         "corporate_actions",
         "insider_capture",
         "earnings_capture",
+        "filings_capture",
         "daemon_started",
         "alpha_registry",
         "entry_recovery",
@@ -1084,6 +1147,8 @@ class AppConfig(BaseModel):
     llm_gate: LLMGateConfig = Field(default_factory=LLMGateConfig)
     insider_watch: InsiderWatchConfig = Field(default_factory=InsiderWatchConfig)
     earnings_capture: EarningsCaptureConfig = Field(default_factory=EarningsCaptureConfig)
+    filing_veto: FilingVetoConfig = Field(default_factory=FilingVetoConfig)
+    release_exit: ReleaseExitConfig = Field(default_factory=ReleaseExitConfig)
     explicit_contracts: tuple[str, ...] | None = None
     risk: RiskConfig = Field(default_factory=RiskConfig)
     strategies: StrategyConfig = Field(default_factory=StrategyConfig)
@@ -1362,6 +1427,8 @@ def load_config(
         llm_gate=LLMGateConfig(**(cfg_dict.get("llm_gate") or {})),
         insider_watch=InsiderWatchConfig(**(cfg_dict.get("insider_watch") or {})),
         earnings_capture=EarningsCaptureConfig(**(cfg_dict.get("earnings_capture") or {})),
+        filing_veto=FilingVetoConfig(**(cfg_dict.get("filing_veto") or {})),
+        release_exit=ReleaseExitConfig(**(cfg_dict.get("release_exit") or {})),
         explicit_contracts=tuple(explicit_contracts),
         risk=RiskConfig(**cfg_dict.get("risk", {})),
         strategies=strategies_config,

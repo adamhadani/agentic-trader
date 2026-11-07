@@ -8,7 +8,7 @@ cohort-v3 issuers, fetches each filing's full-submission ``.txt``, parses it wit
 every qualifying transaction, the index and row counts, the per-rule drops and one record per
 document. Raw bytes go to private files under ``<directory>/<F>/``. A date is journaled only once every
 one of its documents was read, so the journal is never partial. A document whose body exceeds
-``MAX_DOCUMENT_BYTES`` (``document_too_large``) or that does not parse (its exception type name) is recorded
+the ``edgar_http`` body budget (``document_too_large``) or that does not parse (its exception type name) is recorded
 as that document's ``error`` at once. A document 404 may be EDGAR still publishing it: the first 404 of a
 (date, path) holds the date (nothing recorded, the time kept in the worker's memory) and only a 404 again
 on a pass at least ``DOCUMENT_404_CONFIRM`` (30 minutes) later records ``document_not_found``, as a held
@@ -22,7 +22,8 @@ is ``no_index`` (``non_business_day``) without a request; a business day whose i
 as not yet published. Once a later date's index returns 200 in the same run, each held business day is
 requested once more: a 200 captures it, a second 404 records it ``no_index`` (``closed_inferred``, a
 closure inferred from the later index). Nothing after a held date is journaled until then. Every request
-has a total deadline (``REQUEST_DEADLINE_SECONDS``), and index and document parsing run in worker threads.
+has a total deadline (``edgar_http.REQUEST_DEADLINE_SECONDS``), and index and document parsing run in worker
+threads.
 
 The ``EDGAR_USER_AGENT`` contact is read from the environment by ``run_insider_capture_worker`` only,
 sent as the request's ``User-Agent`` header, and never logged, journaled or written: failures are
@@ -39,10 +40,8 @@ import asyncio
 import contextlib
 import hashlib
 import logging
-import math
 import os
 import re
-import time as monotonic_time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
@@ -50,7 +49,6 @@ from enum import StrEnum
 from functools import lru_cache, partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
-from urllib.parse import urlparse
 
 import httpx
 import numpy as np
@@ -58,14 +56,20 @@ from pandas.tseries.holiday import USFederalHolidayCalendar
 from sqlalchemy import select
 
 from agentic_trader.data.edgar_form4 import IndexRow, parse_daily_index, parse_form4, select_form4
+from agentic_trader.data.edgar_http import (
+    SEC_HOST,
+    TIMEOUT_SECONDS,
+    USER_AGENT_ENV,
+    BodyTooLarge,
+    edgar_fetch,
+    edgar_pacer,
+)
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.apriori.catalog import load_insider_entry
 from agentic_trader.research.apriori.watch_contract import WATCH_ENTRY
 from agentic_trader.research.insider_filings import (
     DROP_RULES,
-    REQUESTS_PER_SECOND,
-    SEC_HOST,
     InsiderFilingStore,
     InsiderTransaction,
     Quarter,
@@ -101,7 +105,6 @@ __all__ = [
     "CAPTURE_MAX_AGE_SECONDS",
     "CAPTURE_STREAM",
     "RETRY_SECONDS",
-    "USER_AGENT_ENV",
     "WATCH_ENTRY",
     "CaptureResult",
     "CaptureScope",
@@ -117,7 +120,6 @@ __all__ = [
     "daily_index_url",
     "default_capture_directory",
     "edgar_business_day",
-    "edgar_pacer",
     "load_watch_archive",
     "load_watch_cohort",
     "load_watch_history",
@@ -135,11 +137,6 @@ RETRY_SECONDS = 1800
 # The corporate-actions limit: it spans a long weekend (Friday's filings, read Saturday, are 4 days old on Tuesday).
 CAPTURE_MAX_AGE_DAYS = 4
 CAPTURE_MAX_AGE_SECONDS = CAPTURE_MAX_AGE_DAYS * 86400
-USER_AGENT_ENV = "EDGAR_USER_AGENT"
-MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
-_TIMEOUT_SECONDS = 60.0
-# The bounded total of one request attempt (connect, headers and the whole body).
-REQUEST_DEADLINE_SECONDS = 120.0
 # Document parse errors over this many trailing days are appended to the readiness detail.
 RECENT_ERROR_DAYS = 30
 _DOCUMENT_PATH = re.compile(r"edgar/data/\d{1,10}/(\d{10}-\d{2}-\d{6})\.txt")
@@ -153,10 +150,6 @@ DOCUMENT_TOO_LARGE = "document_too_large"
 DOCUMENT_404_CONFIRM = timedelta(minutes=30)
 # The first 404 time of each (filing date, document path) still held (the worker keeps it between passes).
 HeldDocuments = MutableMapping[tuple[date, str], datetime]
-
-
-class BodyTooLarge(ValueError):
-    """A response body exceeded ``MAX_DOCUMENT_BYTES``."""
 
 
 class _DateHeld(Exception):
@@ -195,21 +188,6 @@ def daily_index_url(day: date) -> str:
 
 def _index_name(day: date) -> str:
     return f"form.{day:%Y%m%d}.idx"
-
-
-def edgar_pacer(per_second: float = REQUESTS_PER_SECOND) -> Callable[[], Awaitable[None]]:
-    """At most ``per_second`` requests per second (the SEC fair-access pacing of the research acquisition)."""
-    interval = 1.0 / per_second
-    last = -math.inf
-
-    async def pace() -> None:
-        nonlocal last
-        wait = last + interval - monotonic_time.monotonic()
-        if wait > 0:
-            await asyncio.sleep(wait)
-        last = monotonic_time.monotonic()
-
-    return pace
 
 
 @dataclass(frozen=True)
@@ -292,45 +270,6 @@ class InsiderCaptureStore:
         return True
 
 
-async def _stream(client: httpx.AsyncClient, url: str, user_agent: str, *, missing_ok: bool) -> bytes | None:
-    async with client.stream("GET", url, headers={"User-Agent": user_agent}, timeout=_TIMEOUT_SECONDS) as response:
-        if missing_ok and response.status_code == 404:
-            return None
-        response.raise_for_status()
-        if response.status_code != 200:
-            raise ValueError(f"{url}: unexpected HTTP {response.status_code}")
-        chunks: list[bytes] = []
-        total = 0
-        async for chunk in response.aiter_bytes():
-            total += len(chunk)
-            if total > MAX_DOCUMENT_BYTES:
-                raise BodyTooLarge(f"{url}: exceeded the {MAX_DOCUMENT_BYTES}-byte budget")
-            chunks.append(chunk)
-        return b"".join(chunks)
-
-
-async def _fetch(
-    client: httpx.AsyncClient,
-    url: str,
-    user_agent: str,
-    pace: Callable[[], Awaitable[None]],
-    *,
-    missing_ok: bool = False,
-) -> bytes | None:
-    """One paced GET on www.sec.gov (a transport error is retried once); a 404 is ``None`` when ``missing_ok``."""
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname != SEC_HOST:
-        raise ValueError(f"{url}: host is not https://{SEC_HOST}")
-    await pace()
-    try:
-        async with asyncio.timeout(REQUEST_DEADLINE_SECONDS):
-            return await _stream(client, url, user_agent, missing_ok=missing_ok)
-    except httpx.TransportError:
-        await pace()
-        async with asyncio.timeout(REQUEST_DEADLINE_SECONDS):
-            return await _stream(client, url, user_agent, missing_ok=missing_ok)
-
-
 def _no_index(day: date, reason: str) -> dict[str, Any]:
     return {
         "filing_date": day.isoformat(),
@@ -395,7 +334,7 @@ async def _capture_day(
         key = (day, path)
         try:
             # An indexed document that is over the budget, or confirmed missing, is its own error, not the date's.
-            body = await _fetch(client, ARCHIVES_URL + path, user_agent, pace, missing_ok=True)
+            body = await edgar_fetch(client, ARCHIVES_URL + path, user_agent, pace, missing_ok=True)
         except BodyTooLarge:
             body, error = None, DOCUMENT_TOO_LARGE
         else:
@@ -507,7 +446,7 @@ async def capture_filing_dates(
                 await store.record(_no_index(day, _NON_BUSINESS_DAY), {})
                 recorded.append(day)
             continue
-        index = await _fetch(client, daily_index_url(day), user_agent, pace, missing_ok=True)
+        index = await edgar_fetch(client, daily_index_url(day), user_agent, pace, missing_ok=True)
         if index is None:
             held.append((day, _UNPUBLISHED))
             continue
@@ -515,7 +454,7 @@ async def capture_filing_dates(
         for held_day, reason in held:
             again = None
             if reason == _UNPUBLISHED:
-                again = await _fetch(client, daily_index_url(held_day), user_agent, pace, missing_ok=True)
+                again = await edgar_fetch(client, daily_index_url(held_day), user_agent, pace, missing_ok=True)
             if again is None:
                 await store.record(_no_index(held_day, _CLOSED_INFERRED if reason == _UNPUBLISHED else reason), {})
             else:
@@ -675,7 +614,7 @@ async def run_insider_capture_worker(
             await _wait(shutdown, RETRY_SECONDS)
         return
     now = clock or (lambda: datetime.now(UTC))
-    async with httpx.AsyncClient(follow_redirects=False, timeout=_TIMEOUT_SECONDS, transport=transport) as client:
+    async with httpx.AsyncClient(follow_redirects=False, timeout=TIMEOUT_SECONDS, transport=transport) as client:
         worker = InsiderCaptureWorker(
             client, store, config, scope=scope, user_agent=user_agent, pace=pace or edgar_pacer(), clock=now
         )

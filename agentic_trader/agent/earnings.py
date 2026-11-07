@@ -39,7 +39,8 @@ def _parse_timing(raw: str | None) -> EarningsTiming:
     return _RAW_TIMING_MAP.get(raw or "", EarningsTiming.UNSPECIFIED)
 
 
-def _timing_word(timing: EarningsTiming) -> str:
+def timing_word(timing: EarningsTiming) -> str:
+    """How a report's timing reads on a card or notice: "before open", "after close" or "timing unspecified"."""
     if timing == EarningsTiming.PRE_MARKET:
         return "before open"
     if timing == EarningsTiming.AFTER_HOURS:
@@ -361,7 +362,7 @@ def earnings_blackout_reason(lookup: EarningsLookup, symbol: str, now: datetime,
 
     day_word = "day" if days_out == 1 else "days"
     return (
-        f"{symbol} reports {lookup.event.date.isoformat()} {_timing_word(lookup.event.timing)} "
+        f"{symbol} reports {lookup.event.date.isoformat()} {timing_word(lookup.event.timing)} "
         f"(in {days_out} {day_word}) — within {blackout_days}-day blackout"
     )
 
@@ -379,7 +380,7 @@ def earnings_note(lookup: EarningsLookup, now: datetime, blackout_days: int) -> 
     qualifier = "within" if inside else "outside"
     day_word = "day" if days_out == 1 else "days"
     return (
-        f"Reports {lookup.event.date.isoformat()} {_timing_word(lookup.event.timing)} "
+        f"Reports {lookup.event.date.isoformat()} {timing_word(lookup.event.timing)} "
         f"(in {days_out} {day_word}) — {qualifier} {blackout_days}-day blackout"
     )
 
@@ -396,4 +397,5 @@ __all__ = [
     "earnings_blackout_reason",
     "earnings_note",
     "parse_calendar_payload",
+    "timing_word",
 ]

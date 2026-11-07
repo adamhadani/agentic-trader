@@ -24,18 +24,20 @@ from agentic_trader.risk.limits import RiskLimits, normalize_symbol
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
 
 __all__ = [
     "CorporateActionLike",
     "EntryIntent",
+    "FilingLike",
     "Rejection",
     "RiskRule",
     "admission_gates",
     "aggregate_stop_risk",
     "asset_class_notional",
     "blocking_corporate_action",
+    "blocking_filing",
     "book_gates",
     "concurrent_positions",
     "corporate_action_block",
@@ -44,6 +46,7 @@ __all__ = [
     "earnings_days_out",
     "entry_session_open",
     "exposure_known",
+    "filing_veto_block",
     "in_lockout_window",
     "macro_lockout",
     "meets_min_reward_risk",
@@ -80,6 +83,7 @@ class RiskRule(StrEnum):
     SESSION_NOT_RTH = "session_not_rth"
     REGIME_BREAKOUT = "regime_breakout"
     CORPORATE_ACTION = "corporate_action"
+    FILING_VETO = "filing_veto"
 
 
 @dataclass(frozen=True)
@@ -455,6 +459,58 @@ def corporate_action_block(
         RiskRule.CORPORATE_ACTION,
         f"Corporate action: {action.symbol} {action.describe()} effective {action.effective_on.isoformat()} "
         f"({relative_days(action.effective_on, today)}) — within the {pre_days}/{post_days}-day blackout.",
+    )
+
+
+class FilingLike(Protocol):
+    """What the filing veto reads from a filing (``agentic_trader.data.edgar_filings.MatchedFiling`` satisfies it);
+    the rule never imports the capture's data module.
+    """
+
+    @property
+    def symbol(self) -> str: ...
+
+    @property
+    def category(self) -> str: ...
+
+    @property
+    def filing_date(self) -> date: ...
+
+    def describe(self) -> str: ...
+
+
+def blocking_filing[F: FilingLike](
+    filings: Sequence[F], symbol: str, today: date, *, windows: Mapping[str, int]
+) -> F | None:
+    """The newest filing on ``symbol`` with ``0 <= today - filing_date <= windows[category]`` (calendar days, both
+    ends inclusive); a filing dated after ``today`` never blocks. Symbols match case-insensitively; same-date
+    filings keep the given order (the capture's newest first).
+    """
+    wanted = symbol.strip().upper()
+    qualifying = [
+        f
+        for f in filings
+        if f.symbol.strip().upper() == wanted and 0 <= (today - f.filing_date).days <= windows[f.category]
+    ]
+    return max(qualifying, key=lambda f: f.filing_date, default=None)
+
+
+def filing_veto_block(
+    filings: Sequence[FilingLike], symbol: str, today: date, *, windows: Mapping[str, int]
+) -> Rejection | None:
+    """Rule ``filing_veto``: a late-filing notice, adverse 8-K or offering prospectus filed by ``symbol``'s issuer
+    within its category's window refuses a long entry. The callers apply it to long equity entries only (a short
+    never evaluates it), at the scan (evaluator) gate, the tap gate and re-evaluate; admission does not apply it
+    (as with ``corporate_action``).
+    """
+    filing = blocking_filing(filings, symbol, today, windows=windows)
+    if filing is None:
+        return None
+    return Rejection(
+        RiskRule.FILING_VETO,
+        f"Filing veto: {filing.symbol.strip().upper()} filed {filing.describe()} on {filing.filing_date.isoformat()} "
+        f"({relative_days(filing.filing_date, today)}) — within the {windows[filing.category]}-day "
+        f"{filing.category} window.",
     )
 
 

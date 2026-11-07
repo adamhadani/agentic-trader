@@ -410,6 +410,52 @@ Only its alignment and tone buckets are mature-row-only (and leave out rows with
 counts cover every row with a block (populations in [news context](news-context.md#attribution)). It
 never feeds `card_policy` or `card_stats`.
 
+## Filing veto
+
+The `filing_veto` entry rule ([risk policy](risk-policy.md)) is measured, never gated, by this block. Each
+`scan_candidates_ranked` candidate carries `filings`: `{status, would_block, category}` for a long
+equity candidate judged while `filing_veto.entry_block` is `preview` or `enforce`, and `null` for a short, a
+non-equity, a veto that is off or a scan without a lookup. `status` is the evidence status (`ok`, `stale`,
+`unavailable`, `uncovered`); `would_block` and `category` are set only when it is `ok`. It is
+classified from the scan's in-memory lookup by the one shared helper (`agent/filing_veto.py:filing_veto_evidence`,
+the same one the evaluator gate and tap gate use, no I/O), independently of the evaluator's result, so every
+ranked long equity candidate carries it, including one that left before the veto gate.
+
+`cards outcomes` adds `filing_veto` beside `supply` (`filing_veto_summary(events, frame)`), from the events
+for the candidate part and from the frame's `filings_would_block` column for the cards:
+
+- `candidates`: `n` journaled candidates with a `filings` block (the ranked long equity candidates of scans
+  judged while the veto was on), their `by_status` and `coverage` (the share whose status is `ok`; `null` with
+  none);
+- `would_block`: `total` ok-status candidates the rule would refuse, `by_category` and `rate` (over ok-status
+  candidates; `null` with none);
+- `by_universe`: the same counts side by side for `static` names and `dynamic` ones (a candidate journaled with
+  `dynamic: true`): `n`, `by_status`, `coverage`, `would_block` (the count), `by_category` and `rate`. The
+  filings capture covers the universe, held equities and `corporate_actions.extra_symbols` only, so in v1
+  dynamic-universe names are uncovered by design: they journal `uncovered`, are never refused, and their rate is
+  reported apart rather than diluting the static one;
+- `cards`: `n_would_block` sent cards the rule would have refused, `n_matured` of them and their
+  `mean_net_excess_r` (beta-matched net excess; `null` with none matured).
+
+A pre-deploy event has no `filings` and reads as absent. Nothing in `risk/`, `card_policy`, `card_stats` or
+admission reads this block.
+
+## Release exit
+
+The release exit ([production](production.md#release-exit)) is measured, never gated, by this block.
+`cards outcomes` adds `release_exit` from the `release-exit` journal (`release_exit_summary`), keeping the passes
+and close results of New York trading days inside the `--days` window:
+
+- `passes` and `positions`: the journaled passes and their position entries;
+- `by_status`: entries by status (`would_close`, `close`, `none`, `unknown`, `exempt`); `by_scope`: by scope
+  (`native` or the exempt kind: `pead`, `insider_watch`, `probe`, `alpha`);
+- `exempt_through_report`: exempt positions whose decision was `exit`, held through a report by design;
+- `by_date`: each trading day's `mode`, `by_status` and `exempt_through_report`;
+- `closes`: the `enforce` close results, `n` and `by_outcome` (`submitted`, `refused`, `failed`, `error`,
+  `already_exiting`).
+
+Nothing in `risk/`, `card_policy`, `card_stats` or admission reads this block.
+
 ## Regime and recurrence context
 
 Spec: [regime and recurrence](superpowers/specs/2026-10-14-regime-recurrence-design.md). Two more

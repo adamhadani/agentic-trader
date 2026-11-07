@@ -21,6 +21,7 @@ import hashlib
 import logging
 import time as monotonic_time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -28,7 +29,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import httpx
 from sqlalchemy import select
 
-from agentic_trader.agent.earnings import NASDAQ_REQUEST_HEADERS, ForwardRow, parse_forward_rows
+from agentic_trader.agent.earnings import NASDAQ_REQUEST_HEADERS, EarningsTiming, ForwardRow, parse_forward_rows
 from agentic_trader.constants import NASDAQ_EARNINGS_CALENDAR_URL
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.market.session import ET_TZ
@@ -50,6 +51,7 @@ __all__ = [
     "COLUMNS",
     "POLL_SECONDS",
     "CaptureIncomplete",
+    "CapturedReports",
     "EarningsCaptureStore",
     "EarningsCaptureWorker",
     "capture_calendar",
@@ -91,6 +93,57 @@ class CaptureIncomplete(RuntimeError):
     def __init__(self, target: date, reason: str):
         super().__init__(f"{target.isoformat()}: {reason}")
         self.target, self.reason = target, reason
+
+
+@dataclass(frozen=True)
+class CapturedReports:
+    """One capture's reports over a date range (``EarningsCaptureStore.reports_between``).
+
+    ``rows`` maps each date of the range the capture holds (weekdays; a capture never targets a weekend) to its
+    ``(SYMBOL, timing)`` pairs in served order; an empty tuple is a captured day with no report.
+    """
+
+    capture_date: date
+    rows: Mapping[date, tuple[tuple[str, EarningsTiming], ...]]
+
+
+def _captured_timing(value: Any) -> EarningsTiming:
+    """A stored timing value; anything unrecognised reads as unspecified (it exits on both sides of a night)."""
+    try:
+        return EarningsTiming(value)
+    except ValueError:
+        return EarningsTiming.UNSPECIFIED
+
+
+def _captured_reports(
+    payload: Mapping[str, Any], start: date, end: date, *, today: date, max_age_days: int
+) -> CapturedReports | None:
+    """``reports_between`` over one payload; raises KeyError/IndexError/TypeError/ValueError when it is malformed."""
+    capture_date = date.fromisoformat(payload["capture_date"])
+    if (today - capture_date).days > max_age_days:
+        return None
+    columns, served = payload["columns"], payload["rows"]
+    if not isinstance(columns, list) or not isinstance(served, dict):
+        raise TypeError("columns must be a list and rows an object")
+    symbol_at, timing_at = columns.index("symbol"), columns.index("timing")
+    rows: dict[date, tuple[tuple[str, EarningsTiming], ...]] = {}
+    day = start
+    while day <= end:
+        day_rows = served.get(day.isoformat())
+        if day_rows is None:
+            if day.weekday() < 5:
+                return None
+        else:
+            if not isinstance(day_rows, list):
+                raise TypeError("a day's rows must be a list")
+            parsed: list[tuple[str, EarningsTiming]] = []
+            for row in day_rows:
+                if not isinstance(row, list) or not isinstance(row[symbol_at], str) or not row[symbol_at]:
+                    raise TypeError("a row must be a list with a symbol")
+                parsed.append((row[symbol_at].upper(), _captured_timing(row[timing_at])))
+            rows[day] = tuple(parsed)
+        day += timedelta(days=1)
+    return CapturedReports(capture_date=capture_date, rows=rows)
 
 
 def default_capture_directory() -> Path:
@@ -147,6 +200,29 @@ class EarningsCaptureStore:
             "pages": len(payload["pages"]),
             "rows": sum(len(rows) for rows in payload["rows"].values()),
         }
+
+    async def reports_between(
+        self, start: date, end: date, *, today: date, max_age_days: int = CAPTURE_MAX_AGE_DAYS
+    ) -> CapturedReports | None:
+        """The latest capture's reports for ``[start, end]``, or None when it cannot vouch for that range.
+
+        None when there is no capture, the latest is more than ``max_age_days`` before ``today`` (New York), a
+        weekday of the range is missing from its ``rows``, or the payload is malformed (logged by type name; the
+        capture is then unusable, never an error). A capture targets weekdays only (``capture_targets``), so a
+        weekend date is never required and has no key.
+        """
+        events = await self.workflows.events(CAPTURE_STREAM, limit=1)
+        if not events:
+            return None
+        try:
+            return _captured_reports(events[0]["payload"], start, end, today=today, max_age_days=max_age_days)
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            logger.warning(
+                "Earnings capture payload unreadable (%s); treated as unusable",
+                type(exc).__name__,
+                extra={"event": "earnings_capture_unreadable", "reason": type(exc).__name__},
+            )
+            return None
 
     def _write(self, capture_date: date, bodies: Mapping[date, bytes]) -> None:
         folder = self.directory / capture_date.isoformat()
