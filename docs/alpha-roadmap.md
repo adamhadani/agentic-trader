@@ -1013,6 +1013,9 @@ Research verdict on event-driven work that costs nothing to build.
   streaks, shorting, insider selling and news tone, which are vetoes at most); LLM backtests on historical
   text; index-inclusion bets; buyback, SEO, split and pre-FOMC drifts; Google Trends, Reddit and StockTwits.
 
+**Native supply (2026-11-07).** Live scans read IEX bars, which hid about two-thirds of the setups the
+SIP-measured evidence describes; scan bars move to delayed SIP ([diagnosis](native-supply-2026-11-07.md)).
+
 ## References
 
 - [DSR, including independent-trial treatment in Appendix 3](https://www.davidhbailey.com/dhbpapers/deflated-sharpe.pdf).

@@ -2,7 +2,7 @@ import io
 import os
 import re
 from collections.abc import Mapping
-from datetime import date, time
+from datetime import date, time, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
@@ -994,6 +994,22 @@ class MarketDataConfig(BaseModel):
     retry_backoff_factor: float = DEFAULT_DATA_RETRY_BACKOFF_FACTOR
     scan_concurrency: int = Field(default=8, ge=1, le=32)
     max_requests_per_minute: int = Field(default=150, ge=1, le=1000)
+    # Scan bars: the scan fetcher and every reader in its units (the dynamic universe, the card labellers, the
+    # doctor probe). "configured" reads `alpaca_feed`, which ALPACA_DATA_FEED overrides; "sip_delayed" reads SIP
+    # with every request ending `sip_delay_minutes` back, since the free plan refuses a SIP end under 15 minutes
+    # old. Broker quotes (`AppConfig.alpaca_data_feed`) never follow this setting.
+    scan_bars: Literal["configured", "sip_delayed"] = "configured"
+    sip_delay_minutes: int = Field(default=16, ge=15, le=60)
+
+    @property
+    def bars_feed(self) -> str:
+        """The Alpaca feed scan bars are read on."""
+        return "sip" if self.scan_bars == "sip_delayed" else self.alpaca_feed
+
+    @property
+    def bars_end_delay(self) -> timedelta | None:
+        """How far before now every scan-bar request must end; ``None`` leaves request ends as given."""
+        return timedelta(minutes=self.sip_delay_minutes) if self.scan_bars == "sip_delayed" else None
 
 
 class DatabaseConfig(BaseModel):

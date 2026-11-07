@@ -156,6 +156,13 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    card-selection rule in `run_scan`, not a risk rule; the candidate is still ranked and journaled, and
    the digest counts it apart from its "top:" list. Never widen the intraday job to the universe or
    store the budget in a counter.
+   Scan bars follow `market_data.scan_bars` (code default `configured`, config ships `sip_delayed` since
+   2026-11-07, [native supply](docs/native-supply-2026-11-07.md)): the scan fetcher, `build_bar_source`
+   without an explicit feed, the dynamic-universe `feed` label and reference match, the `card_stats` feed
+   and the `doctor` probe all read `MarketDataConfig.bars_feed` with every request end clamped
+   `sip_delay_minutes` (16) back, so no SIP request is recent enough to 403 into a silent yfinance
+   fallback, while broker quotes stay real-time IEX (`alpaca_data_feed`) and `ALPACA_DATA_FEED` never
+   moves `sip_delayed` scan bars.
    A missing macro decision input is `MacroStressLevel.UNKNOWN` at `regime.unknown_risk_multiplier`
    (0.5×, breakouts off), never 1.0×, and capped at EXTREME's limits when the present inputs already
    force EXTREME; a missing VIX (read twice) raises `RegimeUnavailable`, which skips the scan visibly;

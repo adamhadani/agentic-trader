@@ -102,7 +102,7 @@ async def test_due_records_one_snapshot_per_new_york_date(temp_db, app_config):
     assert snapshot.snapshot_key == "card_stats/net_excess_r_v1/2026-03-03"
     assert snapshot.unit == "net_excess_r_v1" and snapshot.prior_sha256 == app_config.card_policy.prior_sha256
     assert snapshot.window_start.isoformat() == "2025-12-04"  # 90 ET dates ending 2026-03-03
-    assert (snapshot.feed, snapshot.code_revision) == (app_config.market_data.alpaca_feed, "test-rev")
+    assert (snapshot.feed, snapshot.code_revision) == (app_config.market_data.bars_feed, "test-rev")
     assert (snapshot.events_considered, snapshot.rows_labelled) == (1, 1)
     stats = snapshot.stats("BREAKOUT", "1h", "LONG")
     assert (stats.n_young, stats.n_mature) == (1, 0)  # decided the day before: not a statistic yet
@@ -117,6 +117,18 @@ async def test_a_due_time_inside_a_scan_window_waits_for_it_to_pass(temp_db, app
     worker, _ = worker_for(temp_db, app_config)
     assert await worker.run_once(datetime(2026, 3, 3, 15, 40, tzinfo=UTC)) == "scan_window"  # 10:40 NY
     assert await worker.run_once(datetime(2026, 3, 3, 15, 56, tzinfo=UTC)) == "recorded"  # 10:56 NY
+
+
+async def test_the_snapshot_feed_is_the_scan_bar_feed(temp_db, app_config):
+    """Under ``sip_delayed`` the labeller reads the scan's SIP bars, the prior's feed, whatever ``alpaca_feed`` is."""
+    app_config.market_data.alpaca_feed = "iex"
+    app_config.market_data.scan_bars = "sip_delayed"
+    await plant_scan(temp_db)
+    worker, _ = worker_for(temp_db, app_config)
+
+    assert await worker.run_once(DUE) == "recorded"
+
+    assert (await worker.repository.latest()).feed == "sip"
 
 
 async def test_a_provider_outage_writes_nothing_and_keeps_the_previous_snapshot(temp_db, app_config):

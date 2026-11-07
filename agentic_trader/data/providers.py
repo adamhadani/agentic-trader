@@ -107,8 +107,17 @@ def parse_period_to_timedelta(period: str) -> timedelta:
 DAILY_BATCH_SYMBOLS = 100
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
 class AlpacaDataProvider:
-    """Market data provider fetching US equities, ETFs, and crypto from Alpaca Data API."""
+    """Market data provider fetching US equities, ETFs, and crypto from Alpaca Data API.
+
+    With ``end_delay`` every bar request (``fetch_bars``, ``fetch_daily_many``) ends no later than
+    ``clock() - end_delay``: a missing or later end takes that bound, an earlier one is kept. Delayed SIP
+    needs it, since without the SIP subscription a request ending under 15 minutes ago is refused.
+    """
 
     def __init__(
         self,
@@ -119,9 +128,13 @@ class AlpacaDataProvider:
         feed: str = "sip",
         request_timeout: float = DEFAULT_DATA_TIMEOUT_SECONDS,
         evidence: BarEvidenceStore | None = None,
+        end_delay: timedelta | None = None,
+        clock: Callable[[], datetime] = _utc_now,
     ):
         self._name = "alpaca"
         self.evidence = evidence
+        self.end_delay = end_delay
+        self.clock = clock
         self.request_timeout = request_timeout
         self.feed = DataFeed(feed)
         self.api_key = api_key
@@ -192,12 +205,15 @@ class AlpacaDataProvider:
         is_crypto = "/" in symbol
         if is_crypto and adjustment_kind != Adjustment.RAW:
             raise ValueError("Corporate-action adjustments apply only to equities")
+        now = self.clock()
+        if self.end_delay is not None:
+            end = now - self.end_delay if end is None else min(end, now - self.end_delay)
         if start is None:
             delta = parse_period_to_timedelta(
                 period
                 or (DEFAULT_DAILY_LOOKBACK_PERIOD if timeframe in ("1d", "daily") else DEFAULT_INTRADAY_LOOKBACK_PERIOD)
             )
-            start = datetime.now(UTC) - delta
+            start = now - delta
 
         tf = self._map_timeframe(timeframe)
         clean_sym = symbol.strip().upper()
@@ -317,6 +333,8 @@ class AlpacaDataProvider:
         """
         if self.stock_client is None:
             raise UnsupportedSymbolError("No Alpaca stock client available")
+        if self.end_delay is not None:
+            end = min(end, self.clock() - self.end_delay)
         clean = sorted({symbol.strip().upper() for symbol in symbols if "/" not in symbol})
         frames: dict[str, pd.DataFrame] = {}
         for index in range(0, len(clean), DAILY_BATCH_SYMBOLS):

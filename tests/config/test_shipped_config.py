@@ -225,3 +225,14 @@ def test_neither_the_shipped_database_url_nor_the_production_default_names_a_use
         assert (parsed.host, parsed.port, parsed.database) == ("localhost", 5432, "agentic_trader")
     loaded = load_config(str(SHIPPED), environ=PRODUCTION)
     assert loaded.database.url is not None and make_url(loaded.database.url).username is None
+
+
+def test_the_shipped_config_scans_on_delayed_sip_while_quotes_stay_iex():
+    """2026-11-07: IEX bars hid about two-thirds of the setups the SIP-measured evidence describes."""
+    config = load_config(str(SHIPPED), environ={**PRODUCTION, "ALPACA_DATA_FEED": "iex"})
+
+    assert config.market_data.scan_bars == "sip_delayed"
+    assert config.market_data.sip_delay_minutes == 16
+    # The shipped delay equals the code default; the field being set proves the YAML block was read.
+    assert {"scan_bars", "sip_delay_minutes"} <= config.market_data.model_fields_set
+    assert (config.market_data.bars_feed, config.alpaca_data_feed) == ("sip", "iex")

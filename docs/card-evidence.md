@@ -624,7 +624,7 @@ labelling run skips the beta fetch entirely.
   than 15 past returns, no bars or a failed fetch it is the floor and `cost_reason` says why
   (`short_history`, `no_daily_bars`, `fetch_failed: ...`). Beta and cost inputs come from SIP adjusted daily
   bars in every caller (`build_daily_bar_source`, whose reads end `SIP_HISTORY_DELAY`, 16 minutes, before now);
-  hourly labelling keeps the configured feed. Abdi-Ranaldo
+  hourly labelling keeps the scan-bar feed (`market_data.bars_feed`). Abdi-Ranaldo
   and Corwin-Schultz daily high-low spread estimators were rejected because on this liquid universe they are
   dominated by estimator error (spec §4.2). `beta_excess_r` keeps its unclipped flat-cost definition.
 - **Summaries.** Each `market_exposure` class adds `n_beta`, `mean_beta`, `mean_beta_market_r`,
@@ -723,8 +723,9 @@ above zero.
 
 - **Proxy bracket.** Labels use the journaled deterministic COLLECT bracket (not the LLM-edited bracket
   that was sent), enter at the open of the first regular hourly bar at or after the scan's `decided_at`
-  (not the limit price, not the tap), cost a fixed 5 bp per side, and use the configured feed (IEX in
-  production, with its hourly gaps). The record is the setup's, not this card's own win rate.
+  (not the limit price, not the tap), cost a fixed 5 bp per side, and use the scan-bar feed (delayed SIP
+  in production since 2026-11-07; IEX, with its hourly gaps, before). The record is the setup's, not this
+  card's own win rate.
 - **Partial snapshot.** A key's `n_fetch_failed` counts candidates whose bars could not be read; they
   are excluded from its rates. Only a run in which every fetch fails writes nothing: a run with some
   failures is recorded as that New York date's snapshot, and because the key `card_stats/{et_date}` is

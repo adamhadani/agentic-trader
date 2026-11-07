@@ -2,6 +2,9 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+from alpaca.data.enums import DataFeed
+
 import agentic_trader.cli.commands.cards as cards_module
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.research.setups import sources
@@ -69,3 +72,27 @@ def test_the_daily_source_is_sip_ending_sixteen_minutes_before_now(monkeypatch, 
     daily = sources.build_daily_bar_source(app_config, now=now)
     assert isinstance(daily, sources.DelayedBars) and daily.provider is inner and feeds == ["sip"]
     assert timedelta(minutes=16) == sources.SIP_HISTORY_DELAY and daily.through == now - sources.SIP_HISTORY_DELAY
+
+
+@pytest.mark.parametrize("configured", ["sip", "iex"])
+def test_the_default_bar_source_reads_the_scan_bar_feed_and_delay(app_config, configured):
+    app_config.market_data.alpaca_feed = configured
+    app_config.market_data.scan_bars = "sip_delayed"
+
+    default = sources.build_bar_source(app_config)
+    explicit = sources.build_bar_source(app_config, feed="sip")
+
+    assert (default.feed, default.end_delay) == (DataFeed.SIP, timedelta(minutes=16))
+    # An explicit feed bounds its own reads (build_daily_bar_source wraps it in DelayedBars).
+    assert (explicit.feed, explicit.end_delay) == (DataFeed.SIP, None)
+
+
+@pytest.mark.parametrize("configured", ["sip", "iex"])
+def test_under_configured_the_bar_source_is_todays_undelayed_configured_feed(app_config, configured):
+    app_config.market_data.alpaca_feed = configured
+
+    default = sources.build_bar_source(app_config)
+    explicit = sources.build_bar_source(app_config, feed="sip")
+
+    assert (default.feed, default.end_delay) == (DataFeed(configured), None)
+    assert (explicit.feed, explicit.end_delay) == (DataFeed.SIP, None)

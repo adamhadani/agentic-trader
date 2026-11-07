@@ -1,15 +1,20 @@
 import asyncio
 import urllib.request
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 from urllib.error import HTTPError
 
 import pytest
+from alpaca.data.enums import DataFeed
+from alpaca.data.models import BarSet
 
 from agentic_trader.config import AppConfig, PositionSizingConfig
 from agentic_trader.diagnostics.doctor import (
+    RECENT_ACCESS_WINDOW,
     ComponentHealth,
     DiagnosticReport,
     check_finnhub,
+    check_market_data,
     format_doctor_cli_output,
     run_diagnostics,
 )
@@ -83,3 +88,73 @@ async def test_finnhub_probe_uses_actual_provider_without_calendar_alias(app_con
     assert result.status == "OK" and result.details["provider"] == "finnhub_api"
     start, end = provider.call_args.args
     assert (end - start).days == 7
+
+
+class _RecordingBars:
+    """A typed bar reader that records the probe request; it fails with ``error`` when given one."""
+
+    def __init__(self, error: Exception | None = None):
+        self.requests: list = []
+        self.error = error
+
+    def get_stock_bars(self, request):
+        self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        return BarSet({})
+
+
+PROBE_NOW = datetime(2026, 11, 9, 15, 35, tzinfo=UTC)
+
+
+def sent(moment: datetime) -> datetime:
+    """The SDK request models carry UTC as naive datetimes."""
+    return moment.astimezone(UTC).replace(tzinfo=None)
+
+
+async def test_under_sip_delayed_the_market_data_probe_asks_for_delayed_sip(app_config):
+    app_config.market_data.alpaca_feed = "iex"
+    app_config.market_data.scan_bars = "sip_delayed"
+    reader = _RecordingBars()
+
+    result = await check_market_data(app_config, client=reader, now=PROBE_NOW)
+
+    [request] = reader.requests
+    assert request.feed == DataFeed.SIP
+    assert request.end == sent(PROBE_NOW - timedelta(minutes=16))
+    assert request.start == request.end - RECENT_ACCESS_WINDOW
+    assert result.status == "OK"
+    assert result.details["feed"] == "alpaca:sip" and result.details["end_delay_minutes"] == 16
+    assert "delayed alpaca:sip" in result.message.lower() and "16 min" in result.message
+
+
+async def test_a_refused_delayed_sip_probe_names_delayed_sip(app_config):
+    app_config.market_data.scan_bars = "sip_delayed"
+
+    result = await check_market_data(app_config, client=_RecordingBars(PermissionError("403")), now=PROBE_NOW)
+
+    assert result.status == "ERROR"
+    assert "delayed alpaca:sip" in result.message.lower() and "No fallback used" in result.message
+
+
+@pytest.mark.parametrize("feed", ["sip", "iex"])
+async def test_under_configured_the_market_data_probe_is_unchanged(app_config, feed):
+    app_config.market_data.alpaca_feed = feed
+    reader = _RecordingBars()
+
+    result = await check_market_data(app_config, client=reader, now=PROBE_NOW)
+
+    [request] = reader.requests
+    assert (request.feed, request.end, request.start) == (
+        DataFeed(feed),
+        sent(PROBE_NOW),
+        sent(PROBE_NOW - RECENT_ACCESS_WINDOW),
+    )
+    assert result.status == "OK"
+    assert result.details == {
+        "feed": f"alpaca:{feed}",
+        "recent_access": True,
+        "freshness_verified": False,
+        "observations": 0,
+    }
+    assert result.message == f"Recent alpaca:{feed} request permitted; price freshness requires separate observations"

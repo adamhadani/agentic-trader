@@ -1346,8 +1346,8 @@ class TradingCopilot:
                     "excluded": dynamic_excluded,
                     "reasons": dict(dynamic_selection.reasons) if dynamic_selection else {},
                     "raw_counts": dict(dynamic_selection.raw_counts) if dynamic_selection else {},
-                    # The liquidity threshold is in this feed's units (IEX volume is partial).
-                    "feed": self.config.market_data.alpaca_feed,
+                    # The liquidity threshold is in the scan bars' units (IEX volume is partial).
+                    "feed": self.config.market_data.bars_feed,
                     "threshold": (
                         dollar_volume_threshold(dynamic_reference, dynamic_cfg) if dynamic_reference else None
                     ),
@@ -4546,7 +4546,8 @@ class TradingCopilot:
         """The newest journaled suggestion-scan liquidity reference usable for this feed, if any.
 
         A ``dynamic_universe_built`` event qualifies when its threshold is non-null, its
-        feed is this desk's configured Alpaca feed (volume units differ between feeds) and
+        feed is this desk's scan-bar feed (``market_data.bars_feed``; volume units differ
+        between feeds, so a reference journaled on another feed is ignored) and
         its ``built_at`` is within the last ``OPERATOR_REFERENCE_MAX_AGE`` (7 days). The age
         check binds; the ``scan/<ET date>`` streams read (today and the 7 previous New York
         dates) are just the ones that can hold such an event.
@@ -4556,7 +4557,7 @@ class TradingCopilot:
         streams = [
             f"scan/{(today - timedelta(days=d)).isoformat()}" for d in range(OPERATOR_REFERENCE_MAX_AGE.days + 1)
         ]
-        feed = self.config.market_data.alpaca_feed
+        feed = self.config.market_data.bars_feed
         for event in await self.db.workflows.recent_events(EventKind.DYNAMIC_UNIVERSE_BUILT, streams=streams):
             payload = event["payload"]
             if payload.get("threshold") is None or payload.get("feed") != feed:

@@ -145,7 +145,7 @@ class CardStatsWorker:
             malformed=population.malformed,
             window_start=window_end - timedelta(days=policy.stats_window_days - 1),
             window_end=window_end,
-            feed=self.config.market_data.alpaca_feed,
+            feed=self.config.market_data.bars_feed,
             max_hold_sessions=DEFAULT_MAX_HOLD_SESSIONS,
             code_revision=self.revision,
             now=now,

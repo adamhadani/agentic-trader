@@ -184,22 +184,27 @@ async def check_tradovate(config: AppConfig) -> ComponentHealth:
 async def check_market_data(
     config: AppConfig, *, client: StockHistoricalDataClient | None = None, now: datetime | None = None
 ) -> ComponentHealth:
-    """Probe exact recent-feed access, without fallback or a freshness claim.
+    """Probe exact access to the scan-bar feed, without fallback or a freshness claim.
 
+    The window is the scan's own: under ``scan_bars: sip_delayed`` it ends ``sip_delay_minutes`` before now
+    (delayed SIP access), otherwise at now (recent access to the configured feed).
     An empty successful response proves request access, not current price coverage.
     Owned clients close inside the worker, even when the caller deadline expires.
     """
-    feed = f"alpaca:{config.market_data.alpaca_feed}"
+    market_data = config.market_data
+    feed = f"alpaca:{market_data.bars_feed}"
     if client is None and not (config.alpaca_api_key and config.alpaca_api_secret):
         return ComponentHealth(name="market_data", status="DISABLED", message="Alpaca data credentials not configured")
     now = now or datetime.now(UTC)
+    delay = market_data.bars_end_delay
+    end = now if delay is None else now - delay
     request = StockBarsRequest(
-        symbol_or_symbols=config.market_data.probe_symbol,
+        symbol_or_symbols=market_data.probe_symbol,
         timeframe=TimeFrame.Minute,
-        start=now - RECENT_ACCESS_WINDOW,
-        end=now,
+        start=end - RECENT_ACCESS_WINDOW,
+        end=end,
         limit=1,
-        feed=DataFeed(config.market_data.alpaca_feed),
+        feed=DataFeed(market_data.bars_feed),
         adjustment=Adjustment.RAW,
     )
 
@@ -221,6 +226,11 @@ async def check_market_data(
                 reader._session.close()
 
     details: dict[str, Any] = {"feed": feed, "recent_access": False, "freshness_verified": False}
+    if delay is None:
+        probed = f"Recent {feed} request"
+    else:
+        details["end_delay_minutes"] = minutes = delay // timedelta(minutes=1)
+        probed = f"Delayed {feed} request (ending {minutes} min ago)"
     try:
         observations = await RunnableWithFallbacks(
             probe,
@@ -231,7 +241,7 @@ async def check_market_data(
         return ComponentHealth(
             name="market_data",
             status="OK",
-            message=f"Recent {feed} request permitted; price freshness requires separate observations",
+            message=f"{probed} permitted; price freshness requires separate observations",
             details=details,
         )
     except AllFallbacksExhaustedError as failure:
@@ -240,7 +250,7 @@ async def check_market_data(
         return ComponentHealth(
             name="market_data",
             status="ERROR",
-            message=f"Recent {feed} request failed; verify feed entitlement and transport. No fallback used",
+            message=f"{probed} failed; verify feed entitlement and transport. No fallback used",
             details=details,
         )
 

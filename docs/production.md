@@ -164,9 +164,10 @@ name (see below). The design and the filter order are in
   completed, finite daily sessions must reach the threshold. The threshold is the
   `min_dollar_volume_static_percentile` (default 0.25) percentile of the same median
   for every static universe equity, computed in the same scan from the same bars.
-  - Same bars means the same feed and the same completed-rows rule. The desk's
-    `market_data.alpaca_feed` is IEX, whose volume is a few percent of consolidated
-    volume. An absolute dollar floor would be miscalibrated: the first real dry run
+  - Same bars means the same feed and the same completed-rows rule: the scan-bar feed,
+    `market_data.bars_feed` ([scan bars on delayed SIP](#scan-bars-on-delayed-sip)). Until
+    2026-11-07 that was IEX, whose volume is a few percent of consolidated volume. An
+    absolute dollar floor would be miscalibrated: the first real dry run, on IEX,
     excluded SHOP, SOFI, IONQ, CRWV and RKLB at $50M.
   - `min_median_dollar_volume` is an optional absolute floor in the feed's own units.
     It defaults to 0; when set, the larger of the two applies.
@@ -429,7 +430,7 @@ message ("Cannot scan SYMBOL: …"):
   read refuses "asset lookup unavailable; try again shortly."
 - **Liquidity reference.** The scan fetches only this one name, so it cannot measure
   the static percentile itself. It uses the newest `dynamic_universe_built` event whose
-  `threshold` is non-null, whose `feed` equals `market_data.alpaca_feed` and whose
+  `threshold` is non-null, whose `feed` equals the scan-bar feed `market_data.bars_feed` and whose
   `built_at` is within the last 7 days (the age check binds; the reader looks in the
   `scan/<date>` streams of today and the seven previous New York dates, the only ones
   that can hold such an event). Its `reference` block is rebuilt as the
@@ -744,7 +745,7 @@ suggestion-scan windows and while no scan is running, it reads the `scan_candida
 last `card_policy.stats_window_days` New York dates (shipped 180) and labels the suggestion-scan population:
 scheduled `suggestion_scan` universe scans only, without broad index ETFs or the prior's excluded symbols
 (BIL, SHY), malformed candidates counted and dropped, and one row per contract, strategy, timeframe,
-direction and New York decision date (the earliest scan kept). Hourly bars come from the configured feed;
+direction and New York decision date (the earliest scan kept). Hourly bars come from the scan-bar feed;
 beta and per-name cost come from SIP daily bars whose every read ends 16 minutes before the run, because
 the subscription refuses SIP history that ends now. It appends one `card_stats_snapshot` event under
 `card_stats/net_excess_r_v1/{et_date}` (`copilot db events --stream card_stats`). `/readyz` includes
@@ -1720,6 +1721,51 @@ Source-specific [volume calibration](alpha-volume-calibration.md) uses the share
 daily study harness with frozen training/forward intervals and exact feed identity.
 `alpha volume-study` is research-only. `/alphas` now provides a compact explanation
 and status summary; use `alpha forward` and `alpha list` for full evidence/definitions.
+
+### Scan bars on delayed SIP
+
+Since 2026-11-07 the shipped config sets `market_data.scan_bars: sip_delayed` (code default
+`configured`): scan bars come from SIP, and every request ends `market_data.sip_delay_minutes`
+(16, from 15 to 60) before now. IEX bars hid about two-thirds of the setups that the SIP-measured
+evidence (the card-stats prior, the setup base rates, the bracket counterfactual) describes
+([native supply](native-supply-2026-11-07.md)).
+
+- **One definition, every reader in the same units.** `MarketDataConfig.bars_feed` and
+  `bars_end_delay` serve:
+  - the scan fetcher (`MarketDataFetcher`: daily, hourly (and so 4h) and 15m bars);
+  - `build_bar_source` without an explicit feed (book sizing's daily batch, and the hourly labelling of
+    `cards outcomes` and `card_stats`);
+  - the dynamic universe's `feed` label and the `/scan SYMBOL` reference match;
+  - the `card_stats` snapshot's `feed`;
+  - the `doctor` market-data probe.
+
+  `configured` restores bars on `market_data.alpaca_feed` with no delay.
+- **Why delayed.** Without the SIP subscription a SIP request ending under 15 minutes ago is HTTP 403,
+  and the composite provider would then fall back to yfinance silently. `AlpacaDataProvider(end_delay=…)`
+  clamps every bar request: a missing or later end becomes now − delay, and an earlier end is kept. The
+  bar evidence records the clamped end. A 10:35 scan still has the 9:00 hourly bar, which ended at 10:00;
+  only its in-progress bar now stops at 10:19.
+- **What stays real-time IEX.** Broker latest trade and quote (`alpaca_data_feed`, from
+  `ALPACA_DATA_FEED`), so the tap gate re-prices on the live quote. `fetch_latest_price` keeps the
+  subscription's default feed, and positions and streams are untouched. `ALPACA_DATA_FEED` still sets
+  `market_data.alpaca_feed`, but under `sip_delayed` it never moves scan bars. Research CLIs and the
+  `alpha_pipeline` workers keep their own pinned feeds.
+- **Liquidity reference.** The dynamic threshold is in the scan bars' units, so after the switch
+  `/scan SYMBOL` ignores a cached IEX `dynamic_universe_built` reference until the next suggestion scan
+  journals one on SIP.
+- **Effect on cards.** A native card's entry is the latest 4h close as of about 16 minutes before the
+  decision. The tap gate still re-prices on the live IEX quote, and an auto-entry's session limit order
+  may fill a little less often after a rise.
+- **Verify after deploy:**
+  - the next suggestion scan's `dynamic` block and `dynamic_universe_built` event carry `feed: sip`;
+  - the active `uv run copilot doctor` reports market data OK ("Delayed alpaca:sip request (ending 16 min
+    ago) permitted"), and `doctor --readiness` stays ready;
+  - no yfinance fallback in bar evidence: no `fallback_triggered` log with `failed_provider: alpaca`
+    during a scan, and that day's `market-data/<date>/*/manifest.json` requests carry
+    `feed: alpaca:sip` with `end_inclusive` at least 16 minutes before `requested_at` (a failed
+    `result.json` with `http_status: 403` means the clamp is missing);
+  - `raw_setups` in the `scan_candidates_ranked` funnel in line with the SIP replay: about 3 a scan in
+    this tape, against about 1 on IEX.
 
 ### Separate prospective IEX feed
 
