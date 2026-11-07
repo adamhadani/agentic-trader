@@ -18,7 +18,7 @@ Each scan-path consumer switches from `market_data.alpaca_feed` to that definiti
 ## Global Constraints
 
 - **Rollout:** code default `market_data.scan_bars: configured`, which keeps today's behaviour;
-  `config/config.yaml` ships `sip_delayed`. `sip_delay_minutes` defaults to 16 and accepts 15–60.
+  `config/config.yaml` ships `sip_delayed`. `sip_delay_minutes` defaults to 16 and accepts 16–60.
 - **Must not change:**
   - broker latest trade and quote (`alpaca_data_feed`);
   - `AlpacaDataProvider.fetch_latest_price`;
@@ -70,7 +70,7 @@ Each scan-path consumer switches from `market_data.alpaca_feed` to that definiti
 **Interfaces:**
 - Produces:
   - `MarketDataConfig.scan_bars: Literal["configured", "sip_delayed"] = "configured"`
-  - `sip_delay_minutes: int = Field(16, ge=15, le=60)`
+  - `sip_delay_minutes: int = Field(16, ge=16, le=60)`
   - `@property bars_feed -> str`
   - `@property bars_end_delay -> timedelta | None`
   - `AlpacaDataProvider.__init__(…, end_delay: timedelta | None = None)`

@@ -995,7 +995,9 @@ class TradingCopilot:
                         "Paper-probe sweep failed; retrying next scan", extra={"event": "probe_sweep_failed"}
                     )
             alpha_snapshot = await self.alpha_repository.snapshot()
-            self.strategy_engine.registry.install_alphas(alpha_snapshot.active, alpha_snapshot.probe)
+            self.strategy_engine.registry.install_alphas(
+                alpha_snapshot.active, alpha_snapshot.probe, bars_end_delay=self.config.market_data.bars_end_delay
+            )
             if not dry_run:
                 await self.alpha_repository.acknowledge(alpha_snapshot, run_id=RUN_ID)
             # A journal-only scan (the daemon's swing and intraday jobs) collects, ranks and journals; it
@@ -1390,7 +1392,12 @@ class TradingCopilot:
                     # Alpha shadow evidence keeps its static population: a dynamic name is
                     # selected by today's screener, not by any alpha's declared universe.
                     if not dry_run and contract not in dynamic_sources:
-                        await self.alpha_shadow.observe(alpha_snapshot, data, as_of=receipts.get(contract))
+                        observed_as_of = receipts.get(contract)
+                        if (bars_delay := self.config.market_data.bars_end_delay) is not None:
+                            # Delayed scan bars hold nothing after receipt - delay: a bar closing later is
+                            # partial, so it must not count as complete (nor its forecast as fresh).
+                            observed_as_of = (observed_as_of or datetime.now(UTC)) - bars_delay
+                        await self.alpha_shadow.observe(alpha_snapshot, data, as_of=observed_as_of)
 
                     if data.daily.empty or data.four_hour.empty:
                         funnel.insufficient += 1
@@ -2623,6 +2630,10 @@ class TradingCopilot:
                 # The completed scan's collect funnel (``ScanFunnel.journal_block``); null when gated. A
                 # reader treats an event without ``funnel`` as unknown.
                 "funnel": None if funnel is None else dict(funnel),
+                # The scan-bar source (`market_data.bars_feed`, and its request-end delay under `sip_delayed`):
+                # it makes the IEX-to-SIP boundary explicit in the evidence. An event without it read the
+                # configured feed undelayed.
+                "bars": self._scan_bars_block(),
                 "budget": str(budget),
                 "ranking_key": "setup_quality",
                 "card_policy": {
@@ -2638,6 +2649,16 @@ class TradingCopilot:
             await append_scan_journal(self.db, et_date=et_date, scan_id=scan_id, payload=payload, notice=notice)
         except Exception as exc:
             self._scan_journal_failed(summary, exc)
+
+    def _scan_bars_block(self) -> dict[str, Any]:
+        """``{feed, end_delay_minutes}`` of the scan bars: ``alpaca:sip`` and the delay under ``sip_delayed``, else
+        the configured feed and null."""
+        market_data = self.config.market_data
+        delay = market_data.bars_end_delay
+        return {
+            "feed": f"alpaca:{market_data.bars_feed}",
+            "end_delay_minutes": None if delay is None else delay // timedelta(minutes=1),
+        }
 
     @staticmethod
     def _scan_journal_failed(summary: dict[str, Any], exc: Exception) -> None:

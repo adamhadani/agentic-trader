@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from agentic_trader.constants import AssetClass, Direction
@@ -32,6 +32,10 @@ class FormulaicAlphaStrategy(BaseStrategy):
     Production screener strategy executing a formulaic alpha DSL expression.
     Dynamically instantiated from promoted alpha records and registered in StrategyRegistry.
     Stamps every generated ScreenerCandidate with its unique, immutable alpha_id.
+
+    ``bars_end_delay`` is the scan bars' request-end delay (``market_data.bars_end_delay``): those bars hold no
+    data after ``clock() - bars_end_delay``, so a fixed-clock bar is complete only if it closes by then, never
+    a bar the delay truncated. Session-clock definitions read their own receipt-stamped snapshots instead.
     """
 
     def __init__(
@@ -42,6 +46,7 @@ class FormulaicAlphaStrategy(BaseStrategy):
         clock: Callable[[], datetime] | None = None,
         *,
         probe: bool = False,
+        bars_end_delay: timedelta | None = None,
     ) -> None:
         super().__init__(config=config)
         self.definition = definition
@@ -52,6 +57,7 @@ class FormulaicAlphaStrategy(BaseStrategy):
         self.evaluator = evaluator or AlphaExpressionEvaluator()
         self.clock = clock or (lambda: datetime.now(UTC))
         self.probe = probe
+        self.bars_end_delay = bars_end_delay
 
     def is_enabled(self, config: AppConfig | None = None) -> bool:
         """Determines whether this alpha is enabled."""
@@ -75,8 +81,11 @@ class FormulaicAlphaStrategy(BaseStrategy):
             if not any(s and s in target_syms for s in (contract_clean, ticker_clean, symbol_clean)):
                 return []
 
+        as_of = self.clock()
+        if self.bars_end_delay is not None and self.definition.clock is None:
+            as_of -= self.bars_end_delay
         try:
-            df, _ = closed_alpha_bars(self.definition, data, as_of=self.clock())
+            df, _ = closed_alpha_bars(self.definition, data, as_of=as_of)
         except (TypeError, ValueError) as exc:
             logger.warning("Alpha %s rejected invalid bar clock/data: %s", self.strategy_id, exc)
             return []

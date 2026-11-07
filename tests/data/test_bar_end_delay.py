@@ -93,6 +93,56 @@ def test_fetch_daily_many_is_clamped_the_same_way():
     assert [request.end for request in client.requests] == [sent(THROUGH), sent(earlier)]
 
 
+def test_a_naive_end_reads_as_utc_instead_of_raising():
+    """A naive bound compared with the aware clamp would raise TypeError, and the composite provider would turn
+    that into a silent yfinance fallback; the SDK reads a naive bound as UTC, and so does the clamp."""
+    bars, client = provider()
+    naive = sent
+
+    bars.fetch_bars("AAPL", "1h", start=naive(NOW - timedelta(days=5)), end=naive(NOW))
+    bars.fetch_bars("AAPL", "1h", start=naive(NOW - timedelta(days=5)), end=naive(THROUGH - timedelta(hours=1)))
+    bars.fetch_daily_many(["AAPL"], naive(NOW - timedelta(days=60)), naive(NOW), adjustment="raw")
+
+    assert [request.end for request in client.requests] == [
+        sent(THROUGH),
+        sent(THROUGH - timedelta(hours=1)),
+        sent(THROUGH),
+    ]
+    assert [request.start for request in client.requests] == [
+        sent(NOW - timedelta(days=5)),
+        sent(NOW - timedelta(days=5)),
+        sent(NOW - timedelta(days=60)),
+    ]
+
+
+@pytest.mark.parametrize("start", [THROUGH, THROUGH + timedelta(minutes=5), NOW - timedelta(minutes=1)])
+def test_a_start_at_or_after_the_clamped_end_sends_nothing_and_returns_no_bars(start):
+    """A decision made within the delay has no bar old enough to request: an empty frame, not a refused request
+    (which `cards outcomes` would label a fetch failure)."""
+    bars, client = provider()
+
+    hourly = bars.fetch_bars("AAPL", "1h", start=start, end=NOW)
+    naive = bars.fetch_bars("AAPL", "1h", start=sent(start), end=sent(NOW))
+    daily = bars.fetch_daily_many(["AAPL", "MSFT"], start, NOW, adjustment="raw")
+
+    assert client.requests == []
+    assert daily == {}
+    for frame in (hourly, naive):
+        assert frame.empty
+        assert list(frame.columns) == ["Open", "High", "Low", "Close", "Volume"]
+        assert isinstance(frame.index, pd.DatetimeIndex) and str(frame.index.tz) == "UTC"
+        assert (frame.attrs["feed"], frame.attrs["adjustment"], frame.attrs["timeframe"]) == ("alpaca:sip", "raw", "1h")
+
+
+def test_a_start_just_before_the_clamped_end_is_still_requested():
+    bars, client = provider()
+
+    bars.fetch_bars("AAPL", "1h", start=THROUGH - timedelta(seconds=1), end=NOW)
+
+    [request] = client.requests
+    assert (request.start, request.end) == (sent(THROUGH - timedelta(seconds=1)), sent(THROUGH))
+
+
 def test_without_a_delay_every_end_is_untouched():
     bars, client = provider(end_delay=None, feed="iex")
 

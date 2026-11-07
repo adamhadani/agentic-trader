@@ -726,6 +726,15 @@ above zero.
   (not the limit price, not the tap), cost a fixed 5 bp per side, and use the scan-bar feed (delayed SIP
   in production since 2026-11-07; IEX, with its hourly gaps, before). The record is the setup's, not this
   card's own win rate.
+- **The SIP relabel.** Every snapshot relabels its whole `stats_window_days` window on the current scan-bar
+  feed, so the first snapshot after the 2026-11-07 switch labels on delayed SIP the candidates that were
+  selected on IEX before it. SIP labels are closer to the consolidated tape and match the SIP prior, but a
+  key's posterior can move with no new card, and the caveat reads "live record (sip)". To tell the relabel
+  from new evidence, compare the first SIP snapshot's per-key `card_policy` decisions with the last IEX
+  snapshot's: on the day the first SIP snapshot lands, `copilot db events --stream card_stats --limit 2`
+  returns both (`feed: sip`, then `feed: iex`); apply the [send policy](#send-policy) to each key in both. A key that flips is the relabel,
+  not new evidence ([production](production.md#scan-bars-on-delayed-sip)). The scan journal's `bars` block
+  marks the same boundary on the scan side.
 - **Partial snapshot.** A key's `n_fetch_failed` counts candidates whose bars could not be read; they
   are excluded from its rates. Only a run in which every fetch fails writes nothing: a run with some
   failures is recorded as that New York date's snapshot, and because the key `card_stats/{et_date}` is
@@ -751,6 +760,10 @@ above zero.
     `{rule: "regime_unavailable", missing, errors}` with input names and exception type names.
   - `calendar` on every status; `regime` null when the lockout gated the scan before the read;
     `scheduled_time_et` for a scheduled slot, null otherwise.
+  - `bars` on every status: the scan-bar source, `{feed: "alpaca:sip", end_delay_minutes: 16}` under
+    `market_data.scan_bars: sip_delayed` (shipped since 2026-11-07), `{feed: "alpaca:<alpaca_feed>",
+    end_delay_minutes: null}` under `configured`. An event without it was read on the configured feed
+    undelayed (IEX in production), so the block makes the IEX-to-SIP boundary explicit in the evidence.
   - `funnel`: a completed scan's collect funnel, null when gated; an event without it has an unknown
     funnel. Contract counts: `selected`, `scanned`, `fetch_failed`, `insufficient`,
     `coverage_excluded`, `dynamic_excluded`. These do not partition `selected`: a contract that

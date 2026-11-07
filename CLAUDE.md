@@ -160,9 +160,11 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    2026-11-07, [native supply](docs/native-supply-2026-11-07.md)): the scan fetcher, `build_bar_source`
    without an explicit feed, the dynamic-universe `feed` label and reference match, the `card_stats` feed
    and the `doctor` probe all read `MarketDataConfig.bars_feed` with every request end clamped
-   `sip_delay_minutes` (16) back, so no SIP request is recent enough to 403 into a silent yfinance
-   fallback, while broker quotes stay real-time IEX (`alpaca_data_feed`) and `ALPACA_DATA_FEED` never
-   moves `sip_delayed` scan bars.
+   `sip_delay_minutes` (16, floor 16) back, so no SIP request is recent enough to 403 into a silent yfinance
+   fallback, while broker quotes stay real-time IEX (`alpaca_data_feed`, which `doctor` probes beside the
+   delayed SIP bars) and `ALPACA_DATA_FEED` never moves `sip_delayed` scan bars. Registry alphas judge a
+   fixed-clock bar complete only at or before receipt − delay, and every `scan_candidates_ranked` event
+   records `bars: {feed, end_delay_minutes}`.
    A missing macro decision input is `MacroStressLevel.UNKNOWN` at `regime.unknown_risk_multiplier`
    (0.5×, breakouts off), never 1.0×, and capped at EXTREME's limits when the present inputs already
    force EXTREME; a missing VIX (read twice) raises `RegimeUnavailable`, which skips the scan visibly;

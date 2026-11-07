@@ -35,9 +35,11 @@ The diagnosis is in [native supply 2026-11-07](../../native-supply-2026-11-07.md
   - **Code default `configured`:** today's behaviour, where bars use `market_data.alpaca_feed`, which
     `ALPACA_DATA_FEED` overrides.
   - **`config.yaml` ships `sip_delayed`.**
-- `market_data.sip_delay_minutes`: default 16, from 15 to 60.
+- `market_data.sip_delay_minutes`: default 16, from 16 to 60.
   - **Why delayed:** the free plan serves SIP only for request ends at least 15 minutes old. A recent SIP
     request returns HTTP 403, and the composite provider would then fall back to yfinance silently.
+  - **Why the floor is 16:** exactly 15 sits on the entitlement edge, where request queueing or clock skew
+    means a 403 and that silent fallback.
   - **Why it costs nothing:** setups use bars completed by the decision time. At 10:35 that is the 9:00 bar,
     which ended at 10:00, so a 16-minute delay hides no bar the setup logic needs. The in-progress bar now
     runs to 10:19 instead of 10:35.
@@ -50,6 +52,11 @@ The diagnosis is in [native supply 2026-11-07](../../native-supply-2026-11-07.md
 `AlpacaDataProvider` gains an `end_delay: timedelta | None`.
 - When set, `fetch_bars` and `fetch_daily_many` clamp the request end to `now − end_delay`. A missing end, or
   one later than that, takes the clamped value; an earlier explicit end is kept.
+- A naive bound reads as UTC, as the SDK reads it, so the clamp never raises a `TypeError` that the composite
+  would turn into a silent yfinance fallback.
+- A start at or after the clamped end sends no request: `fetch_bars` returns an empty frame and
+  `fetch_daily_many` no symbols. So `cards outcomes` labels a candidate decided within the delay immature, not
+  a fetch failure.
 - Evidence capture records the clamped end.
 
 ### Consumers that move to the effective feed and delay
@@ -64,7 +71,15 @@ All of them use one definition, so their units stay consistent:
   is the existing feed-match rule.
 - **The card-stats `feed` label** (`research/setups/card_stats_worker.py`). It now equals the prior's `sip`.
 - **The `doctor` market-data probe** (`diagnostics/doctor.py`). It probes the effective feed. Under
-  `sip_delayed` its end is `now − delay`, and its message says it checked delayed SIP access.
+  `sip_delayed` its end is `now − delay`, and a second probe in the same component asks for recent bars on
+  `alpaca_data_feed`, the stand-in for admission's real-time latest trade and quote. The status is the worse
+  of the two, the message names both, and `details.access` holds each probe's result with a `delayed` flag.
+  Under `configured` the single recent probe is unchanged.
+- **Registry alpha bar completeness** (`agent/copilot.py` shadow observations, `screeners/formulaic.py`).
+  Under `sip_delayed` a fixed-clock bar is complete only if it closes at or before `receipt − delay`, so the
+  bar the clamp truncated (the 10:15 15m bar at 10:35) never counts as complete.
+- **The scan journal.** Every `scan_candidates_ranked` event records `bars: {feed, end_delay_minutes}`, which
+  makes the IEX-to-SIP boundary explicit in the evidence.
 
 ### Unchanged
 - Broker latest trade and quote (`alpaca_data_feed`, real-time IEX), and `fetch_latest_price` (the

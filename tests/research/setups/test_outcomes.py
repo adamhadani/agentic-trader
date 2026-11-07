@@ -10,6 +10,7 @@ import pytest
 
 import agentic_trader.research.setups.outcomes as outcomes_module
 from agentic_trader.config import WORKSPACE_ROOT
+from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.execution.durable import RankedOutcome
 from agentic_trader.research.setups.bracket_counterfactual import BracketCounterfactualProtocol
 from agentic_trader.research.setups.labels import BracketHit
@@ -171,6 +172,35 @@ def test_label_journaled_fetch_failure_is_fetch_failed_not_immature():
     assert row["hit"] != BracketHit.IMMATURE.value
     assert pd.isna(row["r"]) and pd.isna(row["r_cost"])
     assert "no data for ZZZZ" in row["reason"]
+
+
+class RefusingStockClient:
+    """Alpaca refuses a window that starts after its end; a delayed provider must never send one."""
+
+    def __init__(self):
+        self.requests: list = []
+
+    def get_stock_bars(self, request):
+        self.requests.append(request)
+        raise RuntimeError("end should not be before start")
+
+
+def test_a_decision_within_the_bar_delay_is_immature_not_fetch_failed():
+    """Under delayed SIP a candidate decided less than the delay ago has no bar old enough to request: its
+    window starts after the clamped end, so the provider returns no bars (no request) and the labeller reads it
+    as IMMATURE, never as a fetch failure."""
+    now = datetime(2026, 11, 9, 15, 35, tzinfo=UTC)  # 10:35 New York
+    decided = now - timedelta(minutes=5)
+    client = RefusingStockClient()
+    provider = AlpacaDataProvider(stock_client=client, feed="sip", end_delay=timedelta(minutes=16), clock=lambda: now)
+    events = [_event("scan-1", decided, [_candidate(contract="AAPL")])]
+
+    result = label_journaled(events, provider, now=now, tape_symbol=None, with_beta=False)
+
+    [row] = result.to_dict("records")
+    assert row["hit"] == BracketHit.IMMATURE.value
+    assert row["market_reason"] is None
+    assert client.requests == []
 
 
 def test_label_journaled_fetches_once_per_symbol():

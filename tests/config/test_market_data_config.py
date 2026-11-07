@@ -37,12 +37,14 @@ def test_sip_delayed_reads_sip_ending_the_delay_back_whatever_the_configured_fee
     assert MarketDataConfig(scan_bars="sip_delayed", sip_delay_minutes=30).bars_end_delay == timedelta(minutes=30)
 
 
-@pytest.mark.parametrize("minutes", [15, 60])
+@pytest.mark.parametrize("minutes", [16, 60])
 def test_the_delay_accepts_its_bounds(minutes):
     assert MarketDataConfig(sip_delay_minutes=minutes).sip_delay_minutes == minutes
 
 
-@pytest.mark.parametrize("bad", [{"sip_delay_minutes": 14}, {"sip_delay_minutes": 61}, {"scan_bars": "sip"}])
+# Exactly 15 minutes sits on the entitlement edge: request queueing or clock skew makes it a 403, which the
+# composite provider would turn into a silent yfinance fallback. The floor is 16.
+@pytest.mark.parametrize("bad", [{"sip_delay_minutes": 15}, {"sip_delay_minutes": 61}, {"scan_bars": "sip"}])
 def test_out_of_range_values_are_refused(bad):
     with pytest.raises(ValidationError):
         MarketDataConfig(**bad)

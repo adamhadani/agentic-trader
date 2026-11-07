@@ -1698,7 +1698,8 @@ never touches the trading halt and opens no lifetime review.
 ## Provider read and forecast hardening
 
 See [forecast contract hardening](forecast-contract-hardening.md). Active `doctor` includes
-a recent request against the exact configured Alpaca feed; HTTP permission and actual
+an exact request against the scan-bar feed (under `sip_delayed`, a delayed SIP request beside a
+recent one on the quote feed: [scan bars](#scan-bars-on-delayed-sip)); HTTP permission and actual
 bar freshness are distinct. Read fallbacks share bounded executor capacity and Alpaca
 socket timeouts. Unfinished reads are never replayed by the fallback wrapper.
 
@@ -1726,7 +1727,7 @@ and status summary; use `alpha forward` and `alpha list` for full evidence/defin
 
 Since 2026-11-07 the shipped config sets `market_data.scan_bars: sip_delayed` (code default
 `configured`): scan bars come from SIP, and every request ends `market_data.sip_delay_minutes`
-(16, from 15 to 60) before now. IEX bars hid about two-thirds of the setups that the SIP-measured
+(16, from 16 to 60) before now. IEX bars hid about two-thirds of the setups that the SIP-measured
 evidence (the card-stats prior, the setup base rates, the bracket counterfactual) describes
 ([native supply](native-supply-2026-11-07.md)).
 
@@ -1737,35 +1738,95 @@ evidence (the card-stats prior, the setup base rates, the bracket counterfactual
     `cards outcomes` and `card_stats`);
   - the dynamic universe's `feed` label and the `/scan SYMBOL` reference match;
   - the `card_stats` snapshot's `feed`;
-  - the `doctor` market-data probe.
+  - the registry alphas' bar completeness (below);
+  - the `doctor` market-data probe (below);
+  - the `bars` block of every `scan_candidates_ranked` event.
 
   `configured` restores bars on `market_data.alpaca_feed` with no delay.
 - **Why delayed.** Without the SIP subscription a SIP request ending under 15 minutes ago is HTTP 403,
-  and the composite provider would then fall back to yfinance silently. `AlpacaDataProvider(end_delay=…)`
-  clamps every bar request: a missing or later end becomes now − delay, and an earlier end is kept. The
-  bar evidence records the clamped end. A 10:35 scan still has the 9:00 hourly bar, which ended at 10:00;
-  only its in-progress bar now stops at 10:19.
+  and the composite provider would then fall back to yfinance silently. The floor is 16 minutes, not 15:
+  an end exactly 15 minutes old sits on the entitlement edge, where request queueing or clock skew means a
+  403. `AlpacaDataProvider(end_delay=…)` clamps every bar request: a missing or later end becomes now −
+  delay, an earlier end is kept, and a naive bound reads as UTC (as the SDK reads it) instead of raising.
+  A window that starts at or after the clamped end sends no request and returns no bars, so `cards
+  outcomes` labels a candidate decided within the delay `immature`, not `fetch_failed`. The bar evidence
+  records the clamped end. A 10:35 scan still has the 9:00 hourly bar, which ended at 10:00; only its
+  in-progress bar now stops at 10:19.
 - **What stays real-time IEX.** Broker latest trade and quote (`alpaca_data_feed`, from
   `ALPACA_DATA_FEED`), so the tap gate re-prices on the live quote. `fetch_latest_price` keeps the
   subscription's default feed, and positions and streams are untouched. `ALPACA_DATA_FEED` still sets
-  `market_data.alpaca_feed`, but under `sip_delayed` it never moves scan bars. Research CLIs and the
-  `alpha_pipeline` workers keep their own pinned feeds.
+  `market_data.alpaca_feed`, but under `sip_delayed` it never moves scan bars. The `alpha_pipeline`
+  workers keep their own pinned feeds.
 - **Liquidity reference.** The dynamic threshold is in the scan bars' units, so after the switch
   `/scan SYMBOL` ignores a cached IEX `dynamic_universe_built` reference until the next suggestion scan
   journals one on SIP.
 - **Effect on cards.** A native card's entry is the latest 4h close as of about 16 minutes before the
-  decision. The tap gate still re-prices on the live IEX quote, and an auto-entry's session limit order
-  may fill a little less often after a rise.
+  decision. PEAD and insider-watch catalog cards are priced from the same scan dataset's last hourly close
+  (`screeners/earnings_drift.py`), so their entry is also about 16 minutes old and on SIP. The tap gate still
+  re-prices on the live IEX quote, and an auto-entry's session limit order may fill a little less often
+  after a rise.
+- **Registry alphas.**
+  - **Pinned shadow versions swap.** The registry has 16 shadow versions:
+    - 12 are 15m with no clock (6 pinned `alpaca:sip`, 6 `alpaca:iex`);
+    - 1 is 15m `unverified`;
+    - 3 are 4h `unverified`.
+
+    From the first SIP scan, the 6 IEX-pinned versions log `deployment_data_contract_mismatch` on every
+    observation and the 6 SIP-pinned ones start accruing evidence. This is the deployment-feed identity rule
+    working as designed: shadow evidence earns no promotion credit, and no qualified alpha's feed changes
+    silently.
+  - **The partial-bar limit and its fix.** Delayed bars hold nothing after receipt − 16 minutes, so a bar
+    whose nominal close falls inside the delay is partial: at 10:35 the 10:15 15m bar has data only to
+    10:19, and on an operator `/scan` before :16 past the hour so does the current 1h bar. The alpha clock
+    judges completeness by nominal close, so it would count that bar complete and score the 12 clock-less
+    15m shadow versions on a partial bar at every scheduled scan. Under `sip_delayed` a fixed-clock bar is
+    complete only if it closes at or before receipt − `bars_end_delay`: shadow observations
+    (`TradingCopilot.run_scan`) take that horizon as their `as_of`, and registry screening and probe cards
+    (`FormulaicAlphaStrategy`, installed with `bars_end_delay`) cap their clock the same way. At 10:35 the
+    10:00 bar (closed 10:15) is the latest complete 15m bar. The stale-bar and forecast-freshness checks
+    use the same horizon, and a shadow observation's `observed_at` is that horizon. Native strategies are
+    unchanged (they read the in-progress last bar, as before), and session-clock alphas read the decision
+    worker's own receipt-stamped bars.
+- **Research mining.** `download_bars` (`alpha mine --feed alpaca`) and `alpha replay` still default to
+  `market_data.alpaca_feed`, which `ALPACA_DATA_FEED` sets (IEX in production). New Alpaca definitions mined
+  that way are pinned to `alpaca:iex` and will not match scan bars. Pass `alpha replay --feed sip` (its
+  `--end` date is in the past), or pin SIP for the mining command (`ALPACA_DATA_FEED=sip`). `download_bars`
+  sends no end and has no end delay, so the subscription can refuse such a SIP read as recent: a charged
+  `bar_acquisition_failed` run, never a fallback.
+- **`doctor` covers both feeds.** Under `sip_delayed` the `market_data` component runs two probes: a
+  delayed SIP bar request (the scan feed, ending 16 minutes back) and a recent bar request on
+  `alpaca_data_feed`, the stand-in for admission's real-time IEX latest trade and quote. Its status is the
+  worse of the two and the message names both. `details.access` replaces `recent_access` with one entry
+  per probe (`scan_bars`, `quotes`), each with its `feed`, a `delayed` flag, `access` and either
+  `observations` or `error_type` and `http_status`. The component name, readiness and the quiet-hours
+  lists are unchanged; under `configured` the single recent probe and its `recent_access` detail are
+  unchanged.
+- **Scan journal.** Every `scan_candidates_ranked` event carries a top-level `bars` block:
+  `{"feed": "alpaca:sip", "end_delay_minutes": 16}` under `sip_delayed`, `{"feed": "alpaca:<feed>",
+  "end_delay_minutes": null}` under `configured`. An event without it was read on the configured feed
+  (IEX in production), so the block marks the IEX-to-SIP boundary in the evidence.
+- **Card statistics relabel.** The next `card_stats` snapshot relabels its whole 180-day window on
+  delayed SIP hourly bars: candidates selected on IEX before the switch are then labelled on SIP. SIP labels
+  are closer to the consolidated tape and match the SIP prior, but a key's posterior can move with no new
+  card, and the card caveat reads "live record (sip)" ([card evidence](card-evidence.md#limits)).
 - **Verify after deploy:**
-  - the next suggestion scan's `dynamic` block and `dynamic_universe_built` event carry `feed: sip`;
+  - the next suggestion scan's `dynamic` block and `dynamic_universe_built` event carry `feed: sip`, and
+    its `scan_candidates_ranked` event carries `bars: {feed: alpaca:sip, end_delay_minutes: 16}`;
   - the active `uv run copilot doctor` reports market data OK ("Delayed alpaca:sip request (ending 16 min
-    ago) permitted"), and `doctor --readiness` stays ready;
+    ago) permitted; recent alpaca:iex request permitted"), and `doctor --readiness` stays ready;
   - no yfinance fallback in bar evidence: no `fallback_triggered` log with `failed_provider: alpaca`
     during a scan, and that day's `market-data/<date>/*/manifest.json` requests carry
     `feed: alpaca:sip` with `end_inclusive` at least 16 minutes before `requested_at` (a failed
     `result.json` with `http_status: 403` means the clamp is missing);
   - `raw_setups` in the `scan_candidates_ranked` funnel in line with the SIP replay: about 3 a scan in
-    this tape, against about 1 on IEX.
+    this tape, against about 1 on IEX;
+  - the card-stats relabel: on the day the first SIP snapshot lands (after 08:30 New York),
+    `uv run copilot db events --stream card_stats --limit 2` returns it (`feed: sip`) and the last IEX
+    snapshot (`feed: iex`). For each key apply the send rule
+    ([card evidence](card-evidence.md#send-policy): `n_mature` at least `card_policy.min_mature_cards`,
+    no `n_fetch_failed` or `n_unresolved`, `posterior_mean` below `card_policy.min_measured_ev`) to both.
+    A key whose withhold decision flips between the two is the relabel, not new evidence: record it with
+    the deployment evidence rather than acting on it as a change in the strategy's record.
 
 ### Separate prospective IEX feed
 

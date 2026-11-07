@@ -997,9 +997,10 @@ class MarketDataConfig(BaseModel):
     # Scan bars: the scan fetcher and every reader in its units (the dynamic universe, the card labellers, the
     # doctor probe). "configured" reads `alpaca_feed`, which ALPACA_DATA_FEED overrides; "sip_delayed" reads SIP
     # with every request ending `sip_delay_minutes` back, since the free plan refuses a SIP end under 15 minutes
-    # old. Broker quotes (`AppConfig.alpaca_data_feed`) never follow this setting.
+    # old. The floor is 16, not 15: an end exactly 15 minutes old sits on the entitlement edge, where request
+    # queueing or clock skew turns it into a 403. Broker quotes (`AppConfig.alpaca_data_feed`) never follow this.
     scan_bars: Literal["configured", "sip_delayed"] = "configured"
-    sip_delay_minutes: int = Field(default=16, ge=15, le=60)
+    sip_delay_minutes: int = Field(default=16, ge=16, le=60)
 
     @property
     def bars_feed(self) -> str:
