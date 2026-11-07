@@ -10,8 +10,10 @@ from pathlib import Path
 import pytest
 import yaml
 from pydantic import ValidationError
+from sqlalchemy.engine import make_url
 
 from agentic_trader.config import AppConfig, ExecutionConfig, LLMGateConfig, load_config
+from agentic_trader.constants import DEFAULT_POSTGRES_DB_URL
 from agentic_trader.execution.auto_entry import auto_entry_active
 from agentic_trader.research.apriori.pead_base_rate import load_pead_base_rate
 from agentic_trader.research.setups.card_prior import load_prior
@@ -212,3 +214,14 @@ def test_the_shipped_filing_veto_and_release_exit_blocks_reach_app_config():
     assert config.release_exit.mode == "preview"
     assert config.release_exit.minutes_before_close == 30
     assert {"mode", "minutes_before_close"} <= config.release_exit.model_fields_set
+
+
+def test_neither_the_shipped_database_url_nor_the_production_default_names_a_user():
+    """The repository is public: the database user comes from PGUSER or the OS account, or DATABASE_URL."""
+    shipped = yaml.safe_load(SHIPPED.read_text())["database"]["url"]
+    for url in (shipped, DEFAULT_POSTGRES_DB_URL):
+        parsed = make_url(url)
+        assert parsed.username is None and parsed.password is None, url
+        assert (parsed.host, parsed.port, parsed.database) == ("localhost", 5432, "agentic_trader")
+    loaded = load_config(str(SHIPPED), environ=PRODUCTION)
+    assert loaded.database.url is not None and make_url(loaded.database.url).username is None

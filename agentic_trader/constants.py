@@ -298,7 +298,9 @@ DEFAULT_STRATEGY_ALLOCATIONS: dict[str, float] = {
 }
 
 # Database Persistence & Pooling Defaults
-DEFAULT_POSTGRES_DB_URL = "postgresql+asyncpg://adamhadani@localhost:5432/agentic_trader"
+# No user in the URL: asyncpg takes it from PGUSER or the account running the process. Set DATABASE_URL to
+# name one explicitly (docs/production.md).
+DEFAULT_POSTGRES_DB_URL = "postgresql+asyncpg://localhost:5432/agentic_trader"
 DEFAULT_DB_POOL_SIZE = 10
 DEFAULT_DB_MAX_OVERFLOW = 20
 DEFAULT_DB_POOL_TIMEOUT = 30.0

@@ -528,7 +528,8 @@ book_sizing:
 
 database:
   name: "signals"
-  url: "postgresql+asyncpg://adamhadani@localhost:5432/agentic_trader"
+  # No user here: asyncpg takes it from PGUSER or the account running the daemon. DATABASE_URL overrides.
+  url: "postgresql+asyncpg://localhost:5432/agentic_trader"
   pool_size: 10
   max_overflow: 20
   pool_timeout: 30.0

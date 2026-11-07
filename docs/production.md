@@ -856,7 +856,9 @@ without modifying the process environment. Explicit environment values (even emp
 ones) win. `COPILOT_ENV_FILE=''` disables dotenv. `COPILOT_CONFIG` selects a YAML.
 
 Database precedence: `DB_PATH` → `DATABASE_URL` → explicit `DB_NAME` → YAML →
-production default. `--db-path` accepts a URL or SQLite path; `--db-name` explicitly
+production default. Neither the shipped YAML URL nor the production default names a
+database user: asyncpg takes it from `PGUSER` or the account running the daemon. To name
+one, set `DATABASE_URL` in `.envrc`; never commit a user or password to the YAML. `--db-path` accepts a URL or SQLite path; `--db-name` explicitly
 selects a SQLite sandbox. There is no automatic SQLite failover. `data/signals.db`
 is historical and must not be mistaken for the current PostgreSQL database.
 
