@@ -27,6 +27,7 @@ from agentic_trader.execution.lifetime_policy import (
     entry_lifetime_of,
     has_holding_deadline,
 )
+from agentic_trader.market.session import regular_session_certainly_closed
 
 
 if TYPE_CHECKING:
@@ -276,7 +277,9 @@ class TradeLifetimeService:
         config: ExecutionConfig,
         clock: Callable[[], datetime] | None = None,
         calendar: MarketCalendarProtocol | None = None,
+        market_closed: Callable[[datetime], bool] = regular_session_certainly_closed,
     ):
+        self.market_closed = market_closed
         self.repository, self.broker, self.close_service = repository, broker, close_service
         self.store = repository.store
         self.config = config
@@ -392,12 +395,32 @@ class TradeLifetimeService:
         """A fully filled entry (``executed_at`` set) whose policy has no holding deadline."""
         return signal.get("executed_at") is not None and not has_holding_deadline(lifetime)
 
+    async def _closed_market_grace(self, signal: dict[str, Any]) -> bool:
+        """True when a failed evidence pass must not count: filled per the journal, session certainly closed.
+
+        Nothing can fill or unfill at the broker while the regular session is closed, and the holding close
+        is only submitted while it is open. Any doubt, including a failure here, returns False (count it).
+        """
+        try:
+            order_id = signal.get("broker_order_id")
+            if not order_id or not self.market_closed(self.clock()):
+                return False
+            parent = await self.repository.order(order_id)
+            if parent is None or parent.status != "filled":
+                return False
+            quantity = Decimal(parent.quantity)
+            return quantity > 0 and Decimal(parent.filled_quantity) == quantity
+        except Exception as exc:
+            logger.warning("Closed-market grace check failed (%s); counting the pass", type(exc).__name__)
+            return False
+
     async def reconcile(self) -> tuple[str, ...]:
         """Sweep every timed position; return the exception type names of every signal that failed this pass.
 
         That covers read failures, post-read failures and policy-parse failures. Only a failed evidence read
         is retried: it is reviewed (a persisted halt) after ``lifetime_evidence_review_after_failures``
-        consecutive failed passes of that signal. Every other failure reviews on the first pass.
+        consecutive failed passes of that signal. Every other failure reviews on the first pass. A failed pass
+        for a journaled-filled entry while the regular session is certainly closed keeps the prior count.
         """
         await self.recover()
         unresolved = await self.store.list_work(
@@ -423,6 +446,18 @@ class TradeLifetimeService:
             except EvidenceReadFailed as exc:
                 name = exc.type_name
                 failed.append(name)
+                if await self._closed_market_grace(signal):
+                    if prior > 0:
+                        self._evidence_failures[signal["id"]] = prior
+                    logger.warning(
+                        "Lifetime evidence read failed for signal %s (%s) while the regular session is closed; "
+                        "the entry is filled, pass not counted (%d of %d)",
+                        signal["id"],
+                        name,
+                        prior,
+                        self.config.lifetime_evidence_review_after_failures,
+                    )
+                    continue
                 count = self._evidence_failures[signal["id"]] = prior + 1
                 if count >= self.config.lifetime_evidence_review_after_failures:
                     logger.warning(
