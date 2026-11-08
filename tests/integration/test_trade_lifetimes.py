@@ -929,6 +929,69 @@ async def test_default_market_closed_is_the_static_calendar(lifecycle_case):
     assert service.market_closed is regular_session_certainly_closed
 
 
+async def test_a_journaled_resting_entry_still_reviews_while_closed(lifecycle_case):
+    c = lifecycle_case
+    resting(c)
+    assert await c.services[0].reconcile() == ()  # journals the unfilled projection
+    group_read_fails(c, 100)
+    set_market(c, True)
+    await assert_review_only_at_threshold(c, "ConnectionError")
+
+
+async def test_a_journaled_partial_fill_still_reviews_while_closed(lifecycle_case):
+    c = lifecycle_case
+    await mark_native(c, submitted_seconds_ago=60)
+    c.venue.entry.update(status="partially_filled", filled_qty="2")
+    assert await c.services[0].reconcile() == ()  # journals the partial projection
+    order = await c.services[0].repository.order(c.venue.entry["id"])
+    assert order.status == "partially_filled"
+    group_read_fails(c, 100)
+    set_market(c, True)
+    await assert_review_only_at_threshold(c, "ConnectionError")
+
+
+@pytest.mark.parametrize(("status", "filled"), [("filled", "2"), ("accepted", "10")])
+async def test_a_crafted_projection_that_is_not_a_full_fill_does_not_get_the_grace(lifecycle_case, status, filled):
+    c = lifecycle_case
+    await use_session_policy(c, fill_days_ago=18)  # no sweep yet: nothing is journaled, so the observe can seed it
+    real = (await c.broker.read_entry_group(c.venue.entry["id"]))[0]
+    assert await c.services[0].repository.order(real.order_id) is None
+    crafted = real.model_copy(update={"status": status, "filled_quantity": filled})
+    await c.db.workflows.observe_orders([crafted])
+    journaled = await c.services[0].repository.order(real.order_id)
+    assert (journaled.status, journaled.filled_quantity) == (status, filled)  # the observe path kept it
+    group_read_fails(c, 100)
+    set_market(c, True)
+    await assert_review_only_at_threshold(c, "ConnectionError")
+
+
+async def test_a_raising_predicate_counts_the_pass(lifecycle_case, caplog):
+    c = lifecycle_case
+    await journaled_fill(c)
+    group_read_fails(c, 100)
+
+    def broken(now):
+        raise RuntimeError(PLANTED)
+
+    for service in c.services:
+        service.market_closed = broken
+    await assert_review_only_at_threshold(c, "ConnectionError")
+    assert PLANTED not in caplog.text
+
+
+async def test_default_predicate_drives_the_grace_from_the_service_clock(lifecycle_case):
+    c = lifecycle_case
+    await journaled_fill(c)
+    base = c.services[0]
+    service = TradeLifetimeService(base.repository, c.broker, base.close_service, config=c.broker.config.execution)
+    signal = next(s for s in await c.db.get_active_positions() if s["id"] == c.signal_id)
+    ny = ZoneInfo("America/New_York")
+    service.clock = lambda: datetime(2026, 11, 7, 12, 0, tzinfo=ny)  # Saturday
+    assert await service._closed_market_grace(signal) is True
+    service.clock = lambda: datetime(2026, 11, 9, 10, 0, tzinfo=ny)  # Monday, regular session
+    assert await service._closed_market_grace(signal) is False
+
+
 async def seed_durable_entry(c, signal_id, order_id):
     """An accepted durable entry for ``signal_id`` so its evidence read reaches the broker."""
     request = OrderRequest(

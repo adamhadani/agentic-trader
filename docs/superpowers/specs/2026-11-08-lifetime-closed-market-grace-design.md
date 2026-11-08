@@ -11,11 +11,10 @@ The lifetime service reads each timed position's broker order group once per rec
 - The first burst lasted about 8 minutes, more than the 5-pass grace. At 07:41 ET the review opened on signal #47 (BLK, the PEAD catalog probe: filled, with a 20-session holding exit) and halted the desk.
 - Unless the operator resumes, Monday's scans are skipped. This is the second halt from the same probe; the first was the 2026-10-26 wake-up `ConnectionError`.
 
-**The gap.** A *filled* timed position has exactly one lifetime action left: the holding close. That close is submitted only while the broker says the regular session is open. While the regular session is closed:
-- nothing at the broker can fill;
-- a filled entry cannot become unfilled;
-- the bracket's stop keeps protecting the position;
-- and the lifetime service could not act even with perfect evidence.
+**The gap.** A *filled* timed position has exactly one lifetime action left: the holding close. While the regular session is closed:
+- a filled parent is terminal and cannot become unfilled;
+- the desk's bracket legs work only in regular hours, and the desk submits no extended-hours orders;
+- the holding close is gated on `broker.regular_session_open()`, so the lifetime service could not act even with perfect evidence.
 
 So a failed read in that window carries no risk that a halt would mitigate.
 

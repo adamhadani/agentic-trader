@@ -398,8 +398,10 @@ class TradeLifetimeService:
     async def _closed_market_grace(self, signal: dict[str, Any]) -> bool:
         """True when a failed evidence pass must not count: filled per the journal, session certainly closed.
 
-        Nothing can fill or unfill at the broker while the regular session is closed, and the holding close
-        is only submitted while it is open. Any doubt, including a failure here, returns False (count it).
+        A filled parent is terminal, the desk's bracket legs work only in regular hours (it submits no
+        extended-hours orders) and the holding close is gated on ``broker.regular_session_open()``, so while
+        the regular session is closed an unreadable group leaves no lifetime action a halt would protect.
+        Any doubt, including a failure here, returns False (count it).
         """
         try:
             order_id = signal.get("broker_order_id")
