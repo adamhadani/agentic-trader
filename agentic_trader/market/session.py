@@ -304,6 +304,22 @@ class DeterministicCalendarProvider:
         return days
 
 
+def regular_session_certainly_closed(now: datetime) -> bool:
+    """True only when the regular equity session is closed by the static exchange calendar.
+
+    Closed means a weekend, a statutory equity holiday, or New York time outside [09:30, 16:00).
+    Early closes are ignored on purpose: 13:00-16:00 on an early-close day reads as open, the
+    conservative side for a caller that defers work while the market is closed. A naive datetime
+    is never "certainly closed", since its zone is unknown. Pure: no broker or network call.
+    """
+    if now.tzinfo is None:
+        return False
+    et = now.astimezone(ET_TZ)
+    if et.weekday() >= 5 or MarketHolidayCalendar.is_equity_holiday(et.date())[0]:
+        return True
+    return not (EQUITY_RTH_OPEN <= et.time() < EQUITY_RTH_CLOSE)
+
+
 class AlpacaCalendarProvider:
     """Exchange calendar provider delegating to Alpaca Trading API's GET /v2/calendar."""
 

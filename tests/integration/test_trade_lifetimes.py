@@ -26,7 +26,7 @@ from agentic_trader.execution.lifetime_policy import (
     daily_entry_lifetime,
 )
 from agentic_trader.execution.lifetimes import TradeLifetimeService
-from agentic_trader.market.session import AlpacaCalendarProvider, MarketCalendarDay
+from agentic_trader.market.session import AlpacaCalendarProvider, MarketCalendarDay, regular_session_certainly_closed
 from agentic_trader.research.alpha.strategy import AprioriBracketPolicy, TimedAlphaExecutionPolicy, session_entry_policy
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.lifetimes import LifetimeRepository
@@ -110,6 +110,9 @@ async def lifecycle_case(request, alpaca_http, temp_db):
             broker,
             PositionCloseService(broker, database),
             config=broker.config.execution,
+            # The closed-market grace has its own tests; pinning an open market keeps every
+            # other test independent of the weekday it runs on.
+            market_closed=lambda now: False,
         )
         for database in databases
     ]
@@ -808,6 +811,185 @@ async def test_threshold_one_reviews_on_first_failure(lifecycle_case):
     assert await c.services[0].reconcile() == ("ConnectionError",)
     assert len(await lifetime_reviews(c)) == 1
     assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+
+
+async def journaled_fill(c):
+    """A filled holding position that is still waiting, with the filled projection journaled."""
+    await use_session_policy(c, fill_days_ago=18)
+    assert await c.services[0].reconcile() == ()
+
+
+def set_market(c, closed):
+    for service in c.services:
+        service.market_closed = lambda now: closed
+
+
+async def test_filled_position_read_failures_while_closed_never_review(lifecycle_case, caplog):
+    c = lifecycle_case
+    service = c.services[0]
+    await journaled_fill(c)
+    group_read_fails(c, 100)
+    set_market(c, True)
+    for _ in range(10):
+        assert await service.reconcile() == ("ConnectionError",)
+        assert not await lifetime_reviews(c)
+        assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+        assert c.signal_id not in service._evidence_failures
+        assert not any(call[0] != "GET" for call in c.venue.calls)
+    set_market(c, False)
+    for _ in range(4):
+        assert await service.reconcile() == ("ConnectionError",)
+        assert not await lifetime_reviews(c)
+    assert await service.reconcile() == ("ConnectionError",)
+    reviews = await lifetime_reviews(c)
+    assert [e["payload"]["reason"] for e in reviews] == ["lifecycle_evidence_unavailable:ConnectionError"]
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+    assert PLANTED not in caplog.text
+
+
+async def test_the_count_carries_across_a_closed_window(lifecycle_case):
+    c = lifecycle_case
+    service = c.services[0]
+    await journaled_fill(c)
+    group_read_fails(c, 100)
+    set_market(c, False)
+    for _ in range(3):
+        await service.reconcile()
+    assert service._evidence_failures[c.signal_id] == 3
+    set_market(c, True)
+    for _ in range(10):
+        await service.reconcile()
+    assert service._evidence_failures[c.signal_id] == 3
+    assert not await lifetime_reviews(c)
+    set_market(c, False)
+    await service.reconcile()
+    assert service._evidence_failures[c.signal_id] == 4
+    assert not await lifetime_reviews(c)
+    await service.reconcile()
+    assert len(await lifetime_reviews(c)) == 1
+
+
+async def test_a_resting_entry_still_reviews_while_closed(lifecycle_case):
+    c = lifecycle_case
+    resting(c)
+    group_read_fails(c, 100)
+    set_market(c, True)
+    await assert_review_only_at_threshold(c, "ConnectionError")
+
+
+async def test_the_grace_needs_a_journaled_fill(lifecycle_case):
+    c = lifecycle_case
+    await use_session_policy(c, fill_days_ago=18)
+    group_read_fails(c, 100)  # no successful sweep first: nothing is journaled as filled
+    set_market(c, True)
+    await assert_review_only_at_threshold(c, "ConnectionError")
+
+
+async def test_a_failed_clock_read_at_a_passed_deadline_while_closed_is_not_counted(lifecycle_case):
+    c = lifecycle_case
+    filled_position(c)
+
+    async def clock_down():
+        raise ConnectionError(PLANTED)
+
+    c.broker.regular_session_open = clock_down
+    set_market(c, True)
+    for _ in range(10):
+        assert await c.services[0].reconcile() == ("ConnectionError",)
+    assert not await lifetime_reviews(c)
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+    assert not any(call[0] != "GET" for call in c.venue.calls)
+
+
+async def test_a_failed_grace_lookup_counts_the_pass(lifecycle_case, caplog, monkeypatch):
+    c = lifecycle_case
+    service = c.services[0]
+    await journaled_fill(c)
+    group_read_fails(c, 100)
+    set_market(c, True)
+
+    async def broken(order_id):
+        raise RuntimeError(PLANTED)
+
+    monkeypatch.setattr(service.repository, "order", broken)
+    for _ in range(4):
+        await service.reconcile()
+    assert not await lifetime_reviews(c)
+    await service.reconcile()
+    assert len(await lifetime_reviews(c)) == 1
+    assert PLANTED not in caplog.text
+    assert "RuntimeError" in caplog.text
+
+
+async def test_default_market_closed_is_the_static_calendar(lifecycle_case):
+    c = lifecycle_case
+    service = TradeLifetimeService(
+        c.services[0].repository, c.broker, c.services[0].close_service, config=c.broker.config.execution
+    )
+    assert service.market_closed is regular_session_certainly_closed
+
+
+async def test_a_journaled_resting_entry_still_reviews_while_closed(lifecycle_case):
+    c = lifecycle_case
+    resting(c)
+    assert await c.services[0].reconcile() == ()  # journals the unfilled projection
+    group_read_fails(c, 100)
+    set_market(c, True)
+    await assert_review_only_at_threshold(c, "ConnectionError")
+
+
+async def test_a_journaled_partial_fill_still_reviews_while_closed(lifecycle_case):
+    c = lifecycle_case
+    await mark_native(c, submitted_seconds_ago=60)
+    c.venue.entry.update(status="partially_filled", filled_qty="2")
+    assert await c.services[0].reconcile() == ()  # journals the partial projection
+    order = await c.services[0].repository.order(c.venue.entry["id"])
+    assert order.status == "partially_filled"
+    group_read_fails(c, 100)
+    set_market(c, True)
+    await assert_review_only_at_threshold(c, "ConnectionError")
+
+
+@pytest.mark.parametrize(("status", "filled"), [("filled", "2"), ("accepted", "10")])
+async def test_a_crafted_projection_that_is_not_a_full_fill_does_not_get_the_grace(lifecycle_case, status, filled):
+    c = lifecycle_case
+    await use_session_policy(c, fill_days_ago=18)  # no sweep yet: nothing is journaled, so the observe can seed it
+    real = (await c.broker.read_entry_group(c.venue.entry["id"]))[0]
+    assert await c.services[0].repository.order(real.order_id) is None
+    crafted = real.model_copy(update={"status": status, "filled_quantity": filled})
+    await c.db.workflows.observe_orders([crafted])
+    journaled = await c.services[0].repository.order(real.order_id)
+    assert (journaled.status, journaled.filled_quantity) == (status, filled)  # the observe path kept it
+    group_read_fails(c, 100)
+    set_market(c, True)
+    await assert_review_only_at_threshold(c, "ConnectionError")
+
+
+async def test_a_raising_predicate_counts_the_pass(lifecycle_case, caplog):
+    c = lifecycle_case
+    await journaled_fill(c)
+    group_read_fails(c, 100)
+
+    def broken(now):
+        raise RuntimeError(PLANTED)
+
+    for service in c.services:
+        service.market_closed = broken
+    await assert_review_only_at_threshold(c, "ConnectionError")
+    assert PLANTED not in caplog.text
+
+
+async def test_default_predicate_drives_the_grace_from_the_service_clock(lifecycle_case):
+    c = lifecycle_case
+    await journaled_fill(c)
+    base = c.services[0]
+    service = TradeLifetimeService(base.repository, c.broker, base.close_service, config=c.broker.config.execution)
+    signal = next(s for s in await c.db.get_active_positions() if s["id"] == c.signal_id)
+    ny = ZoneInfo("America/New_York")
+    service.clock = lambda: datetime(2026, 11, 7, 12, 0, tzinfo=ny)  # Saturday
+    assert await service._closed_market_grace(signal) is True
+    service.clock = lambda: datetime(2026, 11, 9, 10, 0, tzinfo=ny)  # Monday, regular session
+    assert await service._closed_market_grace(signal) is False
 
 
 async def seed_durable_entry(c, signal_id, order_id):
