@@ -1,4 +1,6 @@
+import asyncio
 import json
+import threading
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
@@ -8,10 +10,11 @@ import pandas as pd
 import pytest
 
 from agentic_trader.agent.earnings import CalendarRow, EarningsTiming, ReportedPage
+from agentic_trader.data.providers import DAILY_BATCH_SYMBOLS
 from agentic_trader.market.session import MarketCalendarDay
 from agentic_trader.research.apriori.catalog import load_pead_entry
 from agentic_trader.research.apriori.pead_events import MarketData, build_events
-from agentic_trader.research.apriori.pead_live import REASON_MAX_CHARS, event_document, live_events
+from agentic_trader.research.apriori.pead_live import PEAD_FETCH_CONCURRENCY, event_document, live_events
 
 
 ENTRY = load_pead_entry(Path(__file__).resolve().parents[3] / "config/research/apriori/pead-v1.json").entry
@@ -328,16 +331,13 @@ async def test_unavailable_reasons(overrides, fragment):
     assert fragment in (result.reason or "")
 
 
-async def test_a_bar_fetch_failure_keeps_the_exception_message_bounded():
-    result = await live_events(**base_kwargs(bars=Bars(ADJUSTED_FRAMES, RAW_FRAMES, fail=True)), sleep=Sleeps())
-    assert result.reason == "bars_unavailable: RuntimeError: bars unavailable (after 1 retry)"
-
-    long = await live_events(
-        **base_kwargs(bars=Bars(ADJUSTED_FRAMES, RAW_FRAMES, fail=True, message="x" * 500)), sleep=Sleeps()
+async def test_a_bar_fetch_failure_reason_is_the_type_name_only():
+    result = await live_events(
+        **base_kwargs(bars=Bars(ADJUSTED_FRAMES, RAW_FRAMES, fail=True, message="secret-host-xyz " * 30)),
+        sleep=Sleeps(),
     )
-    assert long.reason.startswith("bars_unavailable: RuntimeError: xxx")
-    assert long.reason.endswith(" (after 1 retry)")
-    assert len(long.reason) == REASON_MAX_CHARS
+    assert result.reason == "bars_unavailable: RuntimeError (after 1 retry)"
+    assert "secret-host" not in result.reason
 
 
 async def test_bars_retry_after_first_timeout():
@@ -347,7 +347,7 @@ async def test_bars_retry_after_first_timeout():
     result = await live_events(**base_kwargs(bars=bars), sleep=sleep)
 
     assert result.status == "ok"
-    assert [call[3] for call in bars.calls] == ["all", "all", "raw"]
+    assert sorted(call[3] for call in bars.calls) == ["all", "all", "raw"]
     assert sleep.delays == [2.0]
 
 
@@ -358,7 +358,7 @@ async def test_raw_fetch_retry():
     result = await live_events(**base_kwargs(bars=bars), sleep=sleep)
 
     assert result.status == "ok"
-    assert [call[3] for call in bars.calls] == ["all", "raw", "raw"]
+    assert sorted(call[3] for call in bars.calls) == ["all", "raw", "raw"]
     assert sleep.delays == [2.0]
 
 
@@ -369,10 +369,8 @@ async def test_bars_unavailable_after_retry():
     result = await live_events(**base_kwargs(bars=bars), sleep=sleep)
 
     assert result.status == "unavailable"
-    assert result.reason.startswith("bars_unavailable: ReadTimeout")
-    assert result.reason.endswith("(after 1 retry)")
-    assert len(result.reason) <= REASON_MAX_CHARS
-    assert [call[3] for call in bars.calls] == ["all", "all"]
+    assert result.reason == "bars_unavailable: ReadTimeout (after 1 retry)"
+    assert [call[3] for call in bars.calls if call[3] == "all"] == ["all", "all"]
     assert sleep.delays == [2.0]
 
 
@@ -383,3 +381,135 @@ async def test_no_retry_on_success():
 
     assert result.status == "ok"
     assert sleep.delays == []
+
+
+def _many_reporters(n: int) -> list[str]:
+    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    return [f"Q{letters[i // 26 // 26 % 26]}{letters[i // 26 % 26]}{letters[i % 26]}" for i in range(n)]
+
+
+class ChunkRecordingBars:
+    """Thread-safe fake: records chunks, tracks peak in-flight, optionally holds calls
+    until `gate` callers are in flight, and can fail a chosen chunk.
+    """
+
+    def __init__(self, *, gate: int = 0, fail_chunk=None, fail_times: int = 1, message: str = "boom"):
+        self.lock = threading.Lock()
+        self.calls: list[tuple[tuple[str, ...], str]] = []
+        self.in_flight = 0
+        self.peak = 0
+        self.gate = gate
+        self.released = threading.Event()
+        self.fail_chunk = fail_chunk
+        self.fail_remaining = fail_times
+        self.message = message
+
+    def fetch_daily_many(self, symbols, start, end, *, adjustment):
+        key = (tuple(symbols), adjustment)
+        with self.lock:
+            self.calls.append(key)
+            self.in_flight += 1
+            self.peak = max(self.peak, self.in_flight)
+            if self.gate and self.in_flight >= self.gate:
+                self.released.set()
+        try:
+            if self.gate:
+                assert self.released.wait(timeout=10), "gate never reached"
+            if self.fail_chunk is not None and key == self.fail_chunk:
+                with self.lock:
+                    failing = self.fail_remaining > 0
+                    self.fail_remaining -= 1
+                if failing:
+                    raise httpx.ReadTimeout(self.message)
+            source = ADJUSTED_FRAMES if adjustment == "all" else RAW_FRAMES
+            return {s: source[s] for s in symbols if s in source}
+        finally:
+            with self.lock:
+                self.in_flight -= 1
+
+
+def _big_page(n: int) -> tuple[list[str], ReportedPage]:
+    reporters = _many_reporters(n)
+    return reporters, ReportedPage(REPORT_DATE, tuple(report(sym) for sym in reporters), 200, None, "3" * 64)
+
+
+async def test_large_fetch_is_chunked_and_bounded():
+    reporters, page = _big_page(450)  # 451 adjusted + 475 raw symbols -> 5 + 5 chunks
+    bars = ChunkRecordingBars(gate=PEAD_FETCH_CONCURRENCY)
+
+    result = await live_events(**base_kwargs(earnings=Earnings(page), bars=bars), sleep=Sleeps())
+
+    assert result.status == "ok"
+    assert all(len(symbols) <= DAILY_BATCH_SYMBOLS for symbols, _ in bars.calls)
+    for adjustment, expected in (
+        ("all", {"SPY", *reporters}),
+        ("raw", {*reporters, *STATIC_SYMBOLS}),
+    ):
+        requested = [s for symbols, adj in bars.calls if adj == adjustment for s in symbols]
+        assert len(requested) == len(set(requested))
+        assert set(requested) == expected
+    assert len(bars.calls) == 10
+    assert bars.peak == PEAD_FETCH_CONCURRENCY
+
+
+async def test_failed_chunk_is_retried_alone():
+    _, page = _big_page(250)
+    probe = ChunkRecordingBars()
+    await live_events(**base_kwargs(earnings=Earnings(page), bars=probe), sleep=Sleeps())
+    target = next(key for key in probe.calls if key[1] == "raw" and key[0][-1] == STATIC_SYMBOLS[-1])
+
+    bars = ChunkRecordingBars(fail_chunk=target)
+    sleep = Sleeps()
+    result = await live_events(**base_kwargs(earnings=Earnings(page), bars=bars), sleep=sleep)
+
+    assert result.status == "ok"
+    assert bars.calls.count(target) == 2
+    assert all(bars.calls.count(key) == 1 for key in set(bars.calls) if key != target)
+    assert sleep.delays == [2.0]
+
+
+async def test_chunk_failing_twice_fails_the_session_with_type_name_only():
+    _, page = _big_page(250)
+    probe = ChunkRecordingBars()
+    await live_events(**base_kwargs(earnings=Earnings(page), bars=probe), sleep=Sleeps())
+    target = next(key for key in probe.calls if key[1] == "all")
+
+    bars = ChunkRecordingBars(fail_chunk=target, fail_times=99, message="HTTPSConnectionPool(host='x') read timed out")
+    result = await live_events(**base_kwargs(earnings=Earnings(page), bars=bars), sleep=Sleeps())
+
+    assert result.status == "unavailable"
+    assert result.events == ()
+    assert result.reason == "bars_unavailable: ReadTimeout (after 1 retry)"
+
+
+async def test_chunked_result_matches_the_existing_fixture_events():
+    bars = ChunkRecordingBars()
+    result = await live_events(**base_kwargs(bars=bars), sleep=Sleeps())
+    reference = await live_events(**base_kwargs(), sleep=Sleeps())
+
+    assert result.status == "ok"
+    assert result.events == reference.events
+    assert result.counts == reference.counts
+    assert len(bars.calls) == 2  # fewer than 100 symbols: one chunk per request
+
+
+async def test_cancellation_propagates_while_chunks_are_in_flight():
+    _, page = _big_page(250)
+    block = threading.Event()
+    started = threading.Event()
+
+    class BlockedBars:
+        def fetch_daily_many(self, symbols, start, end, *, adjustment):
+            started.set()
+            block.wait(timeout=10)
+            return {}
+
+    task = asyncio.ensure_future(
+        live_events(**base_kwargs(earnings=Earnings(page), bars=BlockedBars()), sleep=Sleeps())
+    )
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+    task.cancel()
+    block.set()  # let the worker threads finish so the process exits cleanly
+    with pytest.raises(asyncio.CancelledError):
+        await task

@@ -108,7 +108,11 @@ is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
   `pead_events.build_events` — the identical liquidity gate, reaction z and ATR
   the study used, never a reimplementation. A missing Nasdaq calendar page, an
   empty page, a missing SPY D-1/D+1 close or a bar-fetch failure fails the whole
-  session closed (`status: "unavailable"`), never partially. The whole
+  session closed (`status: "unavailable"`), never partially. Daily bars are read
+  in 100-symbol chunks, all chunks of the adjusted and raw requests concurrently
+  (`PEAD_FETCH_CONCURRENCY` = 8), each chunk retried once on its own; a chunk
+  that still fails fails the session, and the journaled reason is the exception
+  type name only (`bars_unavailable: ReadTimeout (after 1 retry)`). The whole
   preparation (calendar, bars and event construction) is bounded at
   `DRIFT_PREPARE_TIMEOUT_SECONDS` (60 s, `agent/copilot.py`); exceeding it is
   also `"unavailable"` (`reason: "timeout"`) — the reads run under the scan lock

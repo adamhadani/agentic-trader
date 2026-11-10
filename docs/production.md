@@ -1458,6 +1458,17 @@ itself.
 - A PEAD decision fetches each qualifying symbol's daily bars; a failed fetch is retried once after 2 seconds,
   and a second failure leaves the reason with the suffix ` (after 1 retry)`.
 
+#### PEAD bars incident, 2026-11-05 to 2026-11-09
+
+The PEAD decision was `unavailable` on 11-05, 11-06 and 11-09. On large earnings
+pages the adjusted and raw bar reads ran as two sequential calls, each a
+sequential loop over 100-symbol chunks (about 14 requests of 4-8 s), which
+overran the 60 s `DRIFT_PREPARE_TIMEOUT_SECONDS`; the 11-06 retry repeated the
+whole multi-chunk call. `pead_live` now chunks itself, runs all chunks of both
+requests concurrently (8 at a time) and retries only the failed chunk once. The
+journaled reason carries the exception type name only, never the provider
+message.
+
 ### Insider watch Form 4 capture
 
 The [watch cards](apriori-alphas.md#watch-cards) read SEC Form 4 filings from a daemon worker
