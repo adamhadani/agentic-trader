@@ -67,8 +67,12 @@ broker regular session, current broker positions and working orders, fresh
 Alpaca trade price, configured price drift, economic-event lockout and the combined
 macro/volatility risk policy. Alpaca admission also refreshes the reconciled
 [account risk snapshot](account-ledger.md#cash-flow-adjusted-drawdown-and-entry-admission).
-Final submission pins its exact fingerprint under the ledger lock and rechecks the
-lease after waiting. Every tier and explicit quantity shares the drawdown cap.
+Final submission re-reads the fresh risk observation under the trading → ledger lock and
+re-assesses capacity on it; a refreshed observation is recorded (`preflight_risk_fingerprint`
+beside `risk_fingerprint`), not refused, and a changed one refuses only through those
+checks. Final submission also rechecks the lease after waiting. On 2026-11-09 a periodic
+checkpoint between preflight and submission refused the TXN auto-entry under the old
+exact-fingerprint rule, although the re-assessment would have passed. Every tier and explicit quantity shares the drawdown cap.
 Typed [broker capacity evidence](entry-capacity.md) includes account restrictions,
 funding, asset borrowing, quote and complete exact order/position inventory. Final
 admission rechecks its age, the unchanged approved signal and all current reservations

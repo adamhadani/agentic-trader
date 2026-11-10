@@ -140,9 +140,11 @@ also blocks new entries even if a withdrawal left adjusted drawdown unchanged.
 
 Authorization checks risk under the trading → ledger lock order. Preflight refreshes
 through the injected ledger service. The final `SUBMITTING` transaction rechecks
-freshness, the exact risk fingerprint, the cap and the lease after acquiring locks.
-A changed/expired observation rejects the original request with a reason; no order
-is resized or replayed. Queue/submission events retain the admitted risk observation;
+freshness, the cap and the lease after acquiring locks, re-reading the risk observation
+and re-assessing capacity on it. A refreshed observation is recorded
+(`preflight_risk_fingerprint` beside `risk_fingerprint`), not refused. An expired
+observation, or one that fails the re-assessment, rejects the original request with a
+reason; no order is resized or replayed. Queue/submission events retain the admitted risk observation;
 signal provenance retains its fingerprint. Missing, stale, failed or unsupported
 risk evidence blocks new entries rather than becoming zero drawdown.
 
