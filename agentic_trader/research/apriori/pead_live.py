@@ -8,9 +8,12 @@ the static liquidity reference) makes the whole session unavailable: no partial 
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import logging
 import math
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Literal, Protocol
@@ -19,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from agentic_trader.agent.earnings import ReportedPage
+from agentic_trader.data.providers import DAILY_BATCH_SYMBOLS
 from agentic_trader.research.apriori.catalog import PeadEntry
 from agentic_trader.research.apriori.earnings_history import dedupe_rows
 
@@ -35,13 +39,19 @@ __all__ = ["LOOKBACK_CALENDAR_DAYS", "DailyBars", "LiveEvents", "event_document"
 # Calendar days looked back from the decision session for the trading-day list; must
 # comfortably cover the event's vol_window/atr_window plus the D, D+1, D+2=session triplet.
 LOOKBACK_CALENDAR_DAYS = 120
-# A journaled unavailable reason keeps the provider's message, bounded.
-REASON_MAX_CHARS = 200
-# One GET timeout on 2026-11-05 skipped the decision; each of the two bar reads is retried once.
+# Chunks (`DAILY_BATCH_SYMBOLS` each) of both bar requests in flight at once. The sequential
+# 100-symbol loop overran the scan's 60 s budget on large earnings pages (2026-11-05, 11-06, 11-09).
+# Must stay at or below the requests adapter's connection pool size (10), or chunks queue on the pool.
+PEAD_FETCH_CONCURRENCY = 8
+# One GET timeout on 2026-11-05 skipped the decision; each chunk is retried once.
 BARS_RETRY_DELAY_SECONDS = 2.0
 _RETRY_SUFFIX = " (after 1 retry)"
 
 logger = logging.getLogger(__name__)
+
+# A dedicated pool: a chunk GET that outlives a cancelled or timed-out scan keeps its thread until
+# it returns, and must not occupy the loop's shared default executor (native fetch, broker, Telegram).
+_EXECUTOR = ThreadPoolExecutor(max_workers=PEAD_FETCH_CONCURRENCY, thread_name_prefix="pead-bars")
 
 
 class DailyBars(Protocol):
@@ -104,24 +114,78 @@ def _benchmark_bars_available(frame: pd.DataFrame | None, d_minus_1: date, d_plu
     return bool(np.all(np.isfinite(closes)))
 
 
-async def _fetch_daily(
+async def _read_chunk(
+    bars: DailyBars, chunk: Sequence[str], start: datetime, end: datetime, adjustment: str
+) -> Mapping[str, pd.DataFrame]:
+    """One blocking GET on the PEAD executor, in a copy of the caller's context (as `to_thread` does).
+
+    The bar-evidence response observer is a ContextVar, so the context must travel to the thread.
+    """
+    ctx = contextvars.copy_context()
+    call = functools.partial(ctx.run, bars.fetch_daily_many, chunk, start, end, adjustment=adjustment)
+    return await asyncio.get_running_loop().run_in_executor(_EXECUTOR, call)
+
+
+async def _fetch_chunk(
     bars: DailyBars,
-    symbols: Sequence[str],
+    chunk: Sequence[str],
     start: datetime,
     end: datetime,
     adjustment: str,
+    gate: asyncio.Semaphore,
     sleep: Callable[[float], Awaitable[None]],
 ) -> Mapping[str, pd.DataFrame]:
-    """One daily-bars GET (safe to repeat), retried once after `BARS_RETRY_DELAY_SECONDS`."""
+    """One chunk GET (safe to repeat) under the shared semaphore, retried once.
+
+    The retry delay is slept outside the semaphore so a waiting chunk never holds a slot.
+    """
     try:
-        return await asyncio.to_thread(bars.fetch_daily_many, symbols, start, end, adjustment=adjustment)
+        async with gate:
+            return await _read_chunk(bars, chunk, start, end, adjustment)
     except Exception as exc:
         logger.warning(
-            "PEAD daily bars fetch failed; retrying once",
+            "PEAD daily bars chunk failed; retrying once",
             extra={"event": "pead_bars_retry", "reason": type(exc).__name__},
         )
     await sleep(BARS_RETRY_DELAY_SECONDS)
-    return await asyncio.to_thread(bars.fetch_daily_many, symbols, start, end, adjustment=adjustment)
+    async with gate:
+        return await _read_chunk(bars, chunk, start, end, adjustment)
+
+
+async def _fetch_daily_requests(
+    bars: DailyBars,
+    requests: Sequence[tuple[Sequence[str], str]],
+    start: datetime,
+    end: datetime,
+    sleep: Callable[[float], Awaitable[None]],
+) -> list[dict[str, pd.DataFrame]]:
+    """Every chunk of every ``(symbols, adjustment)`` request, concurrently; one merged mapping per request.
+
+    All chunks share one semaphore of `PEAD_FETCH_CONCURRENCY`. A chunk that fails after
+    its retry cancels the rest, and its own exception is re-raised, so the caller sees a failure,
+    never a partial set. When several fail, the first in task (list) order is raised, not the first in time.
+    """
+    gate = asyncio.Semaphore(PEAD_FETCH_CONCURRENCY)
+    tasks: list[asyncio.Task[Mapping[str, pd.DataFrame]]] = []
+    owners: list[int] = []
+    for index, (symbols, adjustment) in enumerate(requests):
+        for offset in range(0, len(symbols), DAILY_BATCH_SYMBOLS):
+            chunk = list(symbols[offset : offset + DAILY_BATCH_SYMBOLS])
+            tasks.append(asyncio.create_task(_fetch_chunk(bars, chunk, start, end, adjustment, gate, sleep)))
+            owners.append(index)
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+        for task in tasks:
+            if task.done() and not task.cancelled() and task.exception() is not None:
+                raise task.exception()  # type: ignore[misc]
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    merged: list[dict[str, pd.DataFrame]] = [{} for _ in requests]
+    for owner, task in zip(owners, tasks, strict=True):
+        merged[owner].update(task.result())
+    return merged
 
 
 async def live_events(
@@ -159,13 +223,18 @@ async def live_events(
     start = datetime.combine(trading[0], time.min, tzinfo=UTC)
     end = datetime.combine(as_of, time(23, 59), tzinfo=UTC)
     try:
-        adjusted = await _fetch_daily(bars, [benchmark, *reporters], start, end, "all", sleep)
-        raw = await _fetch_daily(bars, sorted({*reporters, *static_symbols}), start, end, "raw", sleep)
-    except Exception as exc:
-        reason = (
-            f"bars_unavailable: {type(exc).__name__}: {exc}"[: REASON_MAX_CHARS - len(_RETRY_SUFFIX)] + _RETRY_SUFFIX
+        adjusted, raw = await _fetch_daily_requests(
+            bars,
+            [([benchmark, *reporters], "all"), (sorted({*reporters, *static_symbols}), "raw")],
+            start,
+            end,
+            sleep,
         )
-        return _unavailable(session, reason, report_date=report_date, page=page)
+    except Exception as exc:
+        # Type name only: a provider message can carry hosts or request detail.
+        return _unavailable(
+            session, f"bars_unavailable: {type(exc).__name__}{_RETRY_SUFFIX}", report_date=report_date, page=page
+        )
 
     if not _benchmark_bars_available(adjusted.get(benchmark), d_minus_1, as_of):
         return _unavailable(session, "benchmark_bars_unavailable", report_date=report_date, page=page)

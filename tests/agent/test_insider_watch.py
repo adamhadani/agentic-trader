@@ -70,6 +70,7 @@ from tests.agent.test_card_freshness_tap import record_card, tap_desk  # noqa: F
 from tests.agent.test_evaluator import create_equity_candidate, evaluator_factory  # noqa: F401  (fixture)
 from tests.agent.test_scan_budget import candidate
 from tests.agent.test_scan_drift import (  # noqa: F401  (budget_desk, drift_desk are fixtures)
+    _drift_events,
     _gate,
     _open_position,
     _signals,
@@ -666,13 +667,13 @@ async def test_a_failed_preparation_is_unavailable_with_a_type_name(watch_desk, 
     assert (event["payload"]["status"], event["payload"]["reason"]) == ("unavailable", "error: RuntimeError")
 
 
-async def test_both_preparations_share_one_deadline(watch_desk, temp_db, monkeypatch):
+async def test_a_source_past_the_shared_deadline_times_out_while_the_other_completes(watch_desk, temp_db, monkeypatch):
     monkeypatch.setattr(copilot_module, "DRIFT_PREPARE_TIMEOUT_SECONDS", 0.3)
     watch_desk.earnings_drift.delay = 0.2  # PEAD alone fits the bound
     original = watch_desk.insider_watch_source.prepare
 
     async def slow(**kwargs):
-        await asyncio.sleep(0.2)  # alone it would fit too; after PEAD it does not
+        await asyncio.sleep(5.0)  # past the one bound, however fast PEAD finishes
         return await original(**kwargs)
 
     watch_desk.insider_watch_source.prepare = slow
@@ -682,6 +683,49 @@ async def test_both_preparations_share_one_deadline(watch_desk, temp_db, monkeyp
     [watch] = await _watch_events(temp_db)
     assert (watch["payload"]["status"], watch["payload"]["reason"]) == ("unavailable", "timeout")
     assert "WINR" in {s["contract"] for s in await _signals(temp_db)}
+
+
+async def test_a_slow_catalog_source_does_not_starve_the_next(watch_desk, temp_db, monkeypatch):
+    monkeypatch.setattr(copilot_module, "DRIFT_PREPARE_TIMEOUT_SECONDS", 0.2)
+    watch_desk.earnings_drift.delay = 5.0  # PEAD overruns the bound
+    original = watch_desk.insider_watch_source.prepare
+
+    async def brief(**kwargs):
+        await asyncio.sleep(0.05)  # fits the bound alone; starved to 0 s if it waits for PEAD's deadline
+        return await original(**kwargs)
+
+    watch_desk.insider_watch_source.prepare = brief
+
+    loop = asyncio.get_running_loop()
+    starts: dict[str, float] = {}
+    pead_prepare = watch_desk.earnings_drift.prepare
+
+    async def pead_timed(**kwargs):
+        starts["pead"] = loop.time()
+        return await pead_prepare(**kwargs)
+
+    watch_desk.earnings_drift.prepare = pead_timed
+
+    async def watch_timed(**kwargs):
+        starts["watch"] = loop.time()
+        return await brief(**kwargs)
+
+    watch_desk.insider_watch_source.prepare = watch_timed
+
+    started = loop.time()
+    await suggestion_scan(watch_desk)
+    elapsed = loop.time() - started
+    # Both sources start inside one window; sequential preparation (a fresh deadline per
+    # source in turn) would start the second only after the first finished or timed out.
+    assert abs(starts["watch"] - starts["pead"]) < copilot_module.DRIFT_PREPARE_TIMEOUT_SECONDS
+    assert starts["watch"] - starts["pead"] < 0.1
+
+    [watch] = await _watch_events(temp_db)
+    assert watch["payload"]["status"] == "completed"
+    [pead] = await _drift_events(temp_db)
+    assert (pead["payload"]["status"], pead["payload"]["reason"]) == ("unavailable", "timeout")
+    # One shared bound, not a deadline per source in turn (generous margin for a loaded runner).
+    assert elapsed < 3.0
 
 
 @pytest.mark.parametrize("gate", ["halt", "lockout"])
