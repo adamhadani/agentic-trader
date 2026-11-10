@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from click.testing import CliRunner
 
+from agentic_trader.accounting.risk import AccountRiskSnapshot
 from agentic_trader.cli.main import cli
 from agentic_trader.constants import AuditEventType
 from agentic_trader.execution.durable import EventKind, WorkStatus
@@ -58,6 +59,8 @@ async def test_worsening_or_stale_risk_blocks_real_sdk_post(risk_execution_desk,
         assert item.status == WorkStatus.REJECTED
         reason = item.result["error_message"]
     assert any(word in reason.lower() for word in ("drawdown", "risk", "stale"))
+    if stage == "preflight":
+        assert "drawdown" in reason.lower()
     assert not mutations(venue)
 
 
@@ -80,7 +83,7 @@ async def test_sdk_submission_persists_exact_risk_and_remains_single(risk_execut
 
 
 @pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
-async def test_new_checkpoint_fences_an_already_checked_claim(risk_execution_desk):
+async def test_worse_checkpoint_after_preflight_is_refused_by_capacity_recheck(risk_execution_desk):
     copilot, venue, state, order = risk_execution_desk
     store = copilot.db.workflows
     item, reason = await store.enqueue_entry(order, copilot.config)
@@ -89,8 +92,94 @@ async def test_new_checkpoint_fences_an_already_checked_claim(risk_execution_des
     checked = await copilot.ledger.current_risk()
     record_loss(state, 700)
     await copilot.ledger.refresh()
-    reason = await store.begin_submission(claim, copilot.config, risk_fingerprint=checked.fingerprint)
-    assert "risk changed" in reason.lower()
+    reason = await store.begin_submission(
+        claim,
+        copilot.config,
+        preflight_risk_fingerprint=checked.fingerprint,
+        broker_context=await copilot.broker.entry_market_context(order),
+    )
+    assert "drawdown" in reason.lower()
+    assert (await store.get_work(claim.id)).status == WorkStatus.CHECKING
+    assert not mutations(venue)
+
+
+@pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
+async def test_benign_refresh_during_preflight_submits_once(risk_execution_desk, caplog):
+    copilot, venue, _state, order = risk_execution_desk
+    entry = copilot.entry_service
+    item, reason = await entry.store.enqueue_entry(order, copilot.config)
+    assert item is not None, reason
+
+    async def during_preflight(*args):
+        await copilot.ledger.refresh()
+
+    entry.macro_check.side_effect = during_preflight
+    with caplog.at_level("INFO"):
+        assert await entry.dispatch_one()
+    refreshed = [r for r in caplog.records if getattr(r, "event", None) == "entry_risk_refreshed"]
+    assert len(refreshed) == 1 and refreshed[0].signal_id == order.signal_id
+    assert (await entry.store.get_work(item.id)).status == WorkStatus.ACCEPTED
+    posts = mutations(venue)
+    assert len(posts) == 1 and posts[0][0] == "POST"
+    submitted = [e for e in await entry.store.events() if e["kind"] == EventKind.ENTRY_SUBMITTING]
+    assert len(submitted) == 1
+    payload = submitted[0]["payload"]
+    current = await copilot.ledger.current_risk()
+    assert payload["preflight_risk_fingerprint"] != payload["risk_fingerprint"]
+    assert payload["risk_fingerprint"] == current.fingerprint
+    assert payload["risk_fingerprint"] == AccountRiskSnapshot.model_validate(payload["account_risk"]).fingerprint
+
+
+@pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
+async def test_store_level_benign_refresh_is_not_refused(risk_execution_desk):
+    copilot, _venue, _state, order = risk_execution_desk
+    store = copilot.db.workflows
+    item, reason = await store.enqueue_entry(order, copilot.config)
+    assert item is not None, reason
+    claim = await store.claim_entry(lease_seconds=60)
+    checked = await copilot.ledger.current_risk()
+    await copilot.ledger.refresh()
+    context = await copilot.broker.entry_market_context(order)
+    reason = await store.begin_submission(
+        claim, copilot.config, preflight_risk_fingerprint=checked.fingerprint, broker_context=context
+    )
+    assert reason is None
+    assert (await copilot.ledger.current_risk()).fingerprint != checked.fingerprint
+    assert (await store.get_work(claim.id)).status == WorkStatus.SUBMITTING
+
+
+@pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
+async def test_withdrawal_after_preflight_is_refused_by_equity_recheck(risk_execution_desk):
+    copilot, venue, state, order = risk_execution_desk
+    store = copilot.db.workflows
+    item, reason = await store.enqueue_entry(order, copilot.config)
+    assert item is not None, reason
+    claim = await store.claim_entry(lease_seconds=60)
+    checked = await copilot.ledger.current_risk()
+    context = await copilot.broker.entry_market_context(order)
+    state["account"]["cash"] = "3000"
+    state["activities"].append({"id": "withdraw", "activity_type": "CSW", "net_amount": "-7000"})
+    await copilot.ledger.refresh()
+    reason = await store.begin_submission(
+        claim, copilot.config, preflight_risk_fingerprint=checked.fingerprint, broker_context=context
+    )
+    assert reason is not None and "per-trade risk" in reason.lower()
+    assert (await copilot.ledger.current_risk()).drawdown_pct == 0
+    assert (await store.get_work(claim.id)).status == WorkStatus.CHECKING
+    assert not mutations(venue)
+
+
+async def test_risk_without_preflight_fingerprint_is_refused(risk_execution_desk):
+    copilot, venue, _state, order = risk_execution_desk
+    store = copilot.db.workflows
+    item, reason = await store.enqueue_entry(order, copilot.config)
+    assert item is not None, reason
+    claim = await store.claim_entry(lease_seconds=60)
+    context = await copilot.broker.entry_market_context(order)
+    reason = await store.begin_submission(
+        claim, copilot.config, preflight_risk_fingerprint=None, broker_context=context
+    )
+    assert "not observed at preflight" in reason
     assert (await store.get_work(claim.id)).status == WorkStatus.CHECKING
     assert not mutations(venue)
 
@@ -112,7 +201,7 @@ async def test_waiting_for_risk_lock_cannot_extend_submission_lease(risk_executi
         return result
 
     monkeypatch.setattr(store, "_entry_risk", delayed_lock)
-    reason = await store.begin_submission(claim, copilot.config, risk_fingerprint=risk.fingerprint)
+    reason = await store.begin_submission(claim, copilot.config, preflight_risk_fingerprint=risk.fingerprint)
     assert "expired" in reason.lower()
     assert (await store.get_work(claim.id)).status == WorkStatus.CHECKING
     assert not mutations(venue)

@@ -23,8 +23,8 @@ Quote/trade age and market-session limits also apply after lock waits.
 
 Risk capital is the lesser of the configured mandate and observed equity. Scans
 use ledger equity; final admission also includes both fresh account observations.
-There is no artificial $1,000 capital floor. The account-risk fingerprint, claim
-lease, current approved signal and current reservations are checked under the
+There is no artificial $1,000 capital floor. The fresh account-risk observation (re-read, with capacity re-assessed on it; a refresh
+after preflight is recorded, not refused), claim lease, current approved signal and current reservations are checked under the
 existing trading → ledger lock order. Fill/status and quarantine writers participate
 in the trading lock, so a concurrent capacity change cannot bypass the final check.
 Queue and signal age are rechecked after lock waits, independently of claim lifetime.

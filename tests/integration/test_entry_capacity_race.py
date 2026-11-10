@@ -217,7 +217,9 @@ async def test_final_admission_rechecks_capacity_after_concurrent_writer(
             tasks.append(publishing)
             await writer_holds_lock.wait()
             admitting = asyncio.create_task(
-                store.begin_submission(claim, copilot.config, risk_fingerprint=risk.fingerprint, broker_context=context)
+                store.begin_submission(
+                    claim, copilot.config, preflight_risk_fingerprint=risk.fingerprint, broker_context=context
+                )
             )
             tasks.append(admitting)
             await admission_requested_lock.wait()

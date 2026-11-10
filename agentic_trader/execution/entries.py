@@ -141,7 +141,7 @@ class EntryExecutionService:
         if reason := await self.store.begin_submission(
             item,
             self.config,
-            risk_fingerprint=risk.fingerprint if risk else None,
+            preflight_risk_fingerprint=risk.fingerprint if risk else None,
             broker_context=context if isinstance(context, BrokerEntryContext) else None,
         ):
             await self.store.resolve_entry(
