@@ -1235,9 +1235,9 @@ class TradingCopilot:
             catalog_runs = [CatalogRun.begin(source, active_positions, self.config) for source in self.catalog_sources]
             catalog_only: set[str] = set()
             late_by = datetime.now(UTC) - scheduled_at if catalog_scan and scheduled_at is not None else None
-            # One bound on every source's preparation together (they run in turn under the scan lock), set
-            # when the first one starts: a slow source leaves the later ones only what remains.
-            prepare_deadline: float | None = None
+            # One bound on every source's preparation together: the due sources prepare concurrently
+            # under the scan lock, so a slow source cannot leave a later one less than the others have.
+            due: list[CatalogRun] = []
             for run in catalog_runs:
                 source = run.source
                 max_lateness = timedelta(seconds=source.max_lateness_seconds(self.config))
@@ -1263,11 +1263,23 @@ class TradingCopilot:
                             },
                         )
                 elif catalog_scan and source.applies(scheduled_time_et):
-                    if prepare_deadline is None:
-                        prepare_deadline = asyncio.get_running_loop().time() + DRIFT_PREPARE_TIMEOUT_SECONDS
-                    run.preparation = await self._prepare_catalog(
-                        source, alpha_snapshot, active_positions, deadline=prepare_deadline
+                    due.append(run)
+                elif catalog_scan:
+                    # The source failed to build but would have decided now: journal the unavailable
+                    # decision (and its one notice) rather than go silently dead.
+                    run.preparation = source.unbuilt(
+                        self.config, alpha_snapshot, scheduled_time_et, session=self._today_et()
                     )
+            if due:
+                prepare_deadline = asyncio.get_running_loop().time() + DRIFT_PREPARE_TIMEOUT_SECONDS
+                preparations = await asyncio.gather(
+                    *(
+                        self._prepare_catalog(run.source, alpha_snapshot, active_positions, deadline=prepare_deadline)
+                        for run in due
+                    )
+                )
+                for run, preparation in zip(due, preparations, strict=True):
+                    run.preparation = preparation
                     if not run.capped:
                         known = {c.strip("/").upper() for c in self.config.contracts} | {
                             s for s, _ in dynamic_contracts
@@ -1278,12 +1290,6 @@ class TradingCopilot:
                             *dynamic_contracts,
                             *((s, synthetic_contract(s, s)) for s in sorted(source_only)),
                         ]
-                elif catalog_scan:
-                    # The source failed to build but would have decided now: journal the unavailable
-                    # decision (and its one notice) rather than go silently dead.
-                    run.preparation = source.unbuilt(
-                        self.config, alpha_snapshot, scheduled_time_et, session=self._today_et()
-                    )
 
             selected, summary["skipped_not_executable"], summary["skipped_closed_session"] = self._select_contracts(
                 [*self.config.contracts.items(), *dynamic_contracts],
