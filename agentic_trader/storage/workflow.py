@@ -938,10 +938,18 @@ class WorkflowStore:
         item: WorkItem,
         config: AppConfig,
         *,
-        risk_fingerprint: str | None = None,
+        preflight_risk_fingerprint: str | None = None,
         broker_context: BrokerEntryContext | None = None,
     ) -> str | None:
-        """Commit submission authority, or return a concrete refusal reason."""
+        """Commit submission authority, or return a concrete refusal reason.
+
+        Account risk is re-read under the trading -> ledger lock and capacity is
+        re-assessed on that fresh observation. A refreshed observation (a periodic
+        checkpoint between preflight and here) is recorded, not refused; a worse one
+        refuses only through the risk read's validity checks and the capacity
+        re-assessment. Risk with no preflight fingerprint is refused because preflight
+        never observed it.
+        """
         async with self.db.session_factory() as session, session.begin():
             await self.lock(session)
             halted = await session.get(SystemStateRecord, SystemStateKey.TRADING_HALTED)
@@ -983,8 +991,17 @@ class WorkflowStore:
                 risk = await self._entry_risk(session, config)
             except ValueError as exc:
                 return f"Account risk unavailable: {exc}. No order submitted."
-            if risk and risk.fingerprint != risk_fingerprint:
-                return "Account risk changed after preflight. No order submitted; request a fresh scan."
+            if risk and preflight_risk_fingerprint is None:
+                return "Account risk was not observed at preflight. No order submitted."
+            if risk and risk.fingerprint != preflight_risk_fingerprint:
+                logger.info(
+                    "Account risk observation refreshed between preflight and submission; re-assessing",
+                    extra={
+                        "event": "entry_risk_refreshed",
+                        "work_id": item.id,
+                        "signal_id": item.payload["signal_id"],
+                    },
+                )
             reservations = [
                 r.to_dict()
                 for r in (
@@ -1015,7 +1032,8 @@ class WorkflowStore:
             evidence = {
                 **item.payload,
                 "account_risk": risk.model_dump(mode="json") if risk else None,
-                "risk_fingerprint": risk_fingerprint,
+                "risk_fingerprint": risk.fingerprint if risk else None,
+                "preflight_risk_fingerprint": preflight_risk_fingerprint,
                 "drawdown_multiplier": drawdown_risk_factor(float(risk.drawdown_pct), config.sizing) if risk else 1.0,
                 "broker_context": broker_context.model_dump(mode="json") if broker_context else None,
                 "capacity": capacity.model_dump(mode="json") if capacity else None,
