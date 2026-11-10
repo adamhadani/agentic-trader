@@ -61,7 +61,9 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    `submitting`; never expire or replay a broker submission. Unknown outcomes halt
    new risk and recover by exact client ID, including after a 404. Alpaca admission
    requires fresh journaled account drawdown; every tier shares its cap. Final
-   submission re-reads fresh account risk under the ledger lock, re-assesses capacity on it (a refresh since preflight is recorded as `preflight_risk_fingerprint`, not refused) and rechecks the lease. Rejected/unfilled
+   submission re-reads fresh account risk under the ledger lock, rechecks the lease after the wait and
+   re-assesses capacity on that observation; a refresh since preflight is not refused (`risk_fingerprint` is the
+   snapshot used, `preflight_risk_fingerprint` the preflight's). Rejected/unfilled
    terminal evidence releases capacity; acceptance is not a fill.
    Every entry-risk rule (per-trade budget, notional and class caps, concurrent positions,
    aggregate stop risk, correlation group, reward/risk, macro lockout, session, earnings,

@@ -946,8 +946,9 @@ class WorkflowStore:
         Account risk is re-read under the trading -> ledger lock and capacity is
         re-assessed on that fresh observation. A refreshed observation (a periodic
         checkpoint between preflight and here) is recorded, not refused; a worse one
-        refuses only through the capacity checks. Risk with no preflight fingerprint
-        is refused because preflight never observed it.
+        refuses only through the risk read's validity checks and the capacity
+        re-assessment. Risk with no preflight fingerprint is refused because preflight
+        never observed it.
         """
         async with self.db.session_factory() as session, session.begin():
             await self.lock(session)
@@ -995,7 +996,11 @@ class WorkflowStore:
             if risk and risk.fingerprint != preflight_risk_fingerprint:
                 logger.info(
                     "Account risk observation refreshed between preflight and submission; re-assessing",
-                    extra={"event": "entry_risk_refreshed"},
+                    extra={
+                        "event": "entry_risk_refreshed",
+                        "work_id": item.id,
+                        "signal_id": item.payload["signal_id"],
+                    },
                 )
             reservations = [
                 r.to_dict()
