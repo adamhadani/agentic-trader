@@ -8,9 +8,12 @@ the static liquidity reference) makes the whole session unavailable: no partial 
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import logging
 import math
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Literal, Protocol
@@ -38,12 +41,17 @@ __all__ = ["LOOKBACK_CALENDAR_DAYS", "DailyBars", "LiveEvents", "event_document"
 LOOKBACK_CALENDAR_DAYS = 120
 # Chunks (`DAILY_BATCH_SYMBOLS` each) of both bar requests in flight at once. The sequential
 # 100-symbol loop overran the scan's 60 s budget on large earnings pages (2026-11-05, 11-06, 11-09).
+# Must stay at or below the requests adapter's connection pool size (10), or chunks queue on the pool.
 PEAD_FETCH_CONCURRENCY = 8
 # One GET timeout on 2026-11-05 skipped the decision; each chunk is retried once.
 BARS_RETRY_DELAY_SECONDS = 2.0
 _RETRY_SUFFIX = " (after 1 retry)"
 
 logger = logging.getLogger(__name__)
+
+# A dedicated pool: a chunk GET that outlives a cancelled or timed-out scan keeps its thread until
+# it returns, and must not occupy the loop's shared default executor (native fetch, broker, Telegram).
+_EXECUTOR = ThreadPoolExecutor(max_workers=PEAD_FETCH_CONCURRENCY, thread_name_prefix="pead-bars")
 
 
 class DailyBars(Protocol):
@@ -106,6 +114,18 @@ def _benchmark_bars_available(frame: pd.DataFrame | None, d_minus_1: date, d_plu
     return bool(np.all(np.isfinite(closes)))
 
 
+async def _read_chunk(
+    bars: DailyBars, chunk: Sequence[str], start: datetime, end: datetime, adjustment: str
+) -> Mapping[str, pd.DataFrame]:
+    """One blocking GET on the PEAD executor, in a copy of the caller's context (as `to_thread` does).
+
+    The bar-evidence response observer is a ContextVar, so the context must travel to the thread.
+    """
+    ctx = contextvars.copy_context()
+    call = functools.partial(ctx.run, bars.fetch_daily_many, chunk, start, end, adjustment=adjustment)
+    return await asyncio.get_running_loop().run_in_executor(_EXECUTOR, call)
+
+
 async def _fetch_chunk(
     bars: DailyBars,
     chunk: Sequence[str],
@@ -121,7 +141,7 @@ async def _fetch_chunk(
     """
     try:
         async with gate:
-            return await asyncio.to_thread(bars.fetch_daily_many, chunk, start, end, adjustment=adjustment)
+            return await _read_chunk(bars, chunk, start, end, adjustment)
     except Exception as exc:
         logger.warning(
             "PEAD daily bars chunk failed; retrying once",
@@ -129,7 +149,7 @@ async def _fetch_chunk(
         )
     await sleep(BARS_RETRY_DELAY_SECONDS)
     async with gate:
-        return await asyncio.to_thread(bars.fetch_daily_many, chunk, start, end, adjustment=adjustment)
+        return await _read_chunk(bars, chunk, start, end, adjustment)
 
 
 async def _fetch_daily_requests(
@@ -141,9 +161,9 @@ async def _fetch_daily_requests(
 ) -> list[dict[str, pd.DataFrame]]:
     """Every chunk of every ``(symbols, adjustment)`` request, concurrently; one merged mapping per request.
 
-    All chunks share one semaphore of `PEAD_FETCH_CONCURRENCY`. The first chunk to fail after
-    its retry cancels the rest and re-raises its own exception, so the caller sees a failure,
-    never a partial set.
+    All chunks share one semaphore of `PEAD_FETCH_CONCURRENCY`. A chunk that fails after
+    its retry cancels the rest, and its own exception is re-raised, so the caller sees a failure,
+    never a partial set. When several fail, the first in task (list) order is raised, not the first in time.
     """
     gate = asyncio.Semaphore(PEAD_FETCH_CONCURRENCY)
     tasks: list[asyncio.Task[Mapping[str, pd.DataFrame]]] = []
@@ -151,7 +171,7 @@ async def _fetch_daily_requests(
     for index, (symbols, adjustment) in enumerate(requests):
         for offset in range(0, len(symbols), DAILY_BATCH_SYMBOLS):
             chunk = list(symbols[offset : offset + DAILY_BATCH_SYMBOLS])
-            tasks.append(asyncio.ensure_future(_fetch_chunk(bars, chunk, start, end, adjustment, gate, sleep)))
+            tasks.append(asyncio.create_task(_fetch_chunk(bars, chunk, start, end, adjustment, gate, sleep)))
             owners.append(index)
     try:
         await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)

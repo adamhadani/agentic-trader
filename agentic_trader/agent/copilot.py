@@ -1272,12 +1272,20 @@ class TradingCopilot:
                     )
             if due:
                 prepare_deadline = asyncio.get_running_loop().time() + DRIFT_PREPARE_TIMEOUT_SECONDS
-                preparations = await asyncio.gather(
-                    *(
+                prepare_tasks = [
+                    asyncio.create_task(
                         self._prepare_catalog(run.source, alpha_snapshot, active_positions, deadline=prepare_deadline)
-                        for run in due
                     )
-                )
+                    for run in due
+                ]
+                try:
+                    preparations = await asyncio.gather(*prepare_tasks)
+                except BaseException:
+                    # Never orphan a source: cancel the rest and let them unwind before re-raising.
+                    for task in prepare_tasks:
+                        task.cancel()
+                    await asyncio.gather(*prepare_tasks, return_exceptions=True)
+                    raise
                 for run, preparation in zip(due, preparations, strict=True):
                     run.preparation = preparation
                     if not run.capped:

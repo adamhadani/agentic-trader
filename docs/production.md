@@ -1460,14 +1460,21 @@ itself.
 
 #### PEAD bars incident, 2026-11-05 to 2026-11-09
 
-The PEAD decision was `unavailable` on 11-05, 11-06 and 11-09. On large earnings
-pages the adjusted and raw bar reads ran as two sequential calls, each a
-sequential loop over 100-symbol chunks (about 14 requests of 4-8 s), which
-overran the 60 s `DRIFT_PREPARE_TIMEOUT_SECONDS`; the 11-06 retry repeated the
-whole multi-chunk call. `pead_live` now chunks itself, runs all chunks of both
-requests concurrently (8 at a time) and retries only the failed chunk once. The
-journaled reason carries the exception type name only, never the provider
-message.
+The PEAD decision was `unavailable` on 11-05, 11-06 and 11-09. 11-05 and 11-06
+were each a single-chunk `ReadTimeout`, before #141's retry existed (merged
+2026-11-06 11:29 ET, after that day's 10:35 decision), so there was no retry on
+11-06. 11-09 was a sequential overrun with no error: the adjusted and raw reads
+ran one after the other, each a sequential loop over 100-symbol chunks (about 14
+requests of 4-8 s), past the 60 s `DRIFT_PREPARE_TIMEOUT_SECONDS`, and it also
+cost the insider-watch decision that followed it in the same window.
+
+The fix: `pead_live` chunks itself and runs all chunks of both requests
+concurrently (8 at a time) on a dedicated 8-thread executor, retrying only the
+failed chunk once; catalog sources now prepare concurrently under one 60 s
+window. The journaled reason carries the exception type name only, never the
+provider message. A cancelled chunk's in-flight GET finishes in the background
+on the PEAD executor (read-only, harmless), never on the loop's shared default
+executor.
 
 ### Insider watch Form 4 capture
 
@@ -1516,7 +1523,7 @@ The [watch cards](apriori-alphas.md#watch-cards) read SEC Form 4 filings from a 
   | `calendar_source` / `calendar_mismatch` | The trading calendar was not Alpaca's, or its prefix differs from the study's pinned digest. Never relax the pin; investigate the calendar source. |
   | `plausibility_cache_missing` | The pooled cube's raw-bar cache (`insider_watch.pooled_cache_dir`) is not on this machine. Restore the cache; there is no silent pass. |
   | `plausibility_not_checked` | Defensive: the archive was read without the study's plausibility bars. The daemon always builds the reader, so this is not expected; there is no silent pass. |
-  | `timeout` | The preparation outlasted the scan's shared 60 s bound: a cold archive read near 10:35 (the read continues; the next decision finds it done) or a PEAD preparation that used most of the shared time. Check the phase timings in the journal. |
+  | `timeout` | The preparation outlasted the scan's shared 60 s bound: a cold archive read near 10:35 (the read continues; the next decision finds it done). Sources prepare concurrently, so one slow source cannot use up another's time. Check the phase timings in the journal. |
   | `error: <Type>` | The preparation raised (for example a cube or digest mismatch, or a history seeded under another entry). The type name is in the reason; the daemon log has the traceback. |
   | `not_a_trading_session` | The scan ran outside a regular session; no action. |
   | `service unavailable: <Type>` / `insider watch source unavailable` | The frozen entry, its protocol or a client could not be built. The exception's type name (only) is in the reason; fix the config or digest and restart. |

@@ -696,9 +696,29 @@ async def test_a_slow_catalog_source_does_not_starve_the_next(watch_desk, temp_d
 
     watch_desk.insider_watch_source.prepare = brief
 
-    started = asyncio.get_running_loop().time()
+    loop = asyncio.get_running_loop()
+    starts: dict[str, float] = {}
+    pead_prepare = watch_desk.earnings_drift.prepare
+
+    async def pead_timed(**kwargs):
+        starts["pead"] = loop.time()
+        return await pead_prepare(**kwargs)
+
+    watch_desk.earnings_drift.prepare = pead_timed
+
+    async def watch_timed(**kwargs):
+        starts["watch"] = loop.time()
+        return await brief(**kwargs)
+
+    watch_desk.insider_watch_source.prepare = watch_timed
+
+    started = loop.time()
     await suggestion_scan(watch_desk)
-    elapsed = asyncio.get_running_loop().time() - started
+    elapsed = loop.time() - started
+    # Both sources start inside one window; sequential preparation (a fresh deadline per
+    # source in turn) would start the second only after the first finished or timed out.
+    assert abs(starts["watch"] - starts["pead"]) < copilot_module.DRIFT_PREPARE_TIMEOUT_SECONDS
+    assert starts["watch"] - starts["pead"] < 0.1
 
     [watch] = await _watch_events(temp_db)
     assert watch["payload"]["status"] == "completed"

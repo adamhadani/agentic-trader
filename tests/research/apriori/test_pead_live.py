@@ -1,6 +1,10 @@
 import asyncio
+import contextvars
+import gc
 import json
+import logging
 import threading
+import time as time_module
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
@@ -415,6 +419,7 @@ class ChunkRecordingBars:
         try:
             if self.gate:
                 assert self.released.wait(timeout=10), "gate never reached"
+                time_module.sleep(0.2)  # hold the threads so a ninth concurrent caller would be counted
             if self.fail_chunk is not None and key == self.fail_chunk:
                 with self.lock:
                     failing = self.fail_remaining > 0
@@ -513,3 +518,59 @@ async def test_cancellation_propagates_while_chunks_are_in_flight():
     block.set()  # let the worker threads finish so the process exits cleanly
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+_CALLER_VAR: contextvars.ContextVar[str] = contextvars.ContextVar("pead_test_caller_var", default="unset")
+
+
+async def test_the_callers_context_is_visible_inside_the_chunk_read():
+    seen: list[str] = []
+
+    class ContextBars(ChunkRecordingBars):
+        def fetch_daily_many(self, symbols, start, end, *, adjustment):
+            seen.append(_CALLER_VAR.get())
+            return super().fetch_daily_many(symbols, start, end, adjustment=adjustment)
+
+    _CALLER_VAR.set("from-caller")
+    result = await live_events(**base_kwargs(bars=ContextBars()), sleep=Sleeps())
+
+    assert result.status == "ok"
+    assert seen == ["from-caller", "from-caller"]
+
+
+async def test_a_failing_chunk_does_not_wait_for_blocked_siblings(caplog):
+    _, page = _big_page(250)
+    probe = ChunkRecordingBars()
+    await live_events(**base_kwargs(earnings=Earnings(page), bars=probe), sleep=Sleeps())
+    target = next(key for key in probe.calls if key[1] == "all")
+    release = threading.Event()
+
+    class SiblingBlockedBars:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.target_calls = 0
+
+        def fetch_daily_many(self, symbols, start, end, *, adjustment):
+            if (tuple(symbols), adjustment) == target:
+                with self.lock:
+                    self.target_calls += 1
+                raise httpx.ReadTimeout("read operation timed out")
+            release.wait(timeout=10)  # siblings stay blocked in their threads
+            return {}
+
+    bars = SiblingBlockedBars()
+    caplog.set_level(logging.DEBUG, logger="asyncio")
+    started = time_module.monotonic()
+    try:
+        result = await live_events(**base_kwargs(earnings=Earnings(page), bars=bars), sleep=Sleeps())
+        elapsed = time_module.monotonic() - started
+    finally:
+        release.set()
+
+    assert result.status == "unavailable"
+    assert result.reason == "bars_unavailable: ReadTimeout (after 1 retry)"
+    assert bars.target_calls == 2
+    assert elapsed < 5.0  # did not wait for the blocked siblings
+    await asyncio.sleep(0.3)  # let released threads and cancelled futures settle
+    gc.collect()
+    assert not [r for r in caplog.records if "never retrieved" in r.getMessage()]
