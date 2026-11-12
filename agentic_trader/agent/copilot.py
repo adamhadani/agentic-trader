@@ -33,9 +33,9 @@ from agentic_trader.agent.catalog_sources import (
 from agentic_trader.agent.copilot_graph import ask_copilot, create_copilot_graph
 from agentic_trader.agent.earnings import (
     EarningsCalendarProtocol,
-    EarningsLookup,
     NasdaqEarningsCalendar,
     earnings_blackout_reason,
+    resolve_earnings,
 )
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
 from agentic_trader.agent.filing_veto import filing_veto_evidence, journal_filings_block
@@ -457,12 +457,14 @@ class TradingCopilot:
         )
         # The release exit (execution/release_exit.py): one journaled pass per New York trading day shortly
         # before the close, on the lifetime service's broker calendar and the blackout's earnings calendar.
+        # One capture store: the release exit and the earnings blackout (scan and tap) read the same journal.
+        self.earnings_captures = EarningsCaptureStore(self.db.workflows, default_capture_directory())
         self.release_exit = ReleaseExitService(
             config.release_exit,
             self.db,
             close_service=self.close_service,
             earnings=self.earnings_calendar,
-            captures=EarningsCaptureStore(self.db.workflows, default_capture_directory()),
+            captures=self.earnings_captures,
             calendar=getattr(self.lifetime_service, "calendar", None),
             scope_of=self._release_exit_scope,
             # Each close holds the lock every other daemon close path holds (monitor, /close, /flatten).
@@ -562,6 +564,7 @@ class TradingCopilot:
             data_fetcher=self.data_fetcher,
             session_provider=self.session_provider,
             earnings_calendar=self.earnings_calendar,
+            earnings_captures=self.earnings_captures,
         )
         self.execution_engine = SlicedExecutionEngine(config=self.config)
         self.options_fetcher = OptionsDataFetcher(
@@ -3962,20 +3965,16 @@ class TradingCopilot:
             return FilingsLookup("unavailable", None)
 
     async def _earnings_blackout_reason(self, contract: str, now: datetime) -> str | None:
-        """The evaluator's equity earnings gate, failing open on a calendar failure exactly as it does."""
+        """The evaluator's equity earnings gate: the same resolver (live, then capture) and unknown policy."""
         blackout_days = self.config.risk.earnings_blackout_days
         if blackout_days <= 0 or self.earnings_calendar is None:
             return None
-        try:
-            lookup = await self.earnings_calendar.next_earnings(contract, now=now, horizon_days=blackout_days)
-        except Exception as e:
-            logger.warning(
-                "Earnings calendar lookup failed (%s); failing open (no blackout).",
-                e,
-                extra={"contract": contract, "error": str(e)},
-            )
-            lookup = EarningsLookup(event=None, verified=False, horizon_end=now.date())
-        reason = earnings_blackout_reason(lookup, contract, now, blackout_days)
+        lookup = await resolve_earnings(
+            contract, now, blackout_days, live=self.earnings_calendar, captures=self.earnings_captures
+        )
+        reason = earnings_blackout_reason(
+            lookup, contract, now, blackout_days, unknown=self.config.risk.earnings_calendar_unknown
+        )
         return f"Earnings Blackout: {reason}" if reason else None
 
     async def _corporate_action_reason(self, contract: str, now: datetime) -> str | None:
