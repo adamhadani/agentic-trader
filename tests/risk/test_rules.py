@@ -29,6 +29,7 @@ from agentic_trader.risk import (
     correlation_group,
     drawdown_halt,
     earnings_days_out,
+    earnings_unverified_refuses,
     entry_session_open,
     exposure_known,
     filing_veto_block,
@@ -547,3 +548,20 @@ def test_risk_package_imports_no_transport_or_data_adapter():
         [sys.executable, "-c", script], cwd=root, check=False, capture_output=True, text=True, timeout=60
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("verified", "has_event", "days", "unknown", "expected"),
+    [
+        (False, False, 7, "closed", True),
+        (False, False, 7, "open", False),
+        (True, False, 7, "closed", False),
+        (False, True, 7, "closed", False),
+        (False, False, 0, "closed", False),
+    ],
+)
+def test_earnings_unverified_refuses(verified, has_event, days, unknown, expected):
+    assert (
+        earnings_unverified_refuses(verified=verified, has_event=has_event, blackout_days=days, unknown=unknown)
+        is expected
+    )

@@ -594,3 +594,57 @@ def test_closed_policy_with_zero_blackout_days_never_refuses():
     lookup = _live_lookup(event=None, verified=False)
 
     assert earnings_blackout_reason(lookup, "AAPL", NOW, 0, unknown="closed") is None
+
+
+class _RecordingCaptures:
+    def __init__(self, reports=None):
+        self.calls = 0
+        self.reports = reports
+
+    async def reports_between(self, start, end, *, today):
+        self.calls += 1
+        return self.reports
+
+
+class _FixedLive:
+    def __init__(self, lookup):
+        self.lookup = lookup
+
+    async def next_earnings(self, symbol, now, horizon_days):
+        return self.lookup
+
+
+def test_capture_sourced_refusal_carries_the_capture_suffix():
+    event = EarningsEvent(symbol="AAPL", date=TODAY + timedelta(days=2), timing=EarningsTiming.AFTER_HOURS)
+    lookup = EarningsLookup(
+        event=event, verified=True, horizon_end=TODAY + timedelta(days=7), source="capture", capture_date=TODAY
+    )
+    reason = earnings_blackout_reason(lookup, "AAPL", NOW, 7)
+    assert reason is not None and reason.endswith("(calendar capture 2026-09-23)")
+    live = EarningsLookup(event=event, verified=True, horizon_end=TODAY + timedelta(days=7))
+    assert "calendar capture" not in earnings_blackout_reason(live, "AAPL", NOW, 7)
+
+
+async def test_resolution_logs_one_info_for_capture_or_unverified_only(caplog):
+    caplog.set_level(logging.INFO)
+    reports = CapturedReports(capture_date=TODAY, rows={TODAY: ()})
+    unverified = EarningsLookup(event=None, verified=False, horizon_end=TODAY)
+
+    await resolve_earnings("AAPL", NOW, 0, live=_FixedLive(unverified), captures=_RecordingCaptures(reports))
+    await resolve_earnings("AAPL", NOW, 0, live=_FixedLive(unverified), captures=None)
+    verified = EarningsLookup(event=None, verified=True, horizon_end=TODAY)
+    await resolve_earnings("AAPL", NOW, 0, live=_FixedLive(verified), captures=_RecordingCaptures(reports))
+
+    records = [r.__dict__ for r in caplog.records if r.__dict__.get("event") == "earnings_lookup_resolved"]
+    assert [(r["contract"], r["source"], r["capture_date"], r["verified"]) for r in records] == [
+        ("AAPL", "capture", "2026-09-23", True),
+        ("AAPL", "live", None, False),
+    ]
+
+
+async def test_verified_live_report_blocks_without_reading_the_capture():
+    event = EarningsEvent(symbol="AAPL", date=TODAY + timedelta(days=2), timing=EarningsTiming.AFTER_HOURS)
+    live = EarningsLookup(event=event, verified=True, horizon_end=TODAY + timedelta(days=7))
+    captures = _RecordingCaptures(CapturedReports(capture_date=TODAY, rows={}))
+    result = await resolve_earnings("AAPL", NOW, 7, live=_FixedLive(live), captures=captures)
+    assert result is live and captures.calls == 0

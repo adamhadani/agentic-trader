@@ -73,7 +73,7 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    `macro_lockout` reads the verified union calendar: the static `config/calendar/us-tier1-vN.json`
    (digest-pinned by `risk.macro_calendar_sha256`) plus the live ForexFactory feed, so a feed outage
    never reads as an empty calendar. A static calendar that is expired, not yet valid or invalid is
-   unverified: `risk.macro_calendar_unknown` `open` (default) labels it, `closed` refuses all entries.
+   unverified: `risk.macro_calendar_unknown` `open` (default) labels it, `closed` refuses all entries; `risk.earnings_calendar_unknown` `closed` (shipped) refuses an equity entry when neither the live calendar nor a fresh capture vouches.
    `filing_veto` (`filing_veto.entry_block`, code default `off`) is built like `corporate_action` and applies to long
    equity entries only (a short never evaluates it): the scan reads the latest journaled filings-capture pass once,
    `preview` records `decision_provenance["filings"]` and a card line, `enforce` refuses at the evaluator and tap gates

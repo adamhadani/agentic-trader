@@ -12,7 +12,7 @@ import httpx
 
 from agentic_trader.constants import NASDAQ_EARNINGS_CALENDAR_URL
 from agentic_trader.market.session import ET_TZ, ensure_et
-from agentic_trader.risk import earnings_days_out
+from agentic_trader.risk import earnings_days_out, earnings_unverified_refuses
 
 
 if TYPE_CHECKING:
@@ -86,7 +86,8 @@ class EarningsLookup:
 
     `verified=False` means at least one date in the scanned window could not be
     fetched or parsed, so an absent `event` is not trustworthy evidence of "no
-    report" — callers must fail open rather than treat it as clearance.
+    report" — callers apply ``risk.earnings_calendar_unknown`` (``open`` labels it, ``closed`` refuses) rather
+    than treat it as clearance.
     """
 
     event: EarningsEvent | None
@@ -360,6 +361,20 @@ def _is_ahead(report_date: date, timing: EarningsTiming, today: date) -> bool:
     return report_date > today or (report_date == today and timing != EarningsTiming.PRE_MARKET)
 
 
+def _log_resolved(symbol: str, lookup: EarningsLookup) -> None:
+    """One INFO line for a verdict that did not come from a verified live lookup (capture or unverified)."""
+    logger.info(
+        "earnings_lookup_resolved",
+        extra={
+            "event": "earnings_lookup_resolved",
+            "contract": symbol,
+            "source": lookup.source,
+            "capture_date": lookup.capture_date.isoformat() if lookup.capture_date else None,
+            "verified": lookup.verified,
+        },
+    )
+
+
 async def resolve_earnings(
     symbol: str,
     now: datetime,
@@ -410,15 +425,19 @@ async def resolve_earnings(
                         break
                 if found is not None:
                     break
-            return EarningsLookup(
+            result = EarningsLookup(
                 event=found,
                 verified=True,
                 horizon_end=horizon_end,
                 source="capture",
                 capture_date=captured.capture_date,
             )
+            _log_resolved(symbol, result)
+            return result
 
-    return EarningsLookup(event=None, verified=False, horizon_end=horizon_end)
+    result = EarningsLookup(event=None, verified=False, horizon_end=horizon_end)
+    _log_resolved(symbol, result)
+    return result
 
 
 def earnings_blackout_reason(
@@ -438,7 +457,9 @@ def earnings_blackout_reason(
     refuses (``"closed"``, ``risk.earnings_calendar_unknown``). `blackout_days=0` disables it.
     """
     if lookup.event is None:
-        if unknown == "closed" and blackout_days > 0 and not lookup.verified:
+        if earnings_unverified_refuses(
+            verified=lookup.verified, has_event=False, blackout_days=blackout_days, unknown=unknown
+        ):
             return (
                 f"{symbol}: earnings calendar unavailable and no fresh capture covers "
                 f"the next {blackout_days} days (policy closed)"
@@ -450,9 +471,14 @@ def earnings_blackout_reason(
         return None
 
     day_word = "day" if days_out == 1 else "days"
+    suffix = (
+        f" (calendar capture {lookup.capture_date.isoformat()})"
+        if lookup.source == "capture" and lookup.capture_date
+        else ""
+    )
     return (
         f"{symbol} reports {lookup.event.date.isoformat()} {timing_word(lookup.event.timing)} "
-        f"(in {days_out} {day_word}) — within {blackout_days}-day blackout"
+        f"(in {days_out} {day_word}) — within {blackout_days}-day blackout{suffix}"
     )
 
 

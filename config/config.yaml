@@ -618,6 +618,8 @@ release_exit:
   minutes_before_close: 30
 
 # Dated capture of the Nasdaq forward earnings calendar (docs/superpowers/specs/2026-11-06-earnings-capture-design.md).
+# Also the earnings blackout's fallback when the live lookup fails; off under risk.earnings_calendar_unknown: closed,
+# one failed live page refuses equity entries.
 earnings_capture:
   enabled: true
   horizon_days: 28

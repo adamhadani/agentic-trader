@@ -134,7 +134,7 @@ authoritative); else the latest journaled [earnings calendar
 capture](production.md#earnings-calendar-capture) when it is fresh and covers the
 window (the card note then ends "(calendar capture YYYY-MM-DD)"); else unverified.
 `risk.earnings_calendar_unknown` (code default `open`, `config/config.yaml` ships
-`closed`, mirroring `macro_calendar_unknown`) decides the unverified case: `open` adds
+`closed`; it mirrors the shape of the macro policy `macro_calendar_unknown`, which ships `open`) decides the unverified case: `open` adds
 only the note "Unverified — earnings calendar unavailable"; `closed` refuses with
 `Earnings Blackout: {SYMBOL}: earnings calendar unavailable and no fresh capture covers
 the next {days} days (policy closed)`. A 0-day blackout, a non-equity, and a desk with

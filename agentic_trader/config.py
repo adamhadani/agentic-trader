@@ -461,7 +461,9 @@ class EarningsCaptureConfig(BaseModel):
 
     The daemon captures the Nasdaq forward earnings calendar once per New York weekday for the next
     ``horizon_days`` calendar days and journals it. Research and context, and the release exit's second source
-    beside the live Nasdaq lookup (off, it leaves the live lookup only, so ``unknown`` is more likely).
+    beside the live Nasdaq lookup (off, it leaves the live lookup only, so ``unknown`` is more likely). It is also the
+    earnings blackout's fallback when the live lookup fails; with it off under ``risk.earnings_calendar_unknown:
+    closed``, a single failed live page refuses equity entries.
     """
 
     model_config = {"extra": "forbid"}

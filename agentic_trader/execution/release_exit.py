@@ -31,7 +31,13 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from sqlalchemy import select
 
-from agentic_trader.agent.earnings import EarningsCalendarProtocol, EarningsLookup, EarningsTiming, timing_word
+from agentic_trader.agent.earnings import (
+    EarningsCalendarProtocol,
+    EarningsCaptureSource,
+    EarningsLookup,
+    EarningsTiming,
+    timing_word,
+)
 from agentic_trader.constants import AssetClass, CloseRequestStatus, SignalStatus, normalize_asset_class
 from agentic_trader.execution.durable import EventKind, NotificationKind
 from agentic_trader.market.session import ET_TZ
@@ -213,10 +219,6 @@ class CloseService(Protocol):
     ) -> str: ...
 
 
-class CapturedEarnings(Protocol):
-    async def reports_between(self, start: date, end: date, *, today: date) -> CapturedReports | None: ...
-
-
 class ReleaseExitStore:
     """The ``release-exit`` journal: one pass per New York date and one close result per position and date."""
 
@@ -321,7 +323,7 @@ class ReleaseExitService:
         *,
         close_service: CloseService,
         earnings: EarningsCalendarProtocol,
-        captures: CapturedEarnings,
+        captures: EarningsCaptureSource,
         calendar: MarketCalendarProtocol | None,
         scope_of: Callable[[Mapping[str, Any]], str],
         close_guard: Callable[[], AbstractAsyncContextManager[Any]] = nullcontext,

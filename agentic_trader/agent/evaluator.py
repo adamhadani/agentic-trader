@@ -569,9 +569,10 @@ class RiskEvaluator:
         # The card's macro clearance is this deterministic gate's result; no LLM outcome sets or changes it.
         macro_clearance = True
 
-        # 2b. Earnings blackout (agentic_trader.agent.earnings.earnings_blackout_reason over
-        # agentic_trader.risk.earnings_days_out; equities only; None calendar or a 0-day config
-        # skips the gate and leaves no note).
+        # 2b. Earnings blackout (agentic_trader.agent.earnings.resolve_earnings: live lookup, else the dated
+        # capture, else unverified; earnings_blackout_reason over agentic_trader.risk.earnings_days_out and
+        # earnings_unverified_refuses, i.e. risk.earnings_calendar_unknown; equities only; None calendar or a
+        # 0-day config skips the gate and leaves no note).
         earnings_note_value: str | None = None
         if (
             asset_class == AssetClass.EQUITY
