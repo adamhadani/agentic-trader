@@ -85,12 +85,22 @@ class EntryExecutionService:
             entry_order_ids=tuple(sorted({p["broker_order_id"] for p in reservations if p.get("broker_order_id")})),
         )
         if isinstance(context, BrokerEntryContext):
-            # The cheap price-drift check runs first: a drifted entry is refused without the macro
-            # check's provider calls (calendar lookup, regime refresh).
+            # The cheap price-drift checks (last trade, then quote midpoint) run first: a drifted
+            # entry is refused without the macro check's provider calls (calendar lookup, regime
+            # refresh). The midpoint catches a move that an older IEX trade has not yet shown.
             assert request.entry_price is not None
             if abs(float(context.price) / request.entry_price - 1) > policy.entry_max_price_drift_pct:
                 return (
                     f"Market price changed to {context.price:g}; original approved limit {request.entry_price:g} retained.",
+                    context,
+                )
+            midpoint = (context.quote.bid_price + context.quote.ask_price) / 2
+            if abs(float(midpoint) / request.entry_price - 1) > policy.entry_max_price_drift_pct:
+                return (
+                    (
+                        f"Market quote midpoint moved to {float(midpoint):g}; "
+                        f"original approved limit {request.entry_price:g} retained."
+                    ),
                     context,
                 )
         elif not (isinstance(context, SimulatedEntryContext) and not requires_account_risk(self.config)):

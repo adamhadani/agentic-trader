@@ -142,6 +142,38 @@ async def test_price_freshness_rechecked_after_slow_macro_admission(service, sto
     service.executor.execute_order.assert_not_awaited()
 
 
+async def test_quote_midpoint_drift_refuses_before_macro(service, store, entry):
+    item, _ = await store.enqueue_entry(await entry(), service.config)
+    context = service.broker.entry_market_context.return_value
+    # The last trade sits at the approved limit; the fresh quote has moved 1.5% above it.
+    service.broker.entry_market_context.return_value = context.model_copy(
+        update={
+            "quote": context.quote.model_copy(update={"bid_price": Decimal("101.5"), "ask_price": Decimal("101.5")})
+        }
+    )
+    await service.dispatch_one()
+    item = await store.get_work(item.id)
+    assert item.status == WorkStatus.REJECTED
+    assert item.result["error_message"] == (
+        "Market quote midpoint moved to 101.5; original approved limit 100 retained."
+    )
+    service.macro_check.assert_not_awaited()
+    service.executor.execute_order.assert_not_awaited()
+
+
+async def test_quote_midpoint_within_drift_proceeds(service, store, entry):
+    item, _ = await store.enqueue_entry(await entry(), service.config)
+    context = service.broker.entry_market_context.return_value
+    service.broker.entry_market_context.return_value = context.model_copy(
+        update={
+            "quote": context.quote.model_copy(update={"bid_price": Decimal("100.5"), "ask_price": Decimal("100.5")})
+        }
+    )
+    await service.dispatch_one()
+    service.macro_check.assert_awaited()
+    assert (await store.get_work(item.id)).status == WorkStatus.ACCEPTED
+
+
 @pytest.mark.parametrize("expires,reason", [("approval", "expired"), ("signal", "stale"), ("session", "session")])
 async def test_admission_deadlines_are_rechecked_before_submission(service, entry, monkeypatch, expires, reason):
     clock = MagicMock(wraps=datetime)

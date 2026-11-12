@@ -56,7 +56,10 @@ asset model requires the deprecated `easy_to_borrow` field and cannot preserve t
 replacement field. There is no legacy flag fallback or old PDT/$25,000 gate.
 
 The configured quote feed is retained explicitly. IEX quotes are venue observations,
-not consolidated NBBO; no feed fallback or relabeling occurs. These are conservative
+not consolidated NBBO; no feed fallback or relabeling occurs. The last IEX trade is sparse on
+mid caps, so it has its own 300 s age limit (`entry_trade_max_age_seconds`) while the quote
+keeps 60 s; the preflight drift check compares both the trade and the quote midpoint with the
+approved limit. These are conservative
 local budget checks, not a promise that Alpaca will accept the order. Broker prices,
 funding and stock availability can change after observation. POST remains authoritative
 and is never automatically retried after an ambiguous response.
