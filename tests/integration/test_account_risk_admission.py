@@ -164,6 +164,24 @@ async def test_store_level_benign_refresh_is_not_refused(risk_execution_desk):
 
 
 @pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
+async def test_over_age_trade_is_refused_by_the_submission_recheck(risk_execution_desk):
+    copilot, venue, _state, order = risk_execution_desk
+    store = copilot.db.workflows
+    item, reason = await store.enqueue_entry(order, copilot.config)
+    assert item is not None, reason
+    claim = await store.claim_entry(lease_seconds=60)
+    checked = await copilot.ledger.current_risk()
+    venue.trade_time = datetime.now(UTC) - timedelta(seconds=301)
+    context = await copilot.broker.entry_market_context(order)
+    reason = await store.begin_submission(
+        claim, copilot.config, preflight_risk_fingerprint=checked.fingerprint, broker_context=context
+    )
+    assert "Market trade is stale" in reason
+    assert (await store.get_work(claim.id)).status == WorkStatus.CHECKING
+    assert not mutations(venue)
+
+
+@pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
 async def test_withdrawal_after_preflight_is_refused_by_equity_recheck(risk_execution_desk):
     copilot, venue, state, order = risk_execution_desk
     store = copilot.db.workflows

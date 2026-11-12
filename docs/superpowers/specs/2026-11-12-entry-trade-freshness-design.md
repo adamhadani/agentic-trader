@@ -44,8 +44,9 @@ Liveness, such as a halted or stale market, is already evidenced by the quote (6
    - every refusal text.
 
    The check runs at preflight and again in `begin_submission`, as today.
-3. **Preflight drift.** `_preflight` keeps the trade-price check first, with the same message. It then also refuses when the fresh quote midpoint, `(bid + ask) / 2`, differs from the approved limit by more than `entry_max_price_drift_pct`. The message is: `Market quote midpoint moved to {mid:g}; original approved limit {limit:g} retained.` This check runs before the macro check, like the trade check, and returns the context.
+3. **Preflight drift.** `_preflight` keeps the trade-price check first, with the same message. It then also refuses when the **whole** fresh IEX quote lies outside the drift band around the approved limit: `bid > limit × (1 + pct)` or `ask < limit × (1 − pct)`. The message is: `Market quote {bid:g}/{ask:g} is entirely outside the {pct:g}% drift band; original approved limit {limit:g} retained.` This check runs before the macro check, like the trade check, and returns the context.
    - With an older trade allowed, the quote catches a move that the trade missed.
+   - **Why a band, not the midpoint.** An IEX quote is a single venue's book, not the NBBO. At one instant the IEX bid is at most the national best bid and the IEX ask is at least the national best offer, so the market lies inside the IEX quote. Only a quote entirely outside the band proves the price moved.
    - The quote's bid and ask are already validated as positive and not crossed (`EntryQuoteEvidence`).
 4. **Docs:**
    - `docs/durable-execution.md`: add an `entry_trade_max_age_seconds` row beside `entry_quote_max_age_seconds`, plus a short incident note (11-10/11/12, three refusals).
@@ -64,5 +65,5 @@ Liveness, such as a halted or stale market, is already evidenced by the quote (6
 
 - **300 s.** 60 s refuses about 30% of names at a random moment. 300 s refuses about 4%, which are names with no IEX print in five minutes, and those are reasonably held back. Above 900 s is rejected by validation.
 - **Trade-only change.** The quote keeps 60 s because it is the liveness evidence.
-- **Midpoint, not ask, for drift.** The IEX book can be thin, and the midpoint is less sensitive to a one-sided wide quote. `exposure_price` already includes the ask for sizing.
+- **A whole-quote band, not the midpoint** (amended after the final review). The midpoint of a wide, lopsided IEX book is not the market price. Against the 12 journaled admission contexts, the midpoint rule would refuse 4, including NSC (the case being fixed) and the accepted UNH and TMO auto-entries. The band rule refuses none of them and still catches a move on a narrow book. On a wide book the drift check rests on the trade, which is at most 300 s old, while the limit caps the price paid. `exposure_price` already includes the ask for sizing.
 - **No retry or re-read** of market evidence after a refusal. The auto-entry sweep stays one attempt per card.

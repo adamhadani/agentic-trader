@@ -275,7 +275,8 @@ The last trade has its own age limit (`entry_trade_max_age_seconds`, 300, at mos
 from the quote's 60 s. COLB, NSC and GEHC auto-entries were refused on 2026-11-10/11/12 with
 fresh quotes because the sparse IEX last print was over a minute old; a read-only probe found
 30.5% of names with a trade older than 60 s and 4.1% older than 300 s. The preflight drift
-check compares both the last trade and the quote midpoint with the approved limit.
+check compares the last trade, and the whole IEX quote, with the approved limit. It refuses only
+when the whole quote lies outside the band, because an IEX quote is not the NBBO.
 
 Telemetry defaults: reconciliation 180s, Telegram poll 120s, worker 30s, scan 18000s,
 notification backlog 1800s, health observation interval 10s. All are configured

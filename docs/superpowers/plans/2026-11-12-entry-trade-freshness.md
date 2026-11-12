@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A liquid name whose last IEX print is one to five minutes old, with a fresh quote, is no longer refused at entry admission. A fresh quote midpoint now also guards against price drift.
+**Goal:** A liquid name whose last IEX print is one to five minutes old, with a fresh quote, is no longer refused at entry admission. A fresh IEX quote that lies entirely outside the drift band now also refuses.
 
 **Architecture:**
 - Add one config field, `execution.entry_trade_max_age_seconds`, read by the latest-trade freshness check in `assess_entry_capacity`.
-- Add one extra drift comparison, against the quote midpoint, in `EntryExecutionService._preflight`.
+- Add one extra drift comparison, the whole IEX quote against the drift band, in `EntryExecutionService._preflight`.
 - Everything else in admission is unchanged.
 
 **Tech Stack:** Python 3.14, pydantic v2, pytest (SQLite, plus `--run-postgres` on `test_*` databases), and the real Alpaca SDK against the local venue fixtures (`tests/integration/conftest.py`).
@@ -17,7 +17,7 @@
 
 - `entry_trade_max_age_seconds: float = Field(default=300, gt=0, le=900, allow_inf_nan=False)` on `ExecutionConfig`. `config/config.yaml` ships `entry_trade_max_age_seconds: 300.0`.
 - These stay unchanged: `entry_quote_max_age_seconds` (60) for the quote and the broker clock, `entry_evidence_max_age_seconds` (30), `entry_max_price_drift_pct` (0.01) and `BROKER_CLOCK_SKEW_TOLERANCE_SECONDS` (1.0).
-- Existing refusal texts are unchanged. The one new text is exactly `Market quote midpoint moved to {mid:g}; original approved limit {limit:g} retained.`
+- Existing refusal texts are unchanged. The one new text is exactly `Market quote {bid:g}/{ask:g} is entirely outside the {pct:g}% drift band; original approved limit {limit:g} retained.` (amended after the final review, which replaced the midpoint check).
 - No retry or re-read of market evidence after a refusal. POST/PATCH/DELETE are never retried.
 - No migrations: schema head stays `008`. No compatibility aliases.
 - Postgres tests run only against `TEST_POSTGRES_URL=postgresql+asyncpg://localhost/test_agentic_trader_codex_20260915`.
@@ -91,3 +91,5 @@
   Expected: all pass.
 
 - [ ] **Step 7: Stage** the files with `git add`. Do not commit.
+
+> **Amendment (final review, 2026-11-12):** the quote-midpoint check in Task 1 was replaced by the whole-quote band check. See the spec's ruling and `.superpowers/sdd/2026-11-12-entry-trade-freshness/fix-wave-brief.md`, which is not in Git.
