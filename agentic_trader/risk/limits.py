@@ -70,6 +70,7 @@ class RiskLimits:
     lockout_post_minutes: int
     macro_calendar_unknown: Literal["open", "closed"]  # closed: an unverified static tier-1 calendar refuses entries
     earnings_blackout_days: int
+    earnings_calendar_unknown: Literal["open", "closed"]  # closed: neither live nor capture vouches -> refuse equity
     enforce_rth: bool
 
     @property
@@ -119,5 +120,6 @@ class RiskLimits:
             lockout_post_minutes=int(risk.lockout_post_event_minutes),
             macro_calendar_unknown=risk.macro_calendar_unknown,
             earnings_blackout_days=int(risk.earnings_blackout_days),
+            earnings_calendar_unknown=risk.earnings_calendar_unknown,
             enforce_rth=bool(config.session.enforce_rth),
         )

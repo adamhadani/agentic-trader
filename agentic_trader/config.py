@@ -600,6 +600,9 @@ class RiskConfig(BaseModel):
     macro_calendar_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     macro_calendar_unknown: Literal["open", "closed"] = "open"
     macro_calendar_renewal_days: int = Field(default=30, ge=1)
+    # When neither the live Nasdaq lookup nor the journaled dated capture can vouch for an equity's earnings
+    # calendar: `open` labels the card unverified, `closed` refuses the entry.
+    earnings_calendar_unknown: Literal["open", "closed"] = "open"
 
     @field_validator("macro_calendar_path", mode="after")
     @classmethod

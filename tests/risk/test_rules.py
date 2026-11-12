@@ -321,6 +321,11 @@ def test_limits_snapshot_the_unknown_calendar_policy():
     assert limits(risk__macro_calendar_unknown="closed").macro_calendar_unknown == "closed"
 
 
+def test_limits_snapshot_the_earnings_calendar_policy():
+    assert limits().earnings_calendar_unknown == "open"
+    assert limits(risk__earnings_calendar_unknown="closed").earnings_calendar_unknown == "closed"
+
+
 @pytest.mark.parametrize(
     ("event", "today", "days", "expected"),
     [

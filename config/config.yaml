@@ -285,6 +285,8 @@ risk:
   macro_calendar_unknown: open
   # Readiness degrades this many days before the calendar's valid_through.
   macro_calendar_renewal_days: 30
+  # closed = with neither the live Nasdaq lookup nor a fresh dated capture to vouch, equity entries are refused.
+  earnings_calendar_unknown: closed
 
 regime:
   vix_compressed_threshold: 15.0

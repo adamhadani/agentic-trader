@@ -1,7 +1,9 @@
 import hashlib
+import logging
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
+import pytest
 
 from agentic_trader.agent.earnings import (
     CalendarRow,
@@ -14,7 +16,9 @@ from agentic_trader.agent.earnings import (
     earnings_note,
     parse_calendar_payload,
     parse_forward_rows,
+    resolve_earnings,
 )
+from agentic_trader.data.earnings_capture import CapturedReports
 
 
 # 2026-09-23 14:35 UTC is 2026-09-23 10:35 America/New_York (EDT, UTC-4) — a
@@ -442,3 +446,151 @@ def test_parse_forward_rows_skips_rows_without_symbol():
 
 def test_parse_forward_rows_null_data_is_empty():
     assert parse_forward_rows({"data": None}, date(2026, 11, 6)) == ([], 0)
+
+
+# --- resolve_earnings: live first, then the dated capture, else unverified ---
+
+CAPTURE_DATE = date(2026, 11, 12)
+
+
+class _Live:
+    def __init__(self, result: EarningsLookup | Exception):
+        self.result = result
+        self.calls = 0
+
+    async def next_earnings(self, symbol, now, horizon_days):
+        self.calls += 1
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+class _Captures:
+    def __init__(self, result: CapturedReports | None | Exception):
+        self.result = result
+        self.calls: list[tuple[date, date, date]] = []
+
+    async def reports_between(self, start, end, *, today):
+        self.calls.append((start, end, today))
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def _captured(rows: dict[date, tuple[tuple[str, EarningsTiming], ...]]) -> CapturedReports:
+    return CapturedReports(capture_date=CAPTURE_DATE, rows=rows)
+
+
+def _live_lookup(*, event: EarningsEvent | None, verified: bool) -> EarningsLookup:
+    return EarningsLookup(event=event, verified=verified, horizon_end=TODAY + timedelta(days=7))
+
+
+async def test_verified_live_result_is_used_without_reading_the_capture():
+    live_result = _live_lookup(event=None, verified=True)
+    captures = _Captures(_captured({}))
+
+    result = await resolve_earnings("AAPL", NOW, 7, live=_Live(live_result), captures=captures)
+
+    assert result == live_result and result.source == "live"
+    assert captures.calls == []
+
+
+@pytest.mark.parametrize("error", [httpx.HTTPStatusError("403", request=None, response=None), RuntimeError("boom")])
+async def test_live_failure_falls_back_to_capture_report_in_window(error):
+    reports = date(2026, 9, 26)
+    captures = _Captures(
+        _captured({reports: (("OTHER", EarningsTiming.PRE_MARKET), ("AAPL", EarningsTiming.AFTER_HOURS))})
+    )
+
+    result = await resolve_earnings("aapl", NOW, 7, live=_Live(error), captures=captures)
+
+    assert result.source == "capture" and result.verified and result.capture_date == CAPTURE_DATE
+    assert result.event == EarningsEvent("AAPL", reports, EarningsTiming.AFTER_HOURS)
+    assert result.horizon_end == TODAY + timedelta(days=7)
+    assert captures.calls == [(TODAY, TODAY + timedelta(days=7), TODAY)]
+    reason = earnings_blackout_reason(result, "AAPL", NOW, 7)
+    assert reason is not None and "2026-09-26" in reason
+
+
+async def test_live_failure_with_capture_absence_is_verified_clear():
+    captures = _Captures(_captured({TODAY + timedelta(days=1): (("OTHER", EarningsTiming.PRE_MARKET),)}))
+
+    result = await resolve_earnings("AAPL", NOW, 7, live=_Live(RuntimeError("x")), captures=captures)
+
+    assert result.event is None and result.verified and result.source == "capture"
+    assert earnings_blackout_reason(result, "AAPL", NOW, 7, unknown="closed") is None
+    assert earnings_note(result, NOW, 7).endswith(" (calendar capture 2026-11-12)")
+    assert earnings_note(result, NOW, 7) == "No report within 7 days (calendar capture 2026-11-12)"
+
+
+async def test_unverified_live_without_event_falls_back_to_capture():
+    reports = date(2026, 9, 25)
+    captures = _Captures(_captured({reports: (("AAPL", EarningsTiming.PRE_MARKET),)}))
+    live = _Live(_live_lookup(event=None, verified=False))
+
+    result = await resolve_earnings("AAPL", NOW, 7, live=live, captures=captures)
+
+    assert result.source == "capture" and result.verified and result.event is not None
+    assert result.event.date == reports
+
+
+async def test_unverified_live_with_event_still_blocks_without_capture():
+    event = EarningsEvent("AAPL", date(2026, 9, 25), EarningsTiming.PRE_MARKET)
+    live_result = _live_lookup(event=event, verified=False)
+    captures = _Captures(None)
+
+    result = await resolve_earnings("AAPL", NOW, 7, live=_Live(live_result), captures=captures)
+
+    assert result == live_result
+    assert captures.calls == []
+    assert earnings_blackout_reason(result, "AAPL", NOW, 7) is not None
+
+
+async def test_capture_today_premarket_is_not_ahead_but_after_close_is():
+    pre = _Captures(_captured({TODAY: (("AAPL", EarningsTiming.PRE_MARKET),)}))
+    after = _Captures(_captured({TODAY: (("AAPL", EarningsTiming.AFTER_HOURS),)}))
+
+    pre_result = await resolve_earnings("AAPL", NOW, 7, live=None, captures=pre)
+    after_result = await resolve_earnings("AAPL", NOW, 7, live=None, captures=after)
+
+    assert pre_result.event is None and pre_result.verified
+    assert after_result.event == EarningsEvent("AAPL", TODAY, EarningsTiming.AFTER_HOURS)
+
+
+async def test_no_capture_gives_unverified():
+    captures = _Captures(None)
+
+    result = await resolve_earnings("AAPL", NOW, 7, live=_Live(RuntimeError("x")), captures=captures)
+
+    assert (result.event, result.verified, result.source, result.capture_date) == (None, False, "live", None)
+    assert result.horizon_end == TODAY + timedelta(days=7)
+    assert earnings_blackout_reason(result, "AAPL", NOW, 7, unknown="closed") == (
+        "AAPL: earnings calendar unavailable and no fresh capture covers the next 7 days (policy closed)"
+    )
+    assert earnings_blackout_reason(result, "AAPL", NOW, 7, unknown="open") is None
+    assert earnings_blackout_reason(result, "AAPL", NOW, 7) is None
+    assert earnings_note(result, NOW, 7) == "Unverified — earnings calendar unavailable"
+
+
+async def test_no_sources_gives_unverified():
+    result = await resolve_earnings("AAPL", NOW, 7, live=None, captures=None)
+
+    assert result.event is None and not result.verified
+
+
+async def test_capture_read_error_is_treated_as_unavailable(caplog):
+    captures = _Captures(RuntimeError("secret-detail"))
+
+    with caplog.at_level(logging.WARNING):
+        result = await resolve_earnings("AAPL", NOW, 7, live=_Live(RuntimeError("live-secret")), captures=captures)
+
+    assert not result.verified and result.event is None
+    text = " ".join(f"{r.getMessage()} {r.__dict__}" for r in caplog.records)
+    assert "RuntimeError" in text
+    assert "secret-detail" not in text and "live-secret" not in text
+
+
+def test_closed_policy_with_zero_blackout_days_never_refuses():
+    lookup = _live_lookup(event=None, verified=False)
+
+    assert earnings_blackout_reason(lookup, "AAPL", NOW, 0, unknown="closed") is None

@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 import httpx
 
@@ -14,6 +14,9 @@ from agentic_trader.constants import NASDAQ_EARNINGS_CALENDAR_URL
 from agentic_trader.market.session import ET_TZ, ensure_et
 from agentic_trader.risk import earnings_days_out
 
+
+if TYPE_CHECKING:
+    from agentic_trader.data.earnings_capture import CapturedReports
 
 logger = logging.getLogger(__name__)
 
@@ -89,11 +92,20 @@ class EarningsLookup:
     event: EarningsEvent | None
     verified: bool
     horizon_end: date
+    # "capture": the verdict came from the journaled dated calendar capture, not the live lookup.
+    source: Literal["live", "capture"] = "live"
+    capture_date: date | None = None
 
 
 @runtime_checkable
 class EarningsCalendarProtocol(Protocol):
     async def next_earnings(self, symbol: str, now: datetime, horizon_days: int) -> EarningsLookup: ...
+
+
+class EarningsCaptureSource(Protocol):
+    """The journaled dated earnings capture (``EarningsCaptureStore``), read-only."""
+
+    async def reports_between(self, start: date, end: date, *, today: date) -> CapturedReports | None: ...
 
 
 def _number(raw: object) -> float | None:
@@ -344,16 +356,93 @@ class NasdaqEarningsCalendar:
         return EarningsLookup(event=found, verified=verified, horizon_end=horizon_end)
 
 
-def earnings_blackout_reason(lookup: EarningsLookup, symbol: str, now: datetime, blackout_days: int) -> str | None:
+def _is_ahead(report_date: date, timing: EarningsTiming, today: date) -> bool:
+    return report_date > today or (report_date == today and timing != EarningsTiming.PRE_MARKET)
+
+
+async def resolve_earnings(
+    symbol: str,
+    now: datetime,
+    horizon_days: int,
+    *,
+    live: EarningsCalendarProtocol | None,
+    captures: EarningsCaptureSource | None,
+) -> EarningsLookup:
+    """One earnings verdict: the live lookup, else the journaled dated capture, else unverified.
+
+    A verified live result, or any live result that found a report, is returned as is. When the live
+    lookup raised or is unverified without a report, the capture (journal read only) vouches: it is
+    scanned with the live "ahead" rule and a verified ``source="capture"`` lookup returned. With
+    neither source the lookup is unverified. Failures are logged by exception type name only.
+    """
+    today = ensure_et(now, target_tz=ET_TZ).date()
+    horizon_end = today + timedelta(days=horizon_days)
+
+    if live is not None:
+        try:
+            lookup = await live.next_earnings(symbol, now, horizon_days)
+        except Exception as exc:
+            logger.warning(
+                "earnings_lookup_failed", extra={"event": "earnings_lookup_failed", "error": type(exc).__name__}
+            )
+        else:
+            if lookup.verified or lookup.event is not None:
+                return lookup
+
+    if captures is not None:
+        captured = None
+        try:
+            captured = await captures.reports_between(today, horizon_end, today=today)
+        except Exception as exc:
+            logger.warning(
+                "earnings_capture_read_failed",
+                extra={"event": "earnings_capture_read_failed", "error": type(exc).__name__},
+            )
+        if captured is not None:
+            symbol_upper = symbol.upper()
+            found: EarningsEvent | None = None
+            for day in sorted(captured.rows):
+                if day < today or day > horizon_end:
+                    continue
+                for row_symbol, timing in captured.rows[day]:
+                    if row_symbol.upper() == symbol_upper and _is_ahead(day, timing, today):
+                        found = EarningsEvent(symbol=symbol_upper, date=day, timing=timing)
+                        break
+                if found is not None:
+                    break
+            return EarningsLookup(
+                event=found,
+                verified=True,
+                horizon_end=horizon_end,
+                source="capture",
+                capture_date=captured.capture_date,
+            )
+
+    return EarningsLookup(event=None, verified=False, horizon_end=horizon_end)
+
+
+def earnings_blackout_reason(
+    lookup: EarningsLookup,
+    symbol: str,
+    now: datetime,
+    blackout_days: int,
+    *,
+    unknown: Literal["open", "closed"] = "open",
+) -> str | None:
     """Return a rejection reason when an ahead earnings event falls inside the blackout window.
 
     The window is ``agentic_trader.risk.earnings_days_out``: the report date lies within
     ``[0, blackout_days]`` days of today in New York. A report that was found always blocks,
     even if another date in the window could not be fetched. Only an *absence* is
-    untrustworthy when the lookup is unverified, and then the gate fails open.
-    `blackout_days=0` disables it.
+    untrustworthy when the lookup is unverified: the gate then fails open (``unknown="open"``) or
+    refuses (``"closed"``, ``risk.earnings_calendar_unknown``). `blackout_days=0` disables it.
     """
     if lookup.event is None:
+        if unknown == "closed" and blackout_days > 0 and not lookup.verified:
+            return (
+                f"{symbol}: earnings calendar unavailable and no fresh capture covers "
+                f"the next {blackout_days} days (policy closed)"
+            )
         return None
     today = ensure_et(now, target_tz=ET_TZ).date()
     days_out = earnings_days_out(lookup.event.date, today, blackout_days)
@@ -369,10 +458,15 @@ def earnings_blackout_reason(lookup: EarningsLookup, symbol: str, now: datetime,
 
 def earnings_note(lookup: EarningsLookup, now: datetime, blackout_days: int) -> str:
     """Render the one-line earnings note shown on a suggestion card."""
+    suffix = (
+        f" (calendar capture {lookup.capture_date.isoformat()})"
+        if lookup.source == "capture" and lookup.capture_date
+        else ""
+    )
     if lookup.event is None:
         if not lookup.verified:
             return "Unverified — earnings calendar unavailable"
-        return f"No report within {blackout_days} days"
+        return f"No report within {blackout_days} days{suffix}"
 
     today = ensure_et(now, target_tz=ET_TZ).date()
     days_out = (lookup.event.date - today).days
@@ -381,7 +475,7 @@ def earnings_note(lookup: EarningsLookup, now: datetime, blackout_days: int) -> 
     day_word = "day" if days_out == 1 else "days"
     return (
         f"Reports {lookup.event.date.isoformat()} {timing_word(lookup.event.timing)} "
-        f"(in {days_out} {day_word}) — {qualifier} {blackout_days}-day blackout"
+        f"(in {days_out} {day_word}) — {qualifier} {blackout_days}-day blackout{suffix}"
     )
 
 
@@ -389,6 +483,7 @@ __all__ = [
     "NASDAQ_REQUEST_HEADERS",
     "CalendarRow",
     "EarningsCalendarProtocol",
+    "EarningsCaptureSource",
     "EarningsEvent",
     "EarningsLookup",
     "EarningsTiming",
@@ -397,5 +492,6 @@ __all__ = [
     "earnings_blackout_reason",
     "earnings_note",
     "parse_calendar_payload",
+    "resolve_earnings",
     "timing_word",
 ]
