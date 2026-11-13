@@ -83,7 +83,7 @@ class ReleaseExitGaps(BaseModel):
     unnotified_closes: list[GapClose]
 
     @property
-    def any(self) -> bool:
+    def has_gaps(self) -> bool:
         return self.missing_pass or bool(self.unknown) or bool(self.unnotified_closes)
 
 

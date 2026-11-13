@@ -372,12 +372,16 @@ def test_supervisor_modules_import_no_release_exit_or_agent_module(module):
         elif isinstance(node, ast.ImportFrom) and node.module:
             names.append(node.module)
             names += [f"{node.module}.{a.name}" for a in node.names]
-    banned = ("agentic_trader.execution.release_exit", "agentic_trader.agent", "agentic_trader.broker")
-    assert not [
-        n
-        for n in names
-        if n == banned[0] or n.startswith(banned[0] + ".") or any(n == b or n.startswith(b + ".") for b in banned[1:])
-    ]
+    banned = (
+        "agentic_trader.agent",
+        "agentic_trader.broker",
+        "agentic_trader.data.earnings_capture",
+        "agentic_trader.execution.closing",
+        "agentic_trader.execution.entries",
+        "agentic_trader.execution.lifetimes",
+        "agentic_trader.execution.release_exit",
+    )
+    assert not [n for n in names if any(n == b or n.startswith(b + ".") for b in banned)]
 
 
 async def test_monitor_passes_the_release_exit_mode_to_the_morning_summary(desk):

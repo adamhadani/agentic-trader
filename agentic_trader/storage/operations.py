@@ -256,7 +256,7 @@ class OperationsStore:
             unknown=sorted(unknown, key=lambda g: (g.symbol, g.signal_id)),
             unnotified_closes=sorted(unnotified, key=lambda g: (g.symbol, g.signal_id)),
         )
-        return gaps if gaps.any else None
+        return gaps if gaps.has_gaps else None
 
     async def summary_decided_at(self, window_start: datetime) -> datetime | None:
         """The pass time that decided this alert window's summary: the window's first pass, or None if undecided."""
