@@ -37,6 +37,7 @@ class FakeTradingClient:
         self.stale_flip = None
         self.keep_reserved = False
         self.inject_unknown = False
+        self.by_id_calls = []
         self.submissions = []
         self.cancelled = []
         self.add_position("IWM", "short", 105, 285.4)
@@ -101,7 +102,8 @@ class FakeTradingClient:
                 "id": "IWM-surprise",
                 "symbol": "IWM",
                 "side": "buy",
-                "status": "new",
+                "status": "canceled",  # terminal by ID, yet still listed open below
+                "stale_left": 1,
                 "type": "limit",
                 "order_type": "limit",
                 "filled_qty": "0",
@@ -123,6 +125,7 @@ class FakeTradingClient:
         return listed
 
     def get_order_by_id(self, order_id, *args):
+        self.by_id_calls.append(order_id)
         order = self.orders[order_id]
         if order["status"] == "pending_cancel" and not self.never_cancel:
             order["reads"] -= 1
@@ -546,6 +549,7 @@ async def test_unknown_order_listed_after_confirmed_cancel_refuses(desk):
     client.inject_unknown = True
     response = await copilot.close_position_manual(sid)
     assert "New or remaining orders appeared during cancellation" in response
+    assert "IWM-surprise" not in client.by_id_calls
     assert not client.submissions
     assert (await copilot.db.get_signal_by_id(sid))["status"] == SignalStatus.EXECUTED
 
@@ -582,3 +586,5 @@ async def test_stale_list_with_reserved_quantity_refuses_at_deadline(desk):
     response = await copilot.close_position_manual(sid)
     assert "Broker quantity remains reserved" in response
     assert not client.submissions
+    events = _phases(await copilot.db.get_audit_events(sid))
+    assert sum(p["phase"] == "stale_open_order_list" for p in events) == 1

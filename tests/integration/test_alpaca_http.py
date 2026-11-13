@@ -225,6 +225,9 @@ async def test_close_proceeds_when_open_list_lags_by_id_cancellation(desk):
     await copilot.close_position_manual(sid)
     row = await copilot.db.get_signal_by_id(sid)
     assert row["realized_pnl"] == 50
+    assert venue.stale_left and all(n < venue.stale_list_calls for n in venue.stale_left.values())
+    stale = [e for e in await copilot.db.get_audit_events(sid) if e["payload"].get("phase") == "stale_open_order_list"]
+    assert len(stale) == 1
     market_posts = [body for method, path, _, body in venue.calls if method == "POST" and path == "/v2/orders"]
     assert len(market_posts) == 1
 
