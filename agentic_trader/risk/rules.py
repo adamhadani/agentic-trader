@@ -15,7 +15,7 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from agentic_trader.constants import AssetClass, CalendarStatus, Direction, StrategyType
 from agentic_trader.risk.book import Book
@@ -401,6 +401,15 @@ def earnings_days_out(event_date: date | None, today: date, blackout_days: int) 
         return None
     days = (event_date - today).days
     return days if 0 <= days <= blackout_days else None
+
+
+def earnings_unverified_refuses(
+    *, verified: bool, has_event: bool, blackout_days: int, unknown: Literal["open", "closed"]
+) -> bool:
+    """Whether the earnings gate refuses on an unverifiable calendar: only under ``risk.earnings_calendar_unknown:
+    closed``, with a blackout configured, when no report was found and neither the live lookup nor a capture vouched.
+    """
+    return unknown == "closed" and blackout_days > 0 and not has_event and not verified
 
 
 class CorporateActionLike(Protocol):

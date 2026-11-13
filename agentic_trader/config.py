@@ -461,7 +461,9 @@ class EarningsCaptureConfig(BaseModel):
 
     The daemon captures the Nasdaq forward earnings calendar once per New York weekday for the next
     ``horizon_days`` calendar days and journals it. Research and context, and the release exit's second source
-    beside the live Nasdaq lookup (off, it leaves the live lookup only, so ``unknown`` is more likely).
+    beside the live Nasdaq lookup (off, it leaves the live lookup only, so ``unknown`` is more likely). It is also the
+    earnings blackout's fallback when the live lookup fails; with it off under ``risk.earnings_calendar_unknown:
+    closed``, a single failed live page refuses equity entries.
     """
 
     model_config = {"extra": "forbid"}
@@ -600,6 +602,9 @@ class RiskConfig(BaseModel):
     macro_calendar_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     macro_calendar_unknown: Literal["open", "closed"] = "open"
     macro_calendar_renewal_days: int = Field(default=30, ge=1)
+    # When neither the live Nasdaq lookup nor the journaled dated capture can vouch for an equity's earnings
+    # calendar: `open` labels the card unverified, `closed` refuses the entry.
+    earnings_calendar_unknown: Literal["open", "closed"] = "open"
 
     @field_validator("macro_calendar_path", mode="after")
     @classmethod

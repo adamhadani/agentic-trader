@@ -73,7 +73,7 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    `macro_lockout` reads the verified union calendar: the static `config/calendar/us-tier1-vN.json`
    (digest-pinned by `risk.macro_calendar_sha256`) plus the live ForexFactory feed, so a feed outage
    never reads as an empty calendar. A static calendar that is expired, not yet valid or invalid is
-   unverified: `risk.macro_calendar_unknown` `open` (default) labels it, `closed` refuses all entries.
+   unverified: `risk.macro_calendar_unknown` `open` (default) labels it, `closed` refuses all entries; `risk.earnings_calendar_unknown` `closed` (shipped) refuses an equity entry when neither the live calendar nor a fresh capture vouches.
    `filing_veto` (`filing_veto.entry_block`, code default `off`) is built like `corporate_action` and applies to long
    equity entries only (a short never evaluates it): the scan reads the latest journaled filings-capture pass once,
    `preview` records `decision_provenance["filings"]` and a card line, `enforce` refuses at the evaluator and tap gates
@@ -139,7 +139,7 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    which also starts the alert clock for held incidents (window start if the summary fails; never muted);
    `entry_recovery`, `entry_cancellation`, `close_recovery`, `endpoint` and `storage` page at any hour, and the
    three broker-work checks can never be removed from `exempt_components`.
-   The daemon's earnings capture journals `earnings/calendar/<date>` once per New York weekday after 06:00 ET outside scan windows, all-or-nothing (`earnings_capture` readiness, stale after 4 days, [production](docs/production.md#earnings-calendar-capture)); the release exit reads it (`reports_between`) beside the live Nasdaq lookup, so turning the capture off makes an `unknown` release-exit status more likely.
+   The daemon's earnings capture journals `earnings/calendar/<date>` once per New York weekday after 06:00 ET outside scan windows, all-or-nothing (`earnings_capture` readiness, stale after 4 days, [production](docs/production.md#earnings-calendar-capture)); the release exit reads it (`reports_between`) beside the live Nasdaq lookup, so turning the capture off makes an `unknown` release-exit status more likely; the earnings blackout (scan and tap, one `resolve_earnings`) falls back to the same capture when the live lookup fails, and with neither source `risk.earnings_calendar_unknown` `closed` (shipped; code default `open`) refuses equity entries.
    The daemon's EDGAR filings capture (`filing_veto.capture`) journals dated NT-filing, adverse 8-K and offering evidence for the filing veto (`filings_capture` readiness, stale after `filing_veto.max_age_seconds`; stale or missing evidence never vetoes), and ships in `preview` with the release exit.
    Suggestion scans run at configured New York times and spend a derived per-session
    card budget (signals table, ET trading day); `PENDING` cards reserve no capacity;

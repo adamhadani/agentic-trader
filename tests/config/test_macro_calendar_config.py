@@ -36,3 +36,10 @@ def test_fixture_config_uses_the_synthetic_calendar():
     assert risk.macro_calendar_path.name == "us-tier1-test-v1.json"
     assert risk.macro_calendar_path.exists()
     assert risk.macro_calendar_sha256 is None
+
+
+def test_earnings_calendar_unknown_defaults_open_and_validates():
+    assert RiskConfig().earnings_calendar_unknown == "open"
+    assert RiskConfig(earnings_calendar_unknown="closed").earnings_calendar_unknown == "closed"
+    with pytest.raises(ValidationError):
+        RiskConfig(earnings_calendar_unknown="maybe")

@@ -15,9 +15,10 @@ from pydantic import BaseModel, Field
 from agentic_trader.agent.calendar import UnionTier1Calendar
 from agentic_trader.agent.earnings import (
     EarningsCalendarProtocol,
-    EarningsLookup,
+    EarningsCaptureSource,
     earnings_blackout_reason,
     earnings_note,
+    resolve_earnings,
 )
 from agentic_trader.agent.filing_veto import filing_veto_evidence
 from agentic_trader.agent.llm_gate import LLM_KEY_MISSING, classify_gate_reply, llm_unavailable_reason
@@ -137,6 +138,7 @@ class RiskEvaluator:
         data_fetcher: MarketDataFetcher | None = None,
         session_provider: MarketSessionProtocol | None = None,
         earnings_calendar: EarningsCalendarProtocol | None = None,
+        earnings_captures: EarningsCaptureSource | None = None,
     ):
         self.config = config
         self.calendar: UnionTier1Calendar = calendar if calendar is not None else UnionTier1Calendar.from_config(config)
@@ -146,6 +148,8 @@ class RiskEvaluator:
         # None by default: never construct a network client implicitly (tests
         # block network I/O); the gate/note are simply skipped when unset.
         self.earnings_calendar = earnings_calendar
+        # The dated capture the blackout falls back to when the live lookup cannot vouch (None: live only).
+        self.earnings_captures = earnings_captures
         # No ``litellm.drop_params = True``: it is process-wide and makes litellm drop any parameter the model
         # rejects, which also defeats the gate's per-call ``drop_params=False``. Callers that want dropping
         # (macro explainer, doctor, chat) ask per call.
@@ -565,9 +569,10 @@ class RiskEvaluator:
         # The card's macro clearance is this deterministic gate's result; no LLM outcome sets or changes it.
         macro_clearance = True
 
-        # 2b. Earnings blackout (agentic_trader.agent.earnings.earnings_blackout_reason over
-        # agentic_trader.risk.earnings_days_out; equities only; None calendar or a 0-day config
-        # skips the gate and leaves no note).
+        # 2b. Earnings blackout (agentic_trader.agent.earnings.resolve_earnings: live lookup, else the dated
+        # capture, else unverified; earnings_blackout_reason over agentic_trader.risk.earnings_days_out and
+        # earnings_unverified_refuses, i.e. risk.earnings_calendar_unknown; equities only; None calendar or a
+        # 0-day config skips the gate and leaves no note).
         earnings_note_value: str | None = None
         if (
             asset_class == AssetClass.EQUITY
@@ -575,19 +580,20 @@ class RiskEvaluator:
             and self.earnings_calendar is not None
         ):
             blackout_days = limits.earnings_blackout_days
-            try:
-                earnings_lookup = await self.earnings_calendar.next_earnings(
-                    candidate.contract, now=evaluated_at, horizon_days=blackout_days
-                )
-            except Exception as e:
-                logger.warning(
-                    "Earnings calendar lookup failed (%s); failing open (no blackout, unverified note).",
-                    e,
-                    extra={"contract": candidate.contract, "error": str(e)},
-                )
-                earnings_lookup = EarningsLookup(event=None, verified=False, horizon_end=evaluated_at.date())
-
-            blackout_reason = earnings_blackout_reason(earnings_lookup, candidate.contract, evaluated_at, blackout_days)
+            earnings_lookup = await resolve_earnings(
+                candidate.contract,
+                evaluated_at,
+                blackout_days,
+                live=self.earnings_calendar,
+                captures=self.earnings_captures,
+            )
+            blackout_reason = earnings_blackout_reason(
+                earnings_lookup,
+                candidate.contract,
+                evaluated_at,
+                blackout_days,
+                unknown=limits.earnings_calendar_unknown,
+            )
             if blackout_reason:
                 return _rejected(
                     f"Earnings Blackout: {blackout_reason}",

@@ -32,7 +32,7 @@ in what they observed.
 
 | Type | Module | What it is |
 | --- | --- | --- |
-| `RiskLimits` | `limits.py` | A frozen snapshot of every limit the rules read, built by `RiskLimits.from_config(config)`. It holds cash, the four drawdown-policy fields (`drawdown_policy` returns them as a frozen `DrawdownPolicy`), the per-trade risk/notional/quantity caps, the aggregate stop-risk percentage, the portfolio and asset-class notional caps, the concurrent and correlated position limits, the normalised correlation groups, the minimum reward/risk, the lockout minutes, the unknown-calendar policy (`macro_calendar_unknown`, from `risk.macro_calendar_unknown`), the earnings blackout days and `enforce_rth`. A class without a configured cap (FX, or a cap set to `None`) has no entry in `asset_class_caps` and is uncapped. `from_config` raises `ValueError`, naming the config field, when a cap is not finite and non-negative or a ratio (the minimum reward/risk, a drawdown-policy value) is not finite. |
+| `RiskLimits` | `limits.py` | A frozen snapshot of every limit the rules read, built by `RiskLimits.from_config(config)`. It holds cash, the four drawdown-policy fields (`drawdown_policy` returns them as a frozen `DrawdownPolicy`), the per-trade risk/notional/quantity caps, the aggregate stop-risk percentage, the portfolio and asset-class notional caps, the concurrent and correlated position limits, the normalised correlation groups, the minimum reward/risk, the lockout minutes, the unknown-calendar policy (`macro_calendar_unknown`, from `risk.macro_calendar_unknown`), the earnings blackout days, the earnings unknown-calendar policy (`earnings_calendar_unknown`) and `enforce_rth`. A class without a configured cap (FX, or a cap set to `None`) has no entry in `asset_class_caps` and is uncapped. `from_config` raises `ValueError`, naming the config field, when a cap is not finite and non-negative or a ratio (the minimum reward/risk, a drawdown-policy value) is not finite. |
 | `BookPosition`, `Book` | `book.py` | What the desk already holds. `Book.from_signal_rows(rows, reservations=…)` reads `signals` rows (`contract` or `symbol`, `direction`, `asset_class`, `notional_value`, `risk_dollars`, `status`). With `reservations=True`, a `SUBMITTING` row is a reservation. A missing, non-numeric, non-finite or negative `notional_value` or `risk_dollars` makes the position invalid (`Book.invalid`); it is never coerced to zero. |
 | `EntryIntent` | `rules.py` | What is about to be risked: symbol, direction, asset class, quantity, entry, stop, target, multiplier, and an optional current price (the strategy is not part of it: `regime_breakout` takes the strategy separately). The constructor is the validation boundary. Direction must be LONG or SHORT (any case). Quantity, prices, multiplier and a known current price must be finite and positive, otherwise `ValueError`. An inverted bracket is a valid intent; `reward_risk` refuses it. Derived values: the normalised `key`, `risk_distance`, `reward_distance`, `risk_dollars`, `exposure_price` (`max(entry, current_price)`, or the entry when no current price is known) and `notional`. |
 | `RiskBudget` | `capital.py` | The per-trade budget: `capital`, `drawdown_pct`, `drawdown_factor`, `macro_factor` and `dollars`. |
@@ -128,8 +128,17 @@ It never raises size. See [book-aware sizing](card-evidence.md#book-aware-sizing
 
 The earnings rule has no `Rejection` function: `earnings_days_out` is the shared
 predicate, and `agent/earnings.py:earnings_blackout_reason` formats the text for both
-the scan and the tap. A failed earnings lookup fails open at both layers; the card's
-earnings note then reads "Unverified — earnings calendar unavailable".
+the scan and the tap, and `agent/earnings.py:resolve_earnings` gives both one verdict, in
+this order: the live Nasdaq lookup (a found report always blocks; a verified answer is
+authoritative); else the latest journaled [earnings calendar
+capture](production.md#earnings-calendar-capture) when it is fresh and covers the
+window (the card note then ends "(calendar capture YYYY-MM-DD)"); else unverified.
+`risk.earnings_calendar_unknown` (code default `open`, `config/config.yaml` ships
+`closed`; it mirrors the shape of the macro policy `macro_calendar_unknown`, which ships `open`) decides the unverified case: `open` adds
+only the note "Unverified — earnings calendar unavailable"; `closed` refuses with
+`Earnings Blackout: {SYMBOL}: earnings calendar unavailable and no fresh capture covers
+the next {days} days (policy closed)`. A 0-day blackout, a non-equity, and a desk with
+no live calendar skip the gate. The fallback reads the journal only (no provider call).
 
 `required_reward_risk(limits, regime_min_rr)` is `max(risk.min_risk_reward_ratio,
 regime_min_rr)`, or the configured minimum when the regime threshold is unknown or

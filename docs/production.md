@@ -253,9 +253,13 @@ calendar (same style as the ForexFactory macro feed: short timeout, per-date cac
 logged warning on failure) and rejects a candidate whose next report lands within
 `risk.earnings_blackout_days` calendar days (default 7; 0 disables the gate and the
 lookup entirely). A card that clears the gate carries a one-line `Earnings:` note
-(e.g. "No report within 7 days"); when the calendar could not be verified for every
-date in the window the note reads "Unverified — earnings calendar unavailable" and
-the gate fails open (never blocks on unverifiable data). Held positions are not yet
+(e.g. "No report within 7 days"). When the live calendar could not be verified for every
+date in the window, the gate reads the [calendar capture](#earnings-calendar-capture) as
+a fallback, and a card the capture vouches for reads "No report within 7 days (calendar
+capture YYYY-MM-DD)". With neither source the gate follows `risk.earnings_calendar_unknown`
+(code default `open`, which never blocks on unverifiable data and labels the card
+"Unverified — earnings calendar unavailable"; shipped `closed`, which refuses equity
+entries). Held positions are not yet
 warned ahead of an earnings date — that is a follow-up, not covered by this gate.
 
 **Card freshness (September 23).** A card is an offer valid only until the close of
@@ -1540,6 +1544,10 @@ A daemon worker (`agentic_trader/data/earnings_capture.py`), enabled with `earni
 kept as they were published. The [release exit](#release-exit) reads the latest capture
 (`EarningsCaptureStore.reports_between`) beside the live Nasdaq lookup; with the capture off or stale, a failed
 live lookup leaves a position `unknown` (never closed), so turning the capture off makes `unknown` more likely.
+The capture is also the earnings blackout's fallback: when the live lookup raises or cannot verify, the scan and the
+tap gate read the same store (`resolve_earnings`) and apply the blackout from the capture; with neither source,
+`risk.earnings_calendar_unknown: closed` (shipped) refuses equity entries
+([risk policy](risk-policy.md)).
 
 - **Schedule.** On each New York weekday after 06:00, outside the suggestion-scan windows (which are never
   delayed), it takes one capture dated that day. A poll runs every 30 minutes until one is journaled.
@@ -1564,6 +1572,19 @@ live lookup leaves a position `unknown` (never closed), so turning the capture o
   revised since, not as it was published that day. To
   stop the worker, set `earnings_capture.enabled: false` and restart (the release exit then has the live lookup
   only).
+
+When `earnings_capture` readiness is not ready while Nasdaq is failing, equity entries are being refused (policy
+`closed`). The config-only rollback is `risk.earnings_calendar_unknown: open` plus a controlled restart. A
+`scan --dry-run` uses a temporary journal with no capture, so during a Nasdaq outage under `closed` it refuses
+equities that the daemon clears from its capture.
+
+#### Incident: Nasdaq 403, 2026-11-10 to 2026-11-12
+
+Nasdaq's CDN returned HTTP 403 to the desk's Python clients from about
+10:38 ET on 11-10 to about 07:50 ET on 11-12 (about 45 h). `pead_decision` was unavailable on 11-10 and 11-11, the
+11-11 capture failed (`CaptureIncomplete`), and the equity earnings blackout failed open throughout (no blackout,
+"Unverified" note), so a native card could have been auto-entered days before a report. The fallback and the
+`closed` policy above close that gap; the live client and its headers are unchanged.
 
 ### Filings capture
 
