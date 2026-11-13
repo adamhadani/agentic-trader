@@ -54,8 +54,9 @@ def test_the_line_is_html_escaped_on_the_alert_card(base_eval_res):  # noqa: F81
         {"status": "unavailable", "mode": "preview"},
         {"status": "uncovered", "mode": "preview", "as_of": "2026-11-06T11:30:00+00:00"},
         block(would_block=False, category=None, form=None, items=None, filing_date=None, accession=None, reason=None),
-        # Enforce never sends a card with a blocking filing; a block that says so anyway gets no line.
+        # Enforce never sends a card with a refused filing; a block that says so anyway gets no line.
         block(mode="enforce"),
+        block(mode="enforce", would_refuse=True),
     ],
 )
 def test_nothing_to_say_renders_no_line(base_eval_res, filings):  # noqa: F811
@@ -67,3 +68,13 @@ def test_old_payload_without_the_field_still_validates(base_eval_res):  # noqa: 
     payload = base_eval_res.model_dump(mode="json")
     payload.pop("filings", None)
     assert LLMTradeEvaluation.model_validate(payload).filings is None
+
+
+def test_enforce_not_enforced_category_renders_the_not_enforced_line(base_eval_res):  # noqa: F811
+    line = (
+        "🗂 Filing (not enforced): AAPL filed 8-K Items 2.05 on 2026-10-07 (30 days ago) — within the 60-day "
+        "adverse_8k window — card unchanged"
+    )
+    for text in renderers(base_eval_res, block(mode="enforce", would_refuse=False)):
+        assert line in text
+        assert "Filing veto" not in text

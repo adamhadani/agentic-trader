@@ -52,6 +52,7 @@ def test_evidence_blocks_match_the_evaluator_shapes():
         "filing_date": (TODAY - timedelta(days=3)).isoformat(),
         "accession": "0000320193-26-000101",
         "reason": rejection.reason,
+        "would_refuse": True,
     }
     clear, none = filing_veto_evidence(_lookup(), "CCC", TODAY, policy)
     assert none is None and clear["would_block"] is False and clear["category"] is None
@@ -65,12 +66,67 @@ def test_evidence_blocks_match_the_evaluator_shapes():
     )
 
 
+def _offering(symbol: str, days_ago: int) -> MatchedFiling:
+    return MatchedFiling(
+        symbol=symbol,
+        category=FilingCategory.OFFERING,
+        form="424B5",
+        items=(),
+        filing_date=TODAY - timedelta(days=days_ago),
+        acceptance=None,
+        accession="0000320193-26-000202",
+    )
+
+
+_NO_OFFERING = (FilingCategory.LATE_FILING, FilingCategory.ADVERSE_8K)
+
+
+def test_offering_preview_only_does_not_mask_nt_filing():
+    policy = FilingVetoConfig(entry_block="enforce", enforce_categories=_NO_OFFERING)
+    lookup = _lookup(filings={"AAA": (_offering("AAA", 3), _late("AAA", 20))})
+    block, rejection = filing_veto_evidence(lookup, "AAA", TODAY, policy)
+    assert block["category"] == "offering" and block["would_block"] is True and block["would_refuse"] is True
+    assert rejection is not None and "NT 10-K" in rejection.reason
+
+
+def test_offering_alone_is_labelled_but_not_refused_when_not_enforced():
+    policy = FilingVetoConfig(entry_block="enforce", enforce_categories=_NO_OFFERING)
+    lookup = _lookup(filings={"AAA": (_offering("AAA", 3),)})
+    block, rejection = filing_veto_evidence(lookup, "AAA", TODAY, policy)
+    assert block["would_block"] is True and block["would_refuse"] is False and rejection is None
+    assert block["category"] == "offering"
+
+
+def test_exempt_card_is_labelled_and_never_refused():
+    policy = FilingVetoConfig(entry_block="enforce")
+    block, rejection = filing_veto_evidence(_lookup(), "AAA", TODAY, policy, exempt=True)
+    assert block["exempt"] is True and block["would_block"] is True and block["would_refuse"] is False
+    assert rejection is None
+
+
+def test_default_categories_refuse_an_offering():
+    policy = FilingVetoConfig(entry_block="enforce")
+    lookup = _lookup(filings={"AAA": (_offering("AAA", 3),)})
+    block, rejection = filing_veto_evidence(lookup, "AAA", TODAY, policy)
+    assert block["would_refuse"] is True and rejection is not None and not block.get("exempt")
+
+
 def test_journal_block_summarises_only_ok_evidence():
     policy = FilingVetoConfig(entry_block="enforce")
     ok, _ = filing_veto_evidence(_lookup(), "AAA", TODAY, policy)
-    assert journal_filings_block(ok) == {"status": "ok", "would_block": True, "category": "late_filing"}
+    assert journal_filings_block(ok) == {
+        "status": "ok",
+        "would_block": True,
+        "category": "late_filing",
+        "would_refuse": True,
+    }
     unc, _ = filing_veto_evidence(_lookup(), "BBB", TODAY, policy)
-    assert journal_filings_block(unc) == {"status": "uncovered", "would_block": None, "category": None}
+    assert journal_filings_block(unc) == {
+        "status": "uncovered",
+        "would_block": None,
+        "category": None,
+        "would_refuse": None,
+    }
     assert journal_filings_block(None) is None
 
 
@@ -91,8 +147,18 @@ async def test_scan_journals_a_filings_block_per_candidate(shadow_desk, temp_db)
     events = [e for e in await temp_db.workflows.events() if e["kind"] == EventKind.SCAN_CANDIDATES_RANKED]
     [event] = events
     by_contract = {c["contract"]: c["filings"] for c in event["payload"]["candidates"]}
-    assert by_contract["AAA"] == {"status": "ok", "would_block": True, "category": "late_filing"}
-    assert by_contract["BBB"] == {"status": "uncovered", "would_block": None, "category": None}
+    assert by_contract["AAA"] == {
+        "status": "ok",
+        "would_block": True,
+        "category": "late_filing",
+        "would_refuse": True,
+    }
+    assert by_contract["BBB"] == {
+        "status": "uncovered",
+        "would_block": None,
+        "category": None,
+        "would_refuse": None,
+    }
     assert by_contract["CCC"] is None  # a short never evaluates the veto
 
 

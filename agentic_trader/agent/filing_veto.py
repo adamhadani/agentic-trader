@@ -20,10 +20,15 @@ if TYPE_CHECKING:
 
 
 def filing_veto_evidence(
-    lookup: FilingsLookup, symbol: str, today: date, policy: FilingVetoConfig
+    lookup: FilingsLookup, symbol: str, today: date, policy: FilingVetoConfig, *, exempt: bool = False
 ) -> tuple[dict[str, Any], Rejection | None]:
-    """The provenance block for one long equity and the rule's rejection (None unless the evidence is ok and
-    the symbol is inside a blocking filing's window)."""
+    """The provenance block for one long equity and the rule's rejection (None unless the evidence is ok, the
+    symbol is inside an enforced category's window and the card is not ``exempt``).
+
+    The label (``would_block``, ``category``, ``reason`` ...) names the newest qualifying filing over all windows;
+    the refusal reads only ``policy.enforced_windows()``, so a preview-only category never masks an enforced one.
+    ``would_refuse`` says whether enforcing would refuse this card (regardless of mode).
+    """
     as_of = lookup.as_of.isoformat() if lookup.as_of else None
     mode = policy.entry_block
     if lookup.status != "ok":
@@ -32,25 +37,31 @@ def filing_veto_evidence(
         return {"status": "uncovered", "mode": mode, "as_of": as_of}, None
     windows = policy.windows()
     filings = lookup.for_symbol(symbol)
-    rejection = filing_veto_block(filings, symbol, today, windows=windows)
     filing = blocking_filing(filings, symbol, today, windows=windows)
-    return {
+    label = filing_veto_block(filings, symbol, today, windows=windows)
+    refusal = filing_veto_block(filings, symbol, today, windows=policy.enforced_windows())
+    rejection = None if exempt else refusal
+    block: dict[str, Any] = {
         "status": "ok",
         "mode": mode,
         "as_of": as_of,
-        "would_block": rejection is not None,
+        "would_block": label is not None,
         "category": filing.category.value if filing is not None else None,
         "form": filing.form if filing is not None else None,
         "items": list(filing.items) if filing is not None else None,
         "filing_date": filing.filing_date.isoformat() if filing is not None else None,
         "accession": filing.accession if filing is not None else None,
-        "reason": rejection.reason if rejection is not None else None,
-    }, rejection
+        "reason": label.reason if label is not None else None,
+        "would_refuse": rejection is not None,
+    }
+    if exempt:
+        block["exempt"] = True
+    return block, rejection
 
 
 def journal_filings_block(block: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """The scan journal's per-candidate summary of an evidence block: ``{status, would_block, category}``;
-    ``would_block`` and ``category`` are None unless the status is ok. None when no block was built."""
+    """The scan journal's per-candidate summary of an evidence block: ``{status, would_block, category,
+    would_refuse}``; the last three are None unless the status is ok. None when no block was built."""
     if block is None:
         return None
     ok = block.get("status") == "ok"
@@ -58,4 +69,5 @@ def journal_filings_block(block: Mapping[str, Any] | None) -> dict[str, Any] | N
         "status": block.get("status"),
         "would_block": block.get("would_block") if ok else None,
         "category": block.get("category") if ok else None,
+        "would_refuse": block.get("would_refuse") if ok else None,
     }

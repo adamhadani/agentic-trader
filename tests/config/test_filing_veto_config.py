@@ -77,3 +77,28 @@ def test_loader_passes_the_block(tmp_path):
     config = load_config(str(path), environ=PRODUCTION)
     assert config.filing_veto.capture is True and config.filing_veto.entry_block == "off"
     assert config.filing_veto.adverse_8k_days == 45 and config.filing_veto.pre_scan_minutes == 20
+
+
+def test_enforce_categories_default_to_all_three():
+    cfg = FilingVetoConfig()
+    assert cfg.enforce_categories == (
+        FilingCategory.LATE_FILING,
+        FilingCategory.ADVERSE_8K,
+        FilingCategory.OFFERING,
+    )
+    assert cfg.enforced_windows() == cfg.windows()
+
+
+def test_enforce_categories_load_from_yaml_strings():
+    cfg = FilingVetoConfig(**yaml.safe_load('enforce_categories: ["late_filing", "adverse_8k"]'))
+    assert cfg.enforce_categories == (FilingCategory.LATE_FILING, FilingCategory.ADVERSE_8K)
+    assert cfg.enforced_windows() == {
+        FilingCategory.LATE_FILING: cfg.late_filing_days,
+        FilingCategory.ADVERSE_8K: cfg.adverse_8k_days,
+    }
+
+
+@pytest.mark.parametrize("bad", [[], ["offering", "offering"], ["late_filing", "bogus"]])
+def test_enforce_categories_reject_empty_duplicate_and_unknown(bad):
+    with pytest.raises(ValidationError):
+        FilingVetoConfig(enforce_categories=bad)

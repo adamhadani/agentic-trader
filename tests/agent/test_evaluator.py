@@ -764,6 +764,7 @@ async def test_filing_veto_preview_annotates_a_long_without_refusing(config, eva
         "filing_date": filing.filing_date.isoformat(),
         "accession": "0000320193-26-000101",
         "reason": _filing_reason(filing, 3),
+        "would_refuse": True,
     }
 
 
@@ -826,6 +827,7 @@ async def test_a_covered_symbol_without_a_filing_in_its_window_is_cleared(config
         "filing_date": None,
         "accession": None,
         "reason": None,
+        "would_refuse": False,
     }
 
 
