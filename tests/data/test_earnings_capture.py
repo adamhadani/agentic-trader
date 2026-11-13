@@ -141,13 +141,19 @@ async def test_payload_shape(store):
     assert gzip.decompress(saved.read_bytes()) == page([ROW])
 
 
-async def test_null_data_is_accepted_empty_day(store):
+async def test_null_data_page_fails_the_capture(store):
     body = json.dumps({"data": None, "status": {"rCode": 200}}).encode()
+    _, error = await _failing_pass(store, {"2026-11-06": [httpx.Response(200, content=body)]})
+    assert error.reason == "data is not an object"
+
+
+async def test_null_rows_object_is_accepted_empty_day(store):
+    body = json.dumps({"data": {"asOf": "Nov 6, 2026", "rows": None}, "status": {"rCode": 200}}).encode()
     fake = FakeNasdaq(default=lambda day: httpx.Response(200, content=body))
     await worker_for(fake, store, et(FRIDAY, 6, 1)).run_once()
     (event,) = await store.workflows.events(CAPTURE_STREAM)
     first = event["payload"]["pages"][0]
-    assert first["rows"] == 0 and first["as_of"] is None
+    assert first["rows"] == 0 and first["as_of"]
     assert event["payload"]["rows"]["2026-11-06"] == []
 
 

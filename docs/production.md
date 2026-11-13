@@ -259,7 +259,9 @@ a fallback, and a card the capture vouches for reads "No report within 7 days (c
 capture YYYY-MM-DD)". With neither source the gate follows `risk.earnings_calendar_unknown`
 (code default `open`, which never blocks on unverifiable data and labels the card
 "Unverified — earnings calendar unavailable"; shipped `closed`, which refuses equity
-entries). Held positions are not yet
+entries). A calendar page counts only with HTTP 200, `status.rCode` 200 and a `data` object, so a soft-error
+page (`data: null`) leaves the date unverified and the gate falls back to the capture, never reading it as an empty
+day. Held positions are not yet
 warned ahead of an earnings date — that is a follow-up, not covered by this gate.
 
 **Card freshness (September 23).** A card is an offer valid only until the close of
@@ -1566,8 +1568,9 @@ tap gate read the same store (`resolve_earnings`) and apply the blackout from th
 - **Schedule.** On each New York weekday after 06:00, outside the suggestion-scan windows (which are never
   delayed), it takes one capture dated that day. A poll runs every 30 minutes until one is journaled.
 - **Targets.** One Nasdaq calendar page per weekday from today through `earnings_capture.horizon_days` (28)
-  ahead, one request per second. A page is retried once, only after a transport error, HTTP 429 or a 5xx; any other
-  unaccepted response fails the pass at once.
+  ahead, one request per second. A page is accepted only with HTTP 200, `status.rCode` 200 and a `data` object (a
+  soft-error page with `data: null` is unaccepted, never an empty day). A page is retried once, only after a
+  transport error, HTTP 429 or a 5xx; any other unaccepted response fails the pass at once.
 - **All or nothing.** If any page is still unaccepted (after its retry, where one applies), nothing is journaled and the next poll
   tries again. A scan window that opens between two requests stops the pass quietly.
 - **Journal and files.** One `earnings/calendar/<capture date>` event on stream `earnings/calendar` holds every
@@ -1598,7 +1601,9 @@ Nasdaq's CDN returned HTTP 403 to the desk's Python clients from about
 10:38 ET on 11-10 to about 07:50 ET on 11-12 (about 45 h). `pead_decision` was unavailable on 11-10 and 11-11, the
 11-11 capture failed (`CaptureIncomplete`), and the equity earnings blackout failed open throughout (no blackout,
 "Unverified" note), so a native card could have been auto-entered days before a report. The fallback and the
-`closed` policy above close that gap; the live client and its headers are unchanged.
+`closed` policy above close that gap; the live client and its headers are unchanged. A follow-up closed the
+last fail-open path: an HTTP 200 soft-error page (`data: null`) is now unverified in the live lookup, so the
+blackout reads the capture instead of treating it as "no reports".
 
 ### Filings capture
 
