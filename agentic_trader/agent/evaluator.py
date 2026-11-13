@@ -74,6 +74,18 @@ _TICK_EPSILON = 1e-6
 REPLY_HEAD_CHARS = 200
 
 
+def _filing_veto_exempt(candidate: ScreenerCandidate) -> bool:
+    """Whether a card is exempt from the filing veto: the cards `TradingCopilot._release_exit_scope` calls
+    non-native. Catalog cards carry `catalog_event` (their `alpha_policy` too), paper probes `probe`, alpha
+    cards `alpha_version`/`alpha_policy`; a native strategy candidate carries none of them."""
+    return (
+        candidate.catalog_event is not None
+        or candidate.probe
+        or candidate.alpha_version is not None
+        or candidate.alpha_policy is not None
+    )
+
+
 @dataclass(frozen=True)
 class DeterministicLevels:
     stop_loss: float
@@ -667,7 +679,9 @@ class RiskEvaluator:
 
         # 2d. Filing veto (agentic_trader.risk.filing_veto_block; long equities only, a short never evaluates
         # it). A missing or stale capture, or one that did not cover this symbol ("uncovered"), never refuses;
-        # preview annotates; enforce refuses a late-filing notice, adverse 8-K or offering inside its window.
+        # preview annotates; enforce refuses an enforced-category filing inside its window. A non-native card
+        # (catalog, probe, alpha-versioned: `_filing_veto_exempt`) gets the block labelled `exempt` and is never
+        # refused, matching the release exit's exempt set and the tap gate.
         filings_block: dict[str, Any] | None = None
         filing_policy = self.config.filing_veto
         if (
@@ -677,7 +691,11 @@ class RiskEvaluator:
             and filing_policy.entry_block != "off"
         ):
             filings_block, rejection = filing_veto_evidence(
-                filings, candidate.contract, evaluated_at.astimezone(ET_TZ).date(), filing_policy
+                filings,
+                candidate.contract,
+                evaluated_at.astimezone(ET_TZ).date(),
+                filing_policy,
+                exempt=_filing_veto_exempt(candidate),
             )
             if rejection is not None and filing_policy.entry_block == "enforce":
                 return _rejected(

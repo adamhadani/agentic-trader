@@ -3995,11 +3995,16 @@ class TradingCopilot:
         )
         return rejection.reason if rejection is not None else None
 
-    async def _filing_veto_reason(self, contract: str, direction: str, now: datetime) -> str | None:
-        """The evaluator's filing veto at tap time: enforce refuses a long; preview, a short, stale or missing
-        evidence and a symbol the latest pass did not cover (uncovered) never do."""
+    async def _filing_veto_reason(
+        self, contract: str, direction: str, now: datetime, sig: Mapping[str, Any]
+    ) -> str | None:
+        """The evaluator's filing veto at tap time: enforce refuses a long; preview, a short, a non-native card
+        (catalog, probe or alpha: `_release_exit_scope`, checked before any read), stale or missing evidence
+        and a symbol the latest pass did not cover (uncovered) never do."""
         policy = self.config.filing_veto
         if policy.entry_block != "enforce" or str(direction).upper() != Direction.LONG:
+            return None
+        if self._release_exit_scope(sig) != NATIVE_SCOPE:
             return None
         lookup = await self._filings_lookup(now)
         if lookup is None or lookup.status != "ok" or not lookup.covers(contract):
@@ -4021,7 +4026,7 @@ class TradingCopilot:
         if asset_class.upper() == AssetClass.EQUITY:
             reason = await self._earnings_blackout_reason(sig["contract"], now)
             reason = reason or await self._corporate_action_reason(sig["contract"], now)
-            return reason or await self._filing_veto_reason(sig["contract"], sig["direction"], now)
+            return reason or await self._filing_veto_reason(sig["contract"], sig["direction"], now, sig)
         return None
 
     async def _journal_card_tap(

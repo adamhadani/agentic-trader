@@ -778,6 +778,37 @@ async def test_filing_veto_enforce_refuses_a_long(config, evaluator_factory):
     assert eval_res.filings is not None and eval_res.filings["would_block"] is True
 
 
+def _exempt_candidates():
+    base = create_equity_candidate()
+    return {
+        "pead": base.model_copy(update={"strategy": "PEAD", "catalog_event": {"kind": "pead"}, "probe": True}),
+        "insider_watch": base.model_copy(update={"strategy": "INSIDER_WATCH_LONG", "catalog_event": {"kind": "w"}}),
+        "alpha": base.model_copy(update={"alpha_version": "a1", "alpha_policy": AlphaExecutionPolicy().to_dict()}),
+        "alpha_policy_only": base.model_copy(update={"alpha_policy": AlphaExecutionPolicy().to_dict()}),
+        "probe": base.model_copy(update={"probe": True}),
+    }
+
+
+@pytest.mark.parametrize("kind", list(_exempt_candidates()))
+async def test_filing_veto_enforce_never_refuses_a_non_native_card(config, evaluator_factory, kind):
+    evaluator = evaluator_factory(config=_with_filing_mode(config, "enforce"))
+    candidate = _exempt_candidates()[kind]
+    eval_res = await evaluator.evaluate_candidate(candidate, use_llm=False, filings=_filings(_late_filing()))
+    assert eval_res.rejection_rule != RiskRule.FILING_VETO
+    assert eval_res.filings is not None
+    assert eval_res.filings["exempt"] is True and eval_res.filings["would_refuse"] is False
+    assert eval_res.filings["would_block"] is True
+
+
+async def test_filing_veto_enforce_still_refuses_the_same_native_candidate(config, evaluator_factory):
+    evaluator = evaluator_factory(config=_with_filing_mode(config, "enforce"))
+    eval_res = await evaluator.evaluate_candidate(
+        create_equity_candidate(), use_llm=False, filings=_filings(_late_filing())
+    )
+    assert eval_res.rejection_rule == RiskRule.FILING_VETO
+    assert "exempt" not in eval_res.filings
+
+
 async def test_filing_veto_never_evaluates_a_short(config, evaluator_factory):
     evaluator = evaluator_factory(config=_with_filing_mode(config, "enforce"))
     eval_res = await evaluator.evaluate_candidate(
