@@ -1,6 +1,6 @@
 """Operational incident aggregate: debounce, recovery hysteresis and reminders."""
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from uuid import uuid4
 
@@ -65,6 +65,28 @@ class OpenIncident(BaseModel):
     ready_now: bool
 
 
+class GapPosition(BaseModel):
+    symbol: str
+    signal_id: str
+
+
+class GapClose(GapPosition):
+    outcome: str
+
+
+class ReleaseExitGaps(BaseModel):
+    """Silent release-exit gaps of one trading day, reported by the next morning's summary."""
+
+    trading_day: date
+    missing_pass: bool
+    unknown: list[GapPosition]
+    unnotified_closes: list[GapClose]
+
+    @property
+    def any(self) -> bool:
+        return self.missing_pass or bool(self.unknown) or bool(self.unnotified_closes)
+
+
 class QuietHoursSummary(BaseModel):
     period_start: datetime
     period_end: datetime
@@ -72,6 +94,7 @@ class QuietHoursSummary(BaseModel):
     failure_seconds: float
     tallies: list[ComponentTally]
     open_incidents: list[OpenIncident]
+    release_exit: ReleaseExitGaps | None = None
 
 
 def _opening_due(

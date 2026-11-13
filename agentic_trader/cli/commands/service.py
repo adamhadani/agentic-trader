@@ -1037,7 +1037,7 @@ async def monitor_once(config: AppConfig, report: dict[str, Any]) -> None:
     """Composition boundary for an external supervisor, never a second poller."""
     db = await asyncio.to_thread(SignalDatabase, config=config)
     try:
-        monitor = OperationsMonitor(OperationsStore(db.workflows), config.operations)
+        monitor = OperationsMonitor(OperationsStore(db.workflows), config.operations, config.release_exit.mode)
         await monitor.observe(report)
         await RetentionService(db.workflows, config.operations).sweep(apply=True, only_if_due=True)
         # Let the normal consumer deliver. If its loop/process is unavailable,

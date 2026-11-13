@@ -2,24 +2,28 @@
 
 import json
 from collections.abc import Collection, Mapping
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agentic_trader.config import TRADING_HALT_CHECK, OperationsConfig
+from agentic_trader.config import TRADING_HALT_CHECK, EntryBlockMode, OperationsConfig
 from agentic_trader.diagnostics.incidents import (
     ComponentTally,
+    GapClose,
+    GapPosition,
     IncidentPhase,
     IncidentState,
     NoticeKind,
     OpenIncident,
     OperationalNotice,
     QuietHoursSummary,
+    ReleaseExitGaps,
     WithheldReason,
     advance,
 )
+from agentic_trader.diagnostics.quiet_hours import is_alert_day
 from agentic_trader.execution.durable import EventKind, NotificationKind, WorkStatus
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.storage.models import DomainEventRecord, IncidentProjectionRecord, WorkItemRecord
@@ -27,6 +31,11 @@ from agentic_trader.storage.workflow import WorkflowStore, encode
 
 
 MAX_SUMMARY_DETAIL = 120
+# Literals on purpose: the supervisor imports no execution module (agentic_trader/execution/release_exit.py owns these).
+RELEASE_EXIT_STREAM = "release-exit"
+RELEASE_EXIT_PASS_KIND = "release_exit_pass"
+RELEASE_EXIT_CLOSE_KIND = "release_exit_close"
+NATIVE_SCOPE = "native"
 
 
 def summary_key(window_start: datetime) -> str:
@@ -113,6 +122,7 @@ class OperationsStore:
         details: Mapping[str, str],
         ready_now: Collection[str],
         policy: OperationsConfig,
+        release_exit_mode: EntryBlockMode = "off",
     ) -> QuietHoursSummary | None:
         """Queue the one morning summary of a quiet period; None when already queued or nothing to say."""
         key = summary_key(period_end)
@@ -173,8 +183,12 @@ class OperationsStore:
                         )
                     )
             open_incidents.sort(key=lambda i: (i.component != TRADING_HALT_CHECK, i.failed_since, i.component))
+            gaps = None
+            trading_day = period_start.astimezone(ET_TZ).date()
+            if release_exit_mode != "off" and is_alert_day(trading_day):
+                gaps = await self._release_exit_gaps(session, trading_day)
             summary = None
-            if tallies or open_incidents:
+            if tallies or open_incidents or gaps is not None:
                 summary = QuietHoursSummary(
                     period_start=period_start,
                     period_end=period_end,
@@ -182,6 +196,7 @@ class OperationsStore:
                     failure_seconds=policy.failure_seconds,
                     tallies=tallies,
                     open_incidents=open_incidents,
+                    release_exit=gaps,
                 )
                 await self.store.add_notification(
                     session, key, NotificationKind.OPERATIONS_SUMMARY, summary.model_dump(mode="json")
@@ -199,6 +214,49 @@ class OperationsStore:
                 },
             )
             return summary
+
+    async def _release_exit_gaps(self, session: AsyncSession, trading_day: date) -> ReleaseExitGaps | None:
+        """The day's silent release-exit gaps from the journal; None when the pass is complete and clean."""
+        pass_key = f"{RELEASE_EXIT_STREAM}/{trading_day.isoformat()}"
+        events = list(
+            await session.scalars(
+                select(DomainEventRecord).where(
+                    DomainEventRecord.scope == self.scope,
+                    DomainEventRecord.stream == RELEASE_EXIT_STREAM,
+                    DomainEventRecord.kind.in_([RELEASE_EXIT_PASS_KIND, RELEASE_EXIT_CLOSE_KIND]),
+                    DomainEventRecord.event_key.like(f"{pass_key}%"),
+                )
+            )
+        )
+        missing, unknown, unnotified = True, [], []
+        for event in events:
+            payload = json.loads(event.payload)
+            if event.kind == RELEASE_EXIT_PASS_KIND and event.event_key == pass_key:
+                missing = False
+                unknown = [
+                    GapPosition(symbol=str(p["symbol"]), signal_id=str(p["signal_id"]))
+                    for p in payload.get("positions", [])
+                    if p.get("scope") == NATIVE_SCOPE and p.get("status") == "unknown"
+                ]
+            elif (
+                event.kind == RELEASE_EXIT_CLOSE_KIND
+                and event.event_key.startswith(f"{pass_key}/")
+                and payload.get("notified") is False
+            ):
+                unnotified.append(
+                    GapClose(
+                        symbol=str(payload["symbol"]),
+                        signal_id=str(payload["signal_id"]),
+                        outcome=str(payload.get("outcome", "")),
+                    )
+                )
+        gaps = ReleaseExitGaps(
+            trading_day=trading_day,
+            missing_pass=missing,
+            unknown=sorted(unknown, key=lambda g: (g.symbol, g.signal_id)),
+            unnotified_closes=sorted(unnotified, key=lambda g: (g.symbol, g.signal_id)),
+        )
+        return gaps if gaps.any else None
 
     async def summary_decided_at(self, window_start: datetime) -> datetime | None:
         """The pass time that decided this alert window's summary: the window's first pass, or None if undecided."""

@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from agentic_trader.config import OperationsConfig
+from agentic_trader.config import EntryBlockMode, OperationsConfig
 from agentic_trader.diagnostics.incidents import OperationalNotice
 from agentic_trader.diagnostics.quiet_hours import alert_since, is_muted, quiet_period_before
 from agentic_trader.storage.operations import OperationsStore
@@ -28,8 +28,8 @@ def incident_detail(check: Mapping[str, Any]) -> str:
 
 
 class OperationsMonitor:
-    def __init__(self, store: OperationsStore, policy: OperationsConfig):
-        self.store, self.policy = store, policy
+    def __init__(self, store: OperationsStore, policy: OperationsConfig, release_exit_mode: EntryBlockMode = "off"):
+        self.store, self.policy, self.release_exit_mode = store, policy, release_exit_mode
 
     async def observe(self, report: dict[str, Any]) -> list[OperationalNotice]:
         observed_at = datetime.fromisoformat(report["checked_at"])
@@ -82,6 +82,7 @@ class OperationsMonitor:
                 details={name: incident_detail(check) for name, check in checks.items()},
                 ready_now={name for name, check in checks.items() if check["ready"]},
                 policy=self.policy,
+                release_exit_mode=self.release_exit_mode,
             )
         except Exception as exc:  # deliberate fail-open: the summary must never block observations
             logger.warning("quiet_summary_failed", extra={"event": "quiet_summary_failed", "error": type(exc).__name__})

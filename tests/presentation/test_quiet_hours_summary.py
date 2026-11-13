@@ -1,6 +1,14 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
-from agentic_trader.diagnostics.incidents import ComponentTally, IncidentPhase, OpenIncident, QuietHoursSummary
+from agentic_trader.diagnostics.incidents import (
+    ComponentTally,
+    GapClose,
+    GapPosition,
+    IncidentPhase,
+    OpenIncident,
+    QuietHoursSummary,
+    ReleaseExitGaps,
+)
 from agentic_trader.presentation.operations import format_quiet_hours_summary
 
 
@@ -86,3 +94,25 @@ def test_still_open_lines_show_this_pass_readiness_without_contradicting_detail(
     assert "• telegram (recovering; failing since Mon 22:20 ET)" in lines
     assert f"• worker (recovering; failing since Mon 22:20 ET): {stale}" in lines
     assert "5s" not in text
+
+
+def test_release_exit_gaps_render_fixed_blocks_and_nothing_when_absent():
+    base = format_quiet_hours_summary(make([], []))
+    assert "Release exit" not in base
+    gaps = ReleaseExitGaps(
+        trading_day=date(2026, 11, 2),
+        missing_pass=True,
+        unknown=[GapPosition(symbol="ACME", signal_id="sig-1")],
+        unnotified_closes=[GapClose(symbol="BETA", signal_id="sig-2", outcome="refused <x>")],
+    )
+    summary = make([], [])
+    summary = summary.model_copy(update={"release_exit": gaps})
+    text = format_quiet_hours_summary(summary)
+    assert "Release exit 2026-11-02:" in text
+    assert "No release-exit pass was journaled for 2026-11-02." in text
+    assert "ACME (sig-1): earnings timing unknown; review and run <code>/close sig-1</code> if needed." in text
+    assert "BETA (sig-2): close outcome refused &lt;x&gt; was never notified; run <code>/close sig-2</code>." in text
+    only_missing = format_quiet_hours_summary(
+        summary.model_copy(update={"release_exit": gaps.model_copy(update={"unknown": [], "unnotified_closes": []})})
+    )
+    assert "/close" not in only_missing

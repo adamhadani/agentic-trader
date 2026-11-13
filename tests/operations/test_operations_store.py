@@ -1,13 +1,16 @@
+import ast
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 
 from agentic_trader.config import OperationsConfig
-from agentic_trader.diagnostics.incidents import ComponentTally
-from agentic_trader.execution.durable import WorkKind
+from agentic_trader.diagnostics.incidents import ComponentTally, QuietHoursSummary
+from agentic_trader.diagnostics.monitor import OperationsMonitor
+from agentic_trader.execution.durable import EventKind, WorkKind
 from agentic_trader.storage.models import DomainEventRecord, WorkItemRecord
 from agentic_trader.storage.operations import OperationsStore
 
@@ -251,3 +254,139 @@ async def test_summary_marks_open_incidents_whose_check_is_ready_now(desk):
     summary = await store.queue_quiet_summary(**summary_kwargs(policy, ready_now={"scan"}))
     assert summary is not None
     assert [(i.component, i.ready_now) for i in summary.open_incidents] == [("scan", True), ("accounting", False)]
+
+
+# --- release-exit gaps (spec Part C) ---------------------------------------------------------------------------
+
+TRADING_DAY = "2026-11-02"  # START's New York date (Monday)
+
+
+async def journal_release_exit(store, *, positions=None, closes=()):
+    """Append a pass (when ``positions`` is not None) and ``release_exit_close`` events, as the daemon does."""
+    async with store.store.db.session_factory() as session, session.begin():
+        await store.store.lock(session)
+        if positions is not None:
+            await store.store.append(
+                session,
+                stream="release-exit",
+                kind=EventKind.RELEASE_EXIT_PASS,
+                key=f"release-exit/{TRADING_DAY}",
+                payload={"mode": "enforce", "trading_day": TRADING_DAY, "positions": positions},
+            )
+        for signal_id, notified, outcome in closes:
+            await store.store.append(
+                session,
+                stream="release-exit",
+                kind=EventKind.RELEASE_EXIT_CLOSE,
+                key=f"release-exit/{TRADING_DAY}/{signal_id}",
+                payload={
+                    "trading_day": TRADING_DAY,
+                    "signal_id": signal_id,
+                    "symbol": "ACME",
+                    "outcome": outcome,
+                    "notified": notified,
+                },
+            )
+
+
+def position(signal_id, symbol, status, scope="native"):
+    return {"signal_id": signal_id, "symbol": symbol, "direction": "long", "scope": scope, "status": status}
+
+
+async def test_release_exit_missing_pass_queues_a_summary_with_no_tallies(desk):
+    store, policy, _ = desk
+    summary = await store.queue_quiet_summary(**summary_kwargs(policy, release_exit_mode="enforce"))
+    assert summary is not None and summary.tallies == [] and summary.open_incidents == []
+    gaps = summary.release_exit
+    assert gaps is not None and gaps.trading_day.isoformat() == TRADING_DAY
+    assert gaps.missing_pass and not gaps.unknown and not gaps.unnotified_closes
+    items = await store.store.list_work(WorkKind.NOTIFICATION)
+    assert [i.payload["kind"] for i in items] == ["operations_summary"]
+
+
+async def test_release_exit_lists_native_unknown_positions_only(desk):
+    store, policy, _ = desk
+    await journal_release_exit(
+        store,
+        positions=[
+            position("sig-1", "ACME", "unknown"),
+            position("sig-2", "BETA", "none"),
+            position("sig-3", "GAMMA", "unknown", scope="probe"),
+        ],
+    )
+    summary = await store.queue_quiet_summary(**summary_kwargs(policy, release_exit_mode="preview"))
+    gaps = summary.release_exit
+    assert gaps is not None and not gaps.missing_pass
+    assert [(p.symbol, p.signal_id) for p in gaps.unknown] == [("ACME", "sig-1")]
+
+
+async def test_release_exit_lists_unnotified_closes_with_outcome(desk):
+    store, policy, _ = desk
+    await journal_release_exit(store, positions=[], closes=[("sig-7", False, "refused"), ("sig-8", True, "closed")])
+    summary = await store.queue_quiet_summary(**summary_kwargs(policy, release_exit_mode="enforce"))
+    gaps = summary.release_exit
+    assert gaps is not None and not gaps.missing_pass
+    assert [(c.symbol, c.signal_id, c.outcome) for c in gaps.unnotified_closes] == [("ACME", "sig-7", "refused")]
+
+
+async def test_release_exit_complete_pass_adds_no_section_and_queues_nothing(desk):
+    store, policy, _ = desk
+    await journal_release_exit(store, positions=[position("sig-2", "BETA", "none")], closes=[("sig-8", True, "closed")])
+    assert await store.queue_quiet_summary(**summary_kwargs(policy, release_exit_mode="enforce")) is None
+    assert not await store.store.list_work(WorkKind.NOTIFICATION)
+    decisions = await store.store.events("operations/summary")
+    assert [e["payload"]["queued"] for e in decisions] == [False]
+
+
+async def test_release_exit_section_is_absent_for_mode_off_and_non_alert_days(desk):
+    store, policy, _ = desk
+    assert await store.queue_quiet_summary(**summary_kwargs(policy)) is None  # default mode: off
+    saturday = datetime(2026, 11, 7, 12, tzinfo=UTC)  # Saturday-to-Monday period never asks for Saturday's pass
+    monday = datetime(2026, 11, 9, 14, 15, tzinfo=UTC)
+    kwargs = summary_kwargs(
+        policy, period_start=saturday, period_end=monday, observed_at=monday, release_exit_mode="enforce"
+    )
+    assert await store.queue_quiet_summary(**kwargs) is None
+    assert not await store.store.list_work(WorkKind.NOTIFICATION)
+
+
+def test_release_exit_gaps_are_optional_in_old_payloads():
+    payload = {
+        "period_start": START.isoformat(),
+        "period_end": END.isoformat(),
+        "observed_at": END.isoformat(),
+        "failure_seconds": 120.0,
+        "tallies": [],
+        "open_incidents": [],
+    }
+    assert QuietHoursSummary.model_validate(payload).release_exit is None
+
+
+@pytest.mark.parametrize("module", ["agentic_trader/storage/operations.py", "agentic_trader/diagnostics/monitor.py"])
+def test_supervisor_modules_import_no_release_exit_or_agent_module(module):
+    tree = ast.parse((Path(__file__).resolve().parents[2] / module).read_text())
+    names = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names += [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.append(node.module)
+            names += [f"{node.module}.{a.name}" for a in node.names]
+    banned = ("agentic_trader.execution.release_exit", "agentic_trader.agent", "agentic_trader.broker")
+    assert not [
+        n
+        for n in names
+        if n == banned[0] or n.startswith(banned[0] + ".") or any(n == b or n.startswith(b + ".") for b in banned[1:])
+    ]
+
+
+async def test_monitor_passes_the_release_exit_mode_to_the_morning_summary(desk):
+    store, policy, _ = desk
+    policy.quiet_hours.enabled = True
+    monitor = OperationsMonitor(store, policy, "enforce")
+    # Tuesday 10:00 ET: the first pass of the window, Monday journaled no release-exit pass.
+    at = datetime(2026, 11, 3, 15, 0, tzinfo=UTC)
+    await monitor.observe({"checked_at": at.isoformat(), "checks": {"scan": {"ready": True}}})
+    (item,) = await store.store.list_work(WorkKind.NOTIFICATION)
+    assert item.payload["kind"] == "operations_summary"
+    assert QuietHoursSummary.model_validate(item.payload["arguments"]).release_exit.missing_pass is True
