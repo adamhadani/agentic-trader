@@ -77,7 +77,9 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    `filing_veto` (`filing_veto.entry_block`, code default `off`) is built like `corporate_action` and applies to long
    equity entries only (a short never evaluates it): the scan reads the latest journaled filings-capture pass once,
    `preview` records `decision_provenance["filings"]` and a card line, `enforce` refuses at the evaluator and tap gates
-   (admission does not apply it), and stale, missing or uncovered filing evidence never refuses.
+   (admission does not apply it), and stale, missing or uncovered filing evidence never refuses. Config ships `enforce` since
+   2026-11-16 for `late_filing` and `adverse_8k` only (`filing_veto.enforce_categories`; `offering` stays journal-only, its
+   card shows `Filing (not enforced)`); catalog, probe and alpha cards are exempt at both gates ([production](docs/production.md#filings-capture)).
    Book-aware sizing (`book_sizing`, code default `preview`, config ships `enforce` since 2026-10-20) scales native equity cards by a
    closed-form factor ≤ 1 against a daily dollar-vol budget at card construction only; the
    shadow optimiser cross-check never reaches size or orders.
@@ -104,7 +106,7 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    Direct replies and durable notices retain refusal reasons. Closed-session refusals
    show the broker's next regular open in UTC; a cancellation attempt, even with a
    lost acknowledgement, must warn that protection may have been removed.
-   The release exit (`release_exit.mode`, code default `off`) journals one `release-exit/{et_date}` pass at the
+   The release exit (`release_exit.mode`, code default `off`, config ships `enforce` since 2026-11-16) journals one `release-exit/{et_date}` pass at the
    calendar's close − `minutes_before_close` for tracked native equity positions reporting earnings before the next
    session's open (live lookup ∪ fresh capture; `unknown` never closes; catalog, probe and alpha positions are
    `exempt`) and, in `enforce`, closes each once through `close_signal` with a `release-` request ID stable within
@@ -138,9 +140,10 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    are withheld and journaled (`withheld`), then summarized once by the window's first pass (`operations-summary/{et_date}`),
    which also starts the alert clock for held incidents (window start if the summary fails; never muted);
    `entry_recovery`, `entry_cancellation`, `close_recovery`, `endpoint` and `storage` page at any hour, and the
-   three broker-work checks can never be removed from `exempt_components`.
+   three broker-work checks can never be removed from `exempt_components`. The summary also lists the prior trading day's
+   release-exit gaps (missing pass, `unknown` native positions, closes never notified), each with `/close <signal_id>`.
    The daemon's earnings capture journals `earnings/calendar/<date>` once per New York weekday after 06:00 ET outside scan windows, all-or-nothing (`earnings_capture` readiness, stale after 4 days, [production](docs/production.md#earnings-calendar-capture)); the release exit reads it (`reports_between`) beside the live Nasdaq lookup, so turning the capture off makes an `unknown` release-exit status more likely; the earnings blackout (scan and tap, one `resolve_earnings`) falls back to the same capture when the live lookup fails, and with neither source `risk.earnings_calendar_unknown` `closed` (shipped; code default `open`) refuses equity entries.
-   The daemon's EDGAR filings capture (`filing_veto.capture`) journals dated NT-filing, adverse 8-K and offering evidence for the filing veto (`filings_capture` readiness, stale after `filing_veto.max_age_seconds`; stale or missing evidence never vetoes), and ships in `preview` with the release exit.
+   The daemon's EDGAR filings capture (`filing_veto.capture`) journals dated NT-filing, adverse 8-K and offering evidence for the filing veto (`filings_capture` readiness, stale after `filing_veto.max_age_seconds`; stale or missing evidence never vetoes), and ships in `enforce` with the release exit (2026-11-16).
    Suggestion scans run at configured New York times and spend a derived per-session
    card budget (signals table, ET trading day); `PENDING` cards reserve no capacity;
    the intraday job scans only `non_universe_contracts`; `setup_quality` orders cards

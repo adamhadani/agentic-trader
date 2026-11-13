@@ -478,8 +478,10 @@ class FilingVetoConfig(BaseModel):
     With ``capture`` the daemon journals each covered symbol's recent negative EDGAR filings (late-filing
     notices, adverse 8-K items, offering prospectuses) after 06:00 New York and ``pre_scan_minutes`` before
     each suggestion scan. ``entry_block`` ``preview`` labels a long equity card whose issuer filed one within
-    its category's window (calendar days); ``enforce`` refuses it. Stale, missing or uncovered evidence never
-    refuses, and a short never evaluates the rule.
+    its category's window (calendar days); ``enforce`` refuses it for the ``enforce_categories`` only (the code
+    default is all three; the shipped config enforces ``late_filing`` and ``adverse_8k`` since 2026-11-16 and
+    leaves ``offering`` journal-only). Catalog, paper-probe and alpha cards are exempt. Stale, missing or
+    uncovered evidence never refuses, and a short never evaluates the rule.
     """
 
     model_config = {"extra": "forbid"}
@@ -536,7 +538,8 @@ class ReleaseExitConfig(BaseModel):
     Once per New York trading day, at the first five-minute tick from ``minutes_before_close`` before the
     calendar's close (an early close honoured), one pass finds every tracked native equity position whose next
     earnings report falls before the next session's open. ``preview`` journals the pass and sends one notice per
-    such position; ``enforce`` closes it through ``PositionCloseService``. An ``unknown`` status never closes.
+    such position; ``enforce`` (shipped since 2026-11-16; the code default is ``off``) closes it through
+    ``PositionCloseService``. An ``unknown`` status never closes.
     """
 
     model_config = {"extra": "forbid"}

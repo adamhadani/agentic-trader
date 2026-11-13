@@ -1655,19 +1655,17 @@ rule ([spec](superpowers/specs/2026-11-06-release-exit-filing-veto-design.md)).
   `EDGAR_USER_AGENT` and SEC reachability. Evidence that is stale,
   missing or does not cover a symbol never refuses an entry. To stop the worker, set `filing_veto.capture:
   false` and restart.
-- **Before enforce.** The filing veto and the release exit ship together in `preview`; each `enforce` is an
-  operator decision on the journaled evidence. Items 1–3 come before `filing_veto.entry_block: enforce`, item 4
-  before `release_exit.mode: enforce` (the same list is in the [release exit](#release-exit) section):
-  1. Cover dynamic-universe names, which the filings capture leaves uncovered by design in v1 (their rate is
-     reported apart, `by_universe.dynamic` of the `filing_veto` block).
-  2. Review the preview offering matches by `primary_document` (debt versus equity) and decide whether
-     `offering` stays a veto category.
-  3. Decide whether catalog cards (the PEAD probe, insider watch) are exempt from the filing veto at both gates.
-     The release exit already exempts them. Today an `enforce` refusal would change a frozen probe's entry
-     population, and watch cards carry no preview `filings` block.
-  4. Route the release exit's silent gaps to the morning operations summary: a broker calendar down through the
-     close, the host asleep through the window, an `enforce` pass resumed after the close + 30 minutes, and
-     `unknown` native positions. Today these show only in the journal, the daemon log and `cards outcomes`.
+- **Before enforce (record).** The filing veto and the release exit shipped in `preview` on 2026-11-07 and `enforce` on 2026-11-16, on the [preview-week evidence](filing-veto-release-exit-preview-2026-11-14.md). The list below is the record of what was open (the same list is in the [release exit](#release-exit) section):
+  1. Open (v1 gap): dynamic-universe names are uncovered by the filings capture by design; they journal
+     `uncovered` and are never refused (their rate is reported apart, `by_universe.dynamic` of the `filing_veto`
+     block).
+  2. Done: `offering` is journal-only. `filing_veto.enforce_categories` (shipped `late_filing`, `adverse_8k`)
+     names the categories that refuse under `enforce`; an offering match is still journaled and labelled
+     (`🗂 Filing (not enforced)`).
+  3. Done: catalog (`pead`, `insider_watch`), paper-probe and alpha-versioned cards are exempt from the filing veto
+     at both gates (the release exit's scope); their `filings` block records `exempt: true`.
+  4. Done: the morning operations summary lists the release exit's gaps (a missing pass, `unknown` native
+     positions, owed closes never notified; see the release exit's Failure and Notice bound items).
 
 ### Release exit
 
@@ -1727,31 +1725,34 @@ never touches the trading halt and opens no lifetime review.
   show only as a date missing from the `release_exit` block of `cards outcomes` (and as `release_exit_failed` in
   the daemon log): the broker calendar unavailable through the close (the close time is then unknown), and a
   host asleep, or a daemon down or restarted, through the whole window from close − `minutes_before_close` to
-  the close. Readiness is unchanged.
+  the close. Both are reported by the next morning's operations summary as a missing `release-exit/<ET date>`
+  pass ([operational monitoring](operational-monitoring.md)). Readiness is unchanged.
 - **Notice bound.** Notices are queued only up to the trading day's close + 30 minutes (16:30, the end of the
   alert window; 13:30 on an early close). A failed owed close, or an unavailable date, found later is journaled
   (`notified: false` on the `release_exit_close` event) and logged (`release_exit_close_not_submitted`,
-  `release_exit_unavailable`), never sent.
+  `release_exit_unavailable`), never sent as a live notice. The next morning's operations summary lists each
+  such close (symbol, signal ID, `/close SIGNAL_ID`), every native position whose status was `unknown`, and a
+  missing pass, for the trading day that ended the quiet period.
 - **Runbook.** Inspect with `uv run copilot db events --stream release-exit --limit 5` and the `release_exit`
   block of `uv run copilot cards outcomes` ([card evidence](card-evidence.md#release-exit)). The daemon log
   carries `release_exit_failed`, `release_exit_lookup_failed`, `release_exit_unavailable` and
   `release_exit_close_not_submitted` with type names or fixed outcomes. To act on a preview notice,
   `/close SIGNAL_ID` (the notice names it) closes that one position; `/flatten` would close every broker position,
-  exempt ones included. To stop the job, set `release_exit.mode: off` and restart; `enforce` is a separate
-  operator decision on the journaled preview counts.
-- **Before enforce.** The release exit and the filing veto ship together in `preview`; each `enforce` is an
-  operator decision on the journaled evidence. Items 1–3 come before `filing_veto.entry_block: enforce`, item 4
-  before `release_exit.mode: enforce` (the same list is in the [filings capture](#filings-capture) section):
-  1. Cover dynamic-universe names, which the filings capture leaves uncovered by design in v1 (their rate is
-     reported apart, `by_universe.dynamic` of the `filing_veto` block).
-  2. Review the preview offering matches by `primary_document` (debt versus equity) and decide whether
-     `offering` stays a veto category.
-  3. Decide whether catalog cards (the PEAD probe, insider watch) are exempt from the filing veto at both gates.
-     The release exit already exempts them. Today an `enforce` refusal would change a frozen probe's entry
-     population, and watch cards carry no preview `filings` block.
-  4. Route the release exit's silent gaps to the morning operations summary: a broker calendar down through the
-     close, the host asleep through the window, an `enforce` pass resumed after the close + 30 minutes, and
-     `unknown` native positions. Today these show only in the journal, the daemon log and `cards outcomes`.
+  exempt ones included. To stop the job, set `release_exit.mode: off` and restart. The shipped config is
+  `enforce` since 2026-11-16 (decision and evidence: [preview week](filing-veto-release-exit-preview-2026-11-14.md));
+  rollback to notices only is `release_exit.mode: preview` plus a controlled restart. The veto's rollback is
+  `filing_veto.entry_block: preview`, or adding `offering` to `filing_veto.enforce_categories` to widen it.
+- **Before enforce (record).** The release exit and the filing veto shipped in `preview` on 2026-11-07 and `enforce` on 2026-11-16, on the [preview-week evidence](filing-veto-release-exit-preview-2026-11-14.md). The list below is the record of what was open (the same list is in the [filings capture](#filings-capture) section):
+  1. Open (v1 gap): dynamic-universe names are uncovered by the filings capture by design; they journal
+     `uncovered` and are never refused (their rate is reported apart, `by_universe.dynamic` of the `filing_veto`
+     block).
+  2. Done: `offering` is journal-only. `filing_veto.enforce_categories` (shipped `late_filing`, `adverse_8k`)
+     names the categories that refuse under `enforce`; an offering match is still journaled and labelled
+     (`🗂 Filing (not enforced)`).
+  3. Done: catalog (`pead`, `insider_watch`), paper-probe and alpha-versioned cards are exempt from the filing veto
+     at both gates (the release exit's scope); their `filings` block records `exempt: true`.
+  4. Done: the morning operations summary lists the release exit's gaps (a missing pass, `unknown` native
+     positions, owed closes never notified; see the release exit's Failure and Notice bound items).
 
 ## Provider read and forecast hardening
 

@@ -1004,9 +1004,11 @@ Research verdict on event-driven work that costs nothing to build.
   effect is for convertibles)), **and a release exit for open native positions, long or short.** The earnings
   blackout gates entries only, so a native position opened 8 or more calendar days ahead can hold through a
   report; the release exit closes it before the session of a report through the existing close service. Both
-  ship in `preview` (`filing_veto.entry_block`, `release_exit.mode`); enforce is the operator's call on
-  journaled evidence, which shows in the `cards outcomes` `filing_veto` and `release_exit` blocks, after the
-  "Before enforce" items in [production](production.md#release-exit). Lock-up expiry and PDUFA dates stay out
+  shipped in `preview` (2026-11-07) and ship `enforce` since 2026-11-16 (`filing_veto.entry_block` for
+  `late_filing` and `adverse_8k`, `offering` journal-only and non-native cards exempt; `release_exit.mode`),
+  on the evidence in [the preview-week result](filing-veto-release-exit-preview-2026-11-14.md); the
+  `cards outcomes` `filing_veto` and `release_exit` blocks keep measuring, and covering dynamic-universe names
+  is the open gap ([production](production.md#release-exit)). Lock-up expiry and PDUFA dates stay out
   of v1.
 - **Later: analyst and investor days,** after an EDGAR count of announcements.
 - **Dropped:** the unconditional announcement premium; hold-through surprise bets (scheduling, seasonality,

@@ -413,13 +413,22 @@ never feeds `card_policy` or `card_stats`.
 ## Filing veto
 
 The `filing_veto` entry rule ([risk policy](risk-policy.md)) is measured, never gated, by this block. Each
-`scan_candidates_ranked` candidate carries `filings`: `{status, would_block, category}` for a long
+`scan_candidates_ranked` candidate carries `filings`: `{status, would_block, category, would_refuse}` for a long
 equity candidate judged while `filing_veto.entry_block` is `preview` or `enforce`, and `null` for a short, a
 non-equity, a veto that is off or a scan without a lookup. `status` is the evidence status (`ok`, `stale`,
 `unavailable`, `uncovered`); `would_block` and `category` are set only when it is `ok`. It is
 classified from the scan's in-memory lookup by the one shared helper (`agent/filing_veto.py:filing_veto_evidence`,
 the same one the evaluator gate and tap gate use, no I/O), independently of the evaluator's result, so every
 ranked long equity candidate carries it, including one that left before the veto gate.
+
+`would_block` and `category` label the newest qualifying filing of any category; `would_refuse` is true
+when a filing of an enforced category (`filing_veto.enforce_categories`, shipped `late_filing` and
+`adverse_8k`) qualifies and the card is not exempt. Catalog (`pead`, `insider_watch`), paper-probe and
+alpha-versioned cards are exempt at the evaluator and tap gates: they carry a `filings` block with
+`exempt: true` and `would_refuse: false`. Under `enforce` a refused native candidate leaves the scan
+journal and counts in `funnel.rejected_by_rule.filing_veto`, so the candidate `filings` counts below describe
+the survivors; an unenforced match (an `offering`) stays in the journal and its sent card shows
+`🗂 Filing (not enforced)`.
 
 `cards outcomes` adds `filing_veto` beside `supply` (`filing_veto_summary(events, frame)`), from the events
 for the candidate part and from the frame's `filings_would_block` column for the cards:
@@ -428,7 +437,7 @@ for the candidate part and from the frame's `filings_would_block` column for the
   judged while the veto was on), their `by_status` and `coverage` (the share whose status is `ok`; `null` with
   none);
 - `would_block`: `total` ok-status candidates the rule would refuse, `by_category` and `rate` (over ok-status
-  candidates; `null` with none);
+  candidates; `null` with none), and `would_refuse`, the count an enforced category would refuse;
 - `by_universe`: the same counts side by side for `static` names and `dynamic` ones (a candidate journaled with
   `dynamic: true`): `n`, `by_status`, `coverage`, `would_block` (the count), `by_category` and `rate`. The
   filings capture covers the universe, held equities and `corporate_actions.extra_symbols` only, so in v1
@@ -453,6 +462,10 @@ and close results of New York trading days inside the `--days` window:
 - `by_date`: each trading day's `mode`, `by_status` and `exempt_through_report`;
 - `closes`: the `enforce` close results, `n` and `by_outcome` (`submitted`, `refused`, `failed`, `error`,
   `already_exiting`).
+
+Gaps a day's journal can hold (a missing pass, `unknown` native positions, `release_exit_close` events with
+`notified: false`) are also listed in the next morning's operations summary
+([operational monitoring](operational-monitoring.md)).
 
 Nothing in `risk/`, `card_policy`, `card_stats` or admission reads this block.
 

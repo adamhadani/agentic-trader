@@ -14,6 +14,7 @@ from sqlalchemy.engine import make_url
 
 from agentic_trader.config import AppConfig, ExecutionConfig, LLMGateConfig, load_config
 from agentic_trader.constants import DEFAULT_POSTGRES_DB_URL
+from agentic_trader.data.edgar_filings import FilingCategory
 from agentic_trader.execution.auto_entry import auto_entry_active
 from agentic_trader.research.apriori.pead_base_rate import load_pead_base_rate
 from agentic_trader.research.setups.card_prior import load_prior
@@ -221,10 +222,11 @@ def test_the_shipped_filing_veto_and_release_exit_blocks_reach_app_config():
 
     # The code defaults are off; the fields set prove the YAML blocks were read.
     assert config.filing_veto.capture is True
-    assert config.filing_veto.entry_block == "preview"
+    assert config.filing_veto.entry_block == "enforce"
+    assert config.filing_veto.enforce_categories == (FilingCategory.LATE_FILING, FilingCategory.ADVERSE_8K)
     assert config.filing_veto.pre_scan_minutes == 30
-    assert {"capture", "entry_block", "pre_scan_minutes"} <= config.filing_veto.model_fields_set
-    assert config.release_exit.mode == "preview"
+    assert {"capture", "entry_block", "enforce_categories", "pre_scan_minutes"} <= config.filing_veto.model_fields_set
+    assert config.release_exit.mode == "enforce"
     assert config.release_exit.minutes_before_close == 30
     assert {"mode", "minutes_before_close"} <= config.release_exit.model_fields_set
 

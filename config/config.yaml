@@ -607,7 +607,8 @@ insider_watch:
 # EDGAR negative-filing veto for long cards (docs/superpowers/specs/2026-11-06-release-exit-filing-veto-design.md).
 filing_veto:
   capture: true
-  entry_block: "preview"   # preview since 2026-11-06; enforce is an operator decision on journaled evidence
+  entry_block: "enforce"   # preview 2026-11-07 → 11-14; enforce since 2026-11-16
+  enforce_categories: ["late_filing", "adverse_8k"]   # offering stays journal-only: bond issues; the drift evidence is equity/convertibles
   late_filing_days: 30
   adverse_8k_days: 60
   offering_days: 7
@@ -615,7 +616,7 @@ filing_veto:
 
 # Release exit for open native equity positions, long or short, ahead of a report (same spec).
 release_exit:
-  mode: "preview"   # preview since 2026-11-06; enforce is an operator decision on journaled evidence
+  mode: "enforce"   # preview 2026-11-07 → 11-14; enforce since 2026-11-16
   minutes_before_close: 30
 
 # Dated capture of the Nasdaq forward earnings calendar (docs/superpowers/specs/2026-11-06-earnings-capture-design.md).
