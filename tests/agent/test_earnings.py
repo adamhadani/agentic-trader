@@ -97,9 +97,13 @@ async def test_soft_error_date_is_not_refetched_within_the_failure_backoff():
         return _soft_error(request)
 
     calendar = NasdaqEarningsCalendar(transport=httpx.MockTransport(handler))
-    await calendar.next_earnings("AAPL", now=NOW, horizon_days=0)
-    await calendar.next_earnings("MSFT", now=NOW, horizon_days=0)
+    first = await calendar.next_earnings("AAPL", now=NOW, horizon_days=0)
+    second = await calendar.next_earnings("MSFT", now=NOW, horizon_days=0)
 
+    # Only the failure backoff leaves the second lookup unverified without a request;
+    # the success cache would have made it verified.
+    assert first.verified is False
+    assert second.verified is False
     assert requests == ["2026-09-23"]
 
 

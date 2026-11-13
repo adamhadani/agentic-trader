@@ -1601,9 +1601,9 @@ Nasdaq's CDN returned HTTP 403 to the desk's Python clients from about
 10:38 ET on 11-10 to about 07:50 ET on 11-12 (about 45 h). `pead_decision` was unavailable on 11-10 and 11-11, the
 11-11 capture failed (`CaptureIncomplete`), and the equity earnings blackout failed open throughout (no blackout,
 "Unverified" note), so a native card could have been auto-entered days before a report. The fallback and the
-`closed` policy above close that gap; the live client and its headers are unchanged. A follow-up closed the
-last fail-open path: an HTTP 200 soft-error page (`data: null`) is now unverified in the live lookup, so the
-blackout reads the capture instead of treating it as "no reports".
+`closed` policy above close that gap; the live client and its headers are unchanged. A 2026-11-13 follow-up
+made an HTTP 200 soft-error page (`status.rCode` other than 200, or `data: null`) unverified in the live lookup,
+so the blackout reads the capture instead of treating it as "no reports".
 
 ### Filings capture
 
