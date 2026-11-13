@@ -33,6 +33,10 @@ class FakeTradingClient:
         self.read_delay = 0
         self.omit_held_stops = False
         self.omit_history = False
+        self.stale_list_passes = 0
+        self.stale_flip = None
+        self.keep_reserved = False
+        self.inject_unknown = False
         self.submissions = []
         self.cancelled = []
         self.add_position("IWM", "short", 105, 285.4)
@@ -91,13 +95,32 @@ class FakeTradingClient:
                 if self.omit_history
                 else [o for o in self.orders.values() if o["symbol"] in request.symbols and o.get("legs")]
             )
-        return [
+        if self.inject_unknown and any(a[0] == "terminal" for a in self.actions):
+            self.inject_unknown = False
+            self.orders["IWM-surprise"] = {
+                "id": "IWM-surprise",
+                "symbol": "IWM",
+                "side": "buy",
+                "status": "new",
+                "type": "limit",
+                "order_type": "limit",
+                "filled_qty": "0",
+            }
+        listed = [
             o
             for o in self.orders.values()
             if o["symbol"] in request.symbols
             and o["status"] in ("new", "held", "pending_cancel", "accepted", "partially_filled")
             and not (self.omit_held_stops and o["status"] == "held")
         ]
+        # Lagging list endpoint: orders already terminal by ID are still listed with their old status.
+        for o in self.orders.values():
+            if o["symbol"] in request.symbols and o.get("stale_left", 0) > 0:
+                o["stale_left"] -= 1
+                listed.append({**o, "status": "new"})
+                if self.stale_flip:
+                    o.update(self.stale_flip)
+        return listed
 
     def get_order_by_id(self, order_id, *args):
         order = self.orders[order_id]
@@ -107,7 +130,10 @@ class FakeTradingClient:
                 order["status"] = "filled" if self.fill_during_cancel else "canceled"
                 self.actions.append(("terminal", order_id))
                 symbol = order["symbol"]
-                self.positions[symbol].qty_available = str(abs(float(self.positions[symbol].qty)))
+                if not self.keep_reserved:
+                    self.positions[symbol].qty_available = str(abs(float(self.positions[symbol].qty)))
+                if not self.fill_during_cancel:
+                    order["stale_left"] = self.stale_list_passes
                 if self.fill_during_cancel:
                     self.positions[symbol].qty = "1"
         return order
@@ -489,3 +515,70 @@ async def test_emergency_close_can_queue_after_hours_while_manual_close_preserve
     assert report.is_halted and report.liquidated_positions_count == 0
     assert await copilot.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
     assert len(client.submissions) == 1
+
+
+def _phases(events):
+    return [e["payload"] for e in events if e["payload"].get("phase")]
+
+
+@pytest.mark.asyncio
+async def test_stale_open_list_after_confirmed_cancel_still_closes_once(desk):
+    copilot, client = desk
+    sid = await seed(copilot)
+    client.cancel_pending_reads = 1
+    client.stale_list_passes = 2
+    client.fill_close = True
+    await copilot.close_position_manual(sid)
+    assert len(client.submissions) == 1
+    row = await copilot.db.get_signal_by_id(sid)
+    assert row["exit_price"] == 300
+    stale = [p for p in _phases(await copilot.db.get_audit_events(sid)) if p["phase"] == "stale_open_order_list"]
+    assert len(stale) == 1
+    assert stale[0]["order_ids"] == ["IWM-limit", "IWM-stop"]
+    assert await copilot.db.get_state(SystemStateKey.TRADING_HALTED) is None
+
+
+@pytest.mark.asyncio
+async def test_unknown_order_listed_after_confirmed_cancel_refuses(desk):
+    copilot, client = desk
+    sid = await seed(copilot)
+    client.stale_list_passes = 2
+    client.inject_unknown = True
+    response = await copilot.close_position_manual(sid)
+    assert "New or remaining orders appeared during cancellation" in response
+    assert not client.submissions
+    assert (await copilot.db.get_signal_by_id(sid))["status"] == SignalStatus.EXECUTED
+
+
+@pytest.mark.asyncio
+async def test_listed_group_order_filled_by_id_refuses(desk):
+    copilot, client = desk
+    sid = await seed(copilot)
+    client.stale_list_passes = 1
+    client.stale_flip = {"status": "filled", "filled_qty": "105"}
+    response = await copilot.close_position_manual(sid)
+    assert "filled during cancellation" in response
+    assert not client.submissions
+
+
+@pytest.mark.asyncio
+async def test_listed_group_order_non_terminal_by_id_refuses(desk):
+    copilot, client = desk
+    sid = await seed(copilot)
+    client.stale_list_passes = 1
+    client.stale_flip = {"status": "new"}
+    response = await copilot.close_position_manual(sid)
+    assert "New or remaining orders appeared during cancellation" in response
+    assert not client.submissions
+
+
+@pytest.mark.asyncio
+async def test_stale_list_with_reserved_quantity_refuses_at_deadline(desk):
+    copilot, client = desk
+    sid = await seed(copilot)
+    copilot.config.execution.close_cancel_timeout_seconds = 0.05
+    client.stale_list_passes = 10_000
+    client.keep_reserved = True
+    response = await copilot.close_position_manual(sid)
+    assert "Broker quantity remains reserved" in response
+    assert not client.submissions

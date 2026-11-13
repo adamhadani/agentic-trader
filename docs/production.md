@@ -1113,6 +1113,9 @@ Cancellation attempts are audited before DELETE, so even a lost cancellation
 acknowledgement carries this protection warning. Only a pre-mutation refusal may
 say existing protective orders were left unchanged by this request. External SDK
 errors expose their type/HTTP status, not raw broker response text.
+After cancellation is confirmed by ID, a listed order from the same cancelled group
+that reads terminal by ID is a stale listing and is ignored (audited once as
+`stale_open_order_list`); an unknown order ID still refuses.
 
 `close_requests` persists a UUID client order ID before broker mutations. A partial
 unique index allows only one active request per environment/account mode/symbol,
@@ -1148,6 +1151,17 @@ are separate from subsequent deployment verification.
 Deployment checks must verify `/flatten` in default, private-chat and operator-chat
 command scopes, the chat menu button, current daemon revision and poll freshness.
 `scripts/verify_runtime.py` performs these checks without messages or orders.
+
+### November 12 BLK holding close
+
+The 20-session holding close of BLK (signal #47) cancelled both bracket legs and read
+both terminal by ID, then refused at 20:45:16.94 UTC because Alpaca's OPEN order list
+still listed the cancelled take-profit leg about 0.7 s after the by-ID read. No close
+was submitted, the position stayed unprotected and new risk halted for review. The
+post-confirmation re-check now reads each listed order of the cancelled group by ID
+and treats a terminal one as stale; unknown, filled or non-terminal orders still
+refuse with the same texts, and the reserved-quantity check still gates submission.
+Design: `docs/superpowers/specs/2026-11-13-close-stale-order-list-design.md`.
 
 
 ### Broker transport and stop replacement

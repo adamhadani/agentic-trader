@@ -78,6 +78,8 @@ class AlpacaHTTP:
             "current_price": "105",
             "unrealized_pl": "50",
         }
+        self.stale_list_calls = 0  # OPEN list lags a by-ID cancellation by this many calls
+        self.stale_left = {}
         self.account = {
             "id": "account",
             "currency": "USD",
@@ -174,7 +176,11 @@ class AlpacaHTTP:
             if method == "GET":
                 if query.get("status") == ["all"]:
                     return 200, [self.entry]
-                return 200, [o for o in self.orders.values() if o["status"] in ("new", "accepted", "pending_cancel")]
+                listed = [o for o in self.orders.values() if o["status"] in ("new", "accepted", "pending_cancel")]
+                for order_id in [i for i, n in self.stale_left.items() if n > 0]:
+                    self.stale_left[order_id] -= 1
+                    listed.append({**self.orders[order_id], "status": "new"})
+                return 200, listed
             if method == "DELETE":
                 return 207, [{"id": self.stop["id"], "status": 200}, {"id": self.take_profit["id"], "status": 500}]
             if method == "POST":
@@ -207,6 +213,7 @@ class AlpacaHTTP:
             if method == "GET":
                 if order["status"] == "pending_cancel":
                     order["status"] = "canceled"
+                    self.stale_left[order["id"]] = self.stale_list_calls
                     if self.position:
                         self.position["qty_available"] = "10"
                 if order is self.entry and query.get("nested", ["false"])[0].lower() != "true":

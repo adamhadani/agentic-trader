@@ -218,6 +218,17 @@ async def test_replaced_stop_fill_reconciles_by_exact_chain_once(desk):
     copilot.notifier.send_exit_alert.assert_awaited_once()
 
 
+async def test_close_proceeds_when_open_list_lags_by_id_cancellation(desk):
+    copilot, venue, sid = desk
+    await track_existing(copilot, venue, sid)
+    venue.stale_list_calls = 2
+    await copilot.close_position_manual(sid)
+    row = await copilot.db.get_signal_by_id(sid)
+    assert row["realized_pnl"] == 50
+    market_posts = [body for method, path, _, body in venue.calls if method == "POST" and path == "/v2/orders"]
+    assert len(market_posts) == 1
+
+
 async def test_close_after_stop_replacement_cancels_current_leg(desk):
     copilot, venue, sid = desk
     await track_existing(copilot, venue, sid)
