@@ -12,6 +12,7 @@ from agentic_trader.agent.earnings import (
     EarningsTiming,
     ForwardRow,
     NasdaqEarningsCalendar,
+    calendar_page_rejection,
     earnings_blackout_reason,
     earnings_note,
     parse_calendar_payload,
@@ -28,7 +29,11 @@ TODAY = date(2026, 9, 23)
 
 
 def _response(rows: list[dict] | None) -> httpx.Response:
-    return httpx.Response(200, json={"data": {"rows": rows} if rows is not None else None, "status": {"rCode": 200}})
+    return httpx.Response(200, json={"data": {"rows": rows}, "status": {"rCode": 200}})
+
+
+def _soft_error(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json={"data": None, "status": {"rCode": 200, "bCodeMessage": [{"code": "1002"}]}})
 
 
 def _row(symbol: str, time_value: str) -> dict:
@@ -66,6 +71,61 @@ async def test_null_rows_is_a_verified_empty_day():
 
     assert lookup.verified is True
     assert lookup.event is None
+
+
+async def test_null_data_page_is_unverified():
+    calendar = NasdaqEarningsCalendar(transport=httpx.MockTransport(_soft_error))
+    lookup = await calendar.next_earnings("AAPL", now=NOW, horizon_days=3)
+
+    assert lookup.verified is False
+    assert lookup.event is None
+
+
+async def test_non_200_rcode_page_is_unverified():
+    body = {"data": {"rows": []}, "status": {"rCode": 400}}
+    calendar = NasdaqEarningsCalendar(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=body)))
+    lookup = await calendar.next_earnings("AAPL", now=NOW, horizon_days=3)
+
+    assert lookup.verified is False
+
+
+async def test_soft_error_date_is_not_refetched_within_the_failure_backoff():
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.params["date"])
+        return _soft_error(request)
+
+    calendar = NasdaqEarningsCalendar(transport=httpx.MockTransport(handler))
+    first = await calendar.next_earnings("AAPL", now=NOW, horizon_days=0)
+    second = await calendar.next_earnings("MSFT", now=NOW, horizon_days=0)
+
+    # Only the failure backoff leaves the second lookup unverified without a request;
+    # the success cache would have made it verified.
+    assert first.verified is False
+    assert second.verified is False
+    assert requests == ["2026-09-23"]
+
+
+@pytest.mark.parametrize(
+    ("response", "reason"),
+    [
+        (httpx.Response(503, text="x"), "HTTP 503"),
+        (httpx.Response(200, text="<html>"), "body is not JSON"),
+        (httpx.Response(200, json=[1]), "body is not a JSON object"),
+        (httpx.Response(200, json={"data": {"rows": []}, "status": {"rCode": 400}}), "status.rCode 400"),
+        (httpx.Response(200, json={"data": {"rows": []}}), "status.rCode None"),
+        (httpx.Response(200, json={"data": None, "status": {"rCode": 200}}), "data is not an object"),
+        (httpx.Response(200, json={"data": [], "status": {"rCode": 200}}), "data is not an object"),
+    ],
+)
+def test_calendar_page_rejection_reasons(response, reason):
+    assert calendar_page_rejection(response) == (None, reason)
+
+
+def test_calendar_page_rejection_accepts_a_data_object():
+    body = {"data": {"rows": None}, "status": {"rCode": 200}}
+    assert calendar_page_rejection(httpx.Response(200, json=body)) == (body, None)
 
 
 async def test_http_error_on_one_date_marks_unverified():
@@ -371,6 +431,15 @@ async def test_reported_rows_non_200_rcode_is_unavailable():
     assert "rCode" in page.detail
 
 
+async def test_reported_rows_null_data_is_unavailable():
+    calendar = NasdaqEarningsCalendar(transport=httpx.MockTransport(_soft_error))
+    page = await calendar.reported_rows(date(2026, 10, 26))
+
+    assert page.rows is None
+    assert page.http_status == 200
+    assert page.detail == "data is not an object"
+
+
 async def test_reported_rows_list_body_is_unavailable():
     calendar = NasdaqEarningsCalendar(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=[1, 2])))
     page = await calendar.reported_rows(date(2026, 10, 26))
@@ -510,6 +579,25 @@ async def test_live_failure_falls_back_to_capture_report_in_window(error):
     assert captures.calls == [(TODAY, TODAY + timedelta(days=7), TODAY)]
     reason = earnings_blackout_reason(result, "AAPL", NOW, 7)
     assert reason is not None and "2026-09-26" in reason
+
+
+async def test_soft_error_live_page_falls_back_to_capture():
+    reports = date(2026, 9, 26)
+    captures = _Captures(_captured({reports: (("AAPL", EarningsTiming.AFTER_HOURS),)}))
+    live = NasdaqEarningsCalendar(transport=httpx.MockTransport(_soft_error))
+
+    result = await resolve_earnings("AAPL", NOW, 7, live=live, captures=captures)
+
+    assert result.source == "capture" and result.verified
+    assert result.event == EarningsEvent("AAPL", reports, EarningsTiming.AFTER_HOURS)
+
+
+async def test_soft_error_live_page_without_capture_is_unverified():
+    live = NasdaqEarningsCalendar(transport=httpx.MockTransport(_soft_error))
+
+    result = await resolve_earnings("AAPL", NOW, 7, live=live, captures=_Captures(None))
+
+    assert result.source == "live" and not result.verified and result.event is None
 
 
 async def test_live_failure_with_capture_absence_is_verified_clear():

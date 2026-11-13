@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import StrEnum
-from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 import httpx
 
@@ -134,11 +134,35 @@ def _count(raw: object) -> int | None:
     return int(value)
 
 
+def calendar_page_rejection(response: httpx.Response) -> tuple[dict[str, Any] | None, str | None]:
+    """``(payload, None)`` for a verified calendar page, else ``(None, reason)``.
+
+    A page is verified only with HTTP 200, a JSON object body, ``status.rCode == 200`` and a
+    JSON-object ``data``; a soft-error page (``data: null``) is never an empty day.
+    """
+    if response.status_code != 200:
+        return None, f"HTTP {response.status_code}"
+    try:
+        payload = response.json()
+    except ValueError:
+        return None, "body is not JSON"
+    if not isinstance(payload, dict):
+        return None, "body is not a JSON object"
+    status = payload.get("status")
+    code = status.get("rCode") if isinstance(status, dict) else None
+    if code != 200:
+        return None, f"status.rCode {code!r}"
+    if not isinstance(payload.get("data"), dict):
+        return None, "data is not an object"
+    return payload, None
+
+
 def parse_calendar_payload(payload: object, day: date) -> list[CalendarRow]:
     """Rows of one Nasdaq calendar response for ``day``.
 
-    A missing or null ``data``/``rows`` is an empty day (the endpoint serves
-    ``data: null`` on some non-trading dates); rows without a symbol are skipped.
+    A missing or null ``data``/``rows`` parses as an empty day (research tolerance; the live
+    paths reject a page without a ``data`` object first, see ``calendar_page_rejection``);
+    rows without a symbol are skipped.
     """
     data = payload.get("data") if isinstance(payload, dict) else None
     raw_rows = data.get("rows") if isinstance(data, dict) else None
@@ -190,7 +214,7 @@ def _report_date(raw: object) -> date | None:
 def parse_forward_rows(payload: object, day: date) -> tuple[list[ForwardRow], int]:
     """Forward rows of one Nasdaq calendar response for ``day`` and the count skipped.
 
-    A missing or null ``data``/``rows`` is an empty day; rows without a symbol are
+    A missing or null ``data``/``rows`` parses as an empty day; rows without a symbol are
     skipped and counted. Duplicate symbols are kept as served.
     """
     data = payload.get("data") if isinstance(payload, dict) else None
@@ -285,12 +309,10 @@ class NasdaqEarningsCalendar:
                     params={"date": day.isoformat()},
                     headers=NASDAQ_REQUEST_HEADERS,
                 )
-                if resp.status_code != 200:
-                    logger.warning(
-                        "Nasdaq earnings calendar returned HTTP %s for %s", resp.status_code, day.isoformat()
-                    )
+                payload, rejection = calendar_page_rejection(resp)
+                if rejection is not None:
+                    logger.warning("Nasdaq earnings calendar page rejected for %s: %s", day.isoformat(), rejection)
                     return None
-                payload = resp.json()
         except Exception as e:
             logger.warning("Failed to fetch Nasdaq earnings calendar", extra={"date": day.isoformat(), "error": str(e)})
             return None
@@ -310,8 +332,8 @@ class NasdaqEarningsCalendar:
     async def reported_rows(self, day: date) -> ReportedPage:
         """Every row Nasdaq lists for ``day``; unusable pages are ``rows=None``, never guessed.
 
-        Acceptance matches the study's acquisition: HTTP 200, a JSON object and
-        ``status.rCode == 200``. Uncached: a live PEAD decision reads the page once.
+        Acceptance is ``calendar_page_rejection``: HTTP 200, a JSON object, ``status.rCode == 200``
+        and a ``data`` object. Uncached: a live PEAD decision reads the page once.
         """
         try:
             async with httpx.AsyncClient(transport=self._transport, timeout=6.0) as client:
@@ -321,17 +343,9 @@ class NasdaqEarningsCalendar:
         except Exception as exc:
             return ReportedPage(day, None, None, f"request failed: {type(exc).__name__}", None)
         digest = hashlib.sha256(resp.content).hexdigest()
-        if resp.status_code != 200:
-            return ReportedPage(day, None, resp.status_code, f"HTTP {resp.status_code}", digest)
-        try:
-            payload = resp.json()
-        except ValueError:
-            return ReportedPage(day, None, 200, "body is not JSON", digest)
-        if not isinstance(payload, dict):
-            return ReportedPage(day, None, 200, "body is not a JSON object", digest)
-        code = (payload.get("status") or {}).get("rCode") if isinstance(payload.get("status"), dict) else None
-        if code != 200:
-            return ReportedPage(day, None, 200, f"status.rCode {code!r}", digest)
+        payload, rejection = calendar_page_rejection(resp)
+        if rejection is not None:
+            return ReportedPage(day, None, resp.status_code, rejection, digest)
         return ReportedPage(day, tuple(parse_calendar_payload(payload, day)), 200, None, digest)
 
     async def next_earnings(self, symbol: str, now: datetime, horizon_days: int) -> EarningsLookup:

@@ -29,7 +29,13 @@ from typing import TYPE_CHECKING, Any, Literal
 import httpx
 from sqlalchemy import select
 
-from agentic_trader.agent.earnings import NASDAQ_REQUEST_HEADERS, EarningsTiming, ForwardRow, parse_forward_rows
+from agentic_trader.agent.earnings import (
+    NASDAQ_REQUEST_HEADERS,
+    EarningsTiming,
+    ForwardRow,
+    calendar_page_rejection,
+    parse_forward_rows,
+)
 from agentic_trader.constants import NASDAQ_EARNINGS_CALENDAR_URL
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.market.session import ET_TZ
@@ -267,23 +273,6 @@ def _spacer() -> Callable[[], Awaitable[None]]:
     return pace
 
 
-def _rejection(response: httpx.Response) -> tuple[Any, str | None]:
-    """The parsed payload of an accepted response, else ``(None, reason)``; mirrors ``reported_rows``."""
-    if response.status_code != 200:
-        return None, f"HTTP {response.status_code}"
-    try:
-        payload = response.json()
-    except ValueError:
-        return None, "body is not JSON"
-    if not isinstance(payload, dict):
-        return None, "body is not a JSON object"
-    status = payload.get("status")
-    code = status.get("rCode") if isinstance(status, dict) else None
-    if code != 200:
-        return None, f"status.rCode {code!r}"
-    return payload, None
-
-
 def _retryable(status_code: int) -> bool:
     return status_code == 429 or status_code >= 500
 
@@ -304,7 +293,7 @@ async def _fetch_page(
         except httpx.TransportError as exc:
             reason = type(exc).__name__
         else:
-            payload, rejection = _rejection(response)
+            payload, rejection = calendar_page_rejection(response)
             if rejection is None:
                 return payload, response.content
             reason = rejection
