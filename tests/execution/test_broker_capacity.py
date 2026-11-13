@@ -145,9 +145,38 @@ def test_age_covers_entire_acquisition_and_market_observations(capacity_case, cl
     context = capacity_case[1]
     if clock == "quote":
         context.quote.timestamp -= timedelta(minutes=5)
+    elif clock == "trade_timestamp":
+        context.trade_timestamp -= timedelta(minutes=6)
     else:
         setattr(context, clock, getattr(context, clock) - timedelta(minutes=5))
     with pytest.raises(ValueError, match="stale|expired"):
+        assess(capacity_case)
+
+
+def test_trade_older_than_quote_limit_but_within_trade_limit_is_admitted(capacity_case):
+    context = capacity_case[1]
+    context.trade_timestamp -= timedelta(seconds=120)
+    context.quote.timestamp -= timedelta(seconds=1)
+    assess(capacity_case)
+
+
+def test_trade_older_than_trade_limit_is_refused(capacity_case):
+    capacity_case[1].trade_timestamp -= timedelta(seconds=301)
+    with pytest.raises(ValueError, match="Market trade is stale"):
+        assess(capacity_case)
+
+
+def test_quote_limit_is_unchanged_with_a_fresh_trade(capacity_case):
+    context = capacity_case[1]
+    context.quote.timestamp -= timedelta(seconds=61)
+    context.trade_timestamp -= timedelta(seconds=1)
+    with pytest.raises(ValueError, match="Market quote is stale"):
+        assess(capacity_case)
+
+
+def test_future_trade_beyond_skew_is_refused(capacity_case):
+    capacity_case[1].trade_timestamp += timedelta(seconds=2)
+    with pytest.raises(ValueError, match="Market trade is stale"):
         assess(capacity_case)
 
 

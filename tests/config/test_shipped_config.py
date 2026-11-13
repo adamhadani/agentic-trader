@@ -176,6 +176,14 @@ def test_load_config_reads_lifetime_evidence_threshold(tmp_path):
     assert load_config(str(path), environ=PRODUCTION).execution.lifetime_evidence_review_after_failures == 3
 
 
+def test_entry_trade_max_age_default_shipped_value_and_bounds():
+    assert ExecutionConfig().entry_trade_max_age_seconds == 300
+    assert load_config(str(SHIPPED), environ=PRODUCTION).execution.entry_trade_max_age_seconds == 300.0
+    for value in (0, 901):
+        with pytest.raises(ValueError, match="entry_trade_max_age_seconds"):
+            ExecutionConfig(entry_trade_max_age_seconds=value)
+
+
 def test_shipped_prior_matches_config():
     policy = load_config(str(SHIPPED), environ=PRODUCTION).card_policy
 

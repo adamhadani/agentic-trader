@@ -245,7 +245,7 @@ def assess_entry_capacity(
     policy = config.execution
     _fresh(context.requested_at, now, policy.entry_evidence_max_age_seconds, "Broker account/book evidence")
     _fresh(context.observed_at, now, policy.entry_evidence_max_age_seconds, "Broker receipt")
-    _fresh(context.trade_timestamp, now, policy.entry_quote_max_age_seconds, "Market trade")
+    _fresh(context.trade_timestamp, now, policy.entry_trade_max_age_seconds, "Market trade")
     _fresh(context.quote.timestamp, now, policy.entry_quote_max_age_seconds, "Market quote")
     if now >= context.session_closes_at:
         raise ValueError("Equity session ended; request new approval during market hours")
