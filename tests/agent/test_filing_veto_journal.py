@@ -87,6 +87,7 @@ def test_offering_preview_only_does_not_mask_nt_filing():
     block, rejection = filing_veto_evidence(lookup, "AAA", TODAY, policy)
     assert block["category"] == "offering" and block["would_block"] is True and block["would_refuse"] is True
     assert rejection is not None and "NT 10-K" in rejection.reason
+    assert "424B5" in block["reason"] and block["reason"] != rejection.reason
 
 
 def test_offering_alone_is_labelled_but_not_refused_when_not_enforced():

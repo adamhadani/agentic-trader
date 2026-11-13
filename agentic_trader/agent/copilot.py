@@ -2616,7 +2616,7 @@ class TradingCopilot:
                     "shadow": shadow_by_rank[rank - 1],
                     "llm": llm_by_rank[rank - 1],
                     "news": news_by_rank[rank - 1],
-                    # The filing-veto evidence the evaluator saw ({status, would_block, category}); null for a
+                    # The filing-veto evidence the evaluator saw ({status, would_block, category, would_refuse}); null for a
                     # short, a non-equity, a veto that is off or no lookup. Descriptive, never a gate.
                     "filings": self._journal_filings(candidate, filings_lookup, decided_at),
                     "signal_id": signal_ids_by_rank[rank - 1],
