@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from agentic_trader.accounting.risk import AccountRiskSnapshot
@@ -85,12 +86,27 @@ class EntryExecutionService:
             entry_order_ids=tuple(sorted({p["broker_order_id"] for p in reservations if p.get("broker_order_id")})),
         )
         if isinstance(context, BrokerEntryContext):
-            # The cheap price-drift check runs first: a drifted entry is refused without the macro
-            # check's provider calls (calendar lookup, regime refresh).
+            # The cheap price-drift checks (last trade, then the quote band) run first: a drifted
+            # entry is refused without the macro check's provider calls (calendar lookup, regime
+            # refresh). An IEX quote is one venue's book, not the NBBO, and is often wide and
+            # lopsided, so its midpoint is not the market price. At one instant the market lies
+            # within [IEX bid, IEX ask]; only a quote entirely outside the band proves a move.
             assert request.entry_price is not None
             if abs(float(context.price) / request.entry_price - 1) > policy.entry_max_price_drift_pct:
                 return (
                     f"Market price changed to {context.price:g}; original approved limit {request.entry_price:g} retained.",
+                    context,
+                )
+            band = Decimal(str(policy.entry_max_price_drift_pct))
+            limit = Decimal(str(request.entry_price))
+            quote = context.quote
+            if quote.bid_price > limit * (1 + band) or quote.ask_price < limit * (1 - band):
+                return (
+                    (
+                        f"Market quote {quote.bid_price:g}/{quote.ask_price:g} is entirely outside the "
+                        f"{policy.entry_max_price_drift_pct * 100:g}% drift band; "
+                        f"original approved limit {request.entry_price:g} retained."
+                    ),
                     context,
                 )
         elif not (isinstance(context, SimulatedEntryContext) and not requires_account_risk(self.config)):

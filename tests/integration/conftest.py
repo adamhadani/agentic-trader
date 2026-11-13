@@ -109,6 +109,7 @@ class AlpacaHTTP:
         self.quote_price = 99.0
         self.bid_price, self.ask_price = 98.9, 99.1
         self.quote_time = datetime.now(UTC)
+        self.trade_time = None  # defaults to quote_time
         self.market_open = True
         self.session_closes_at = datetime.now(UTC) + timedelta(hours=6)
         self.entry_status = "accepted"
@@ -144,7 +145,7 @@ class AlpacaHTTP:
             return 200, {
                 "trades": {
                     "SPY": {
-                        "t": self.quote_time.isoformat(),
+                        "t": (self.trade_time or self.quote_time).isoformat(),
                         "p": self.quote_price,
                         "s": 10,
                         "x": "V",

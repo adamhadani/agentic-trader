@@ -104,6 +104,21 @@ async def test_worse_checkpoint_after_preflight_is_refused_by_capacity_recheck(r
 
 
 @pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
+async def test_entry_with_a_two_minute_old_trade_submits_once(risk_execution_desk):
+    copilot, venue, _state, order = risk_execution_desk
+    entry = copilot.entry_service
+    item, reason = await entry.store.enqueue_entry(order, copilot.config)
+    assert item is not None, reason
+    venue.trade_time = datetime.now(UTC) - timedelta(seconds=120)
+    assert await entry.dispatch_one()
+    assert (await entry.store.get_work(item.id)).status == WorkStatus.ACCEPTED
+    posts = mutations(venue)
+    assert len(posts) == 1 and posts[0][0] == "POST"
+    submitted = [e for e in await entry.store.events() if e["kind"] == EventKind.ENTRY_SUBMITTING]
+    assert len(submitted) == 1
+
+
+@pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
 async def test_benign_refresh_during_preflight_submits_once(risk_execution_desk, caplog):
     copilot, venue, _state, order = risk_execution_desk
     entry = copilot.entry_service
@@ -146,6 +161,24 @@ async def test_store_level_benign_refresh_is_not_refused(risk_execution_desk):
     assert reason is None
     assert (await copilot.ledger.current_risk()).fingerprint != checked.fingerprint
     assert (await store.get_work(claim.id)).status == WorkStatus.SUBMITTING
+
+
+@pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
+async def test_over_age_trade_is_refused_by_the_submission_recheck(risk_execution_desk):
+    copilot, venue, _state, order = risk_execution_desk
+    store = copilot.db.workflows
+    item, reason = await store.enqueue_entry(order, copilot.config)
+    assert item is not None, reason
+    claim = await store.claim_entry(lease_seconds=60)
+    checked = await copilot.ledger.current_risk()
+    venue.trade_time = datetime.now(UTC) - timedelta(seconds=301)
+    context = await copilot.broker.entry_market_context(order)
+    reason = await store.begin_submission(
+        claim, copilot.config, preflight_risk_fingerprint=checked.fingerprint, broker_context=context
+    )
+    assert "Market trade is stale" in reason
+    assert (await store.get_work(claim.id)).status == WorkStatus.CHECKING
+    assert not mutations(venue)
 
 
 @pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)

@@ -263,12 +263,20 @@ activity ledger to the broker account UUID.
 | `entry_queue_max_age_seconds` | 120 |
 | `signal_max_age_seconds` | 14400 |
 | `entry_quote_max_age_seconds` | 60 |
+| `entry_trade_max_age_seconds` | 300 |
 | `entry_max_price_drift_pct` | 0.01 |
 | `worker_interval_seconds` / `worker_batch_size` | 2 / 20 |
 | `journal_history_days` / `journal_max_pages` | 7 / 20 |
 | `notification_delivery_timeout_seconds` / `notification_lease_seconds` | 60 / 120 |
 | `notification_max_attempts` | 8 |
 | `notification_retry_seconds` / `notification_max_retry_seconds` | 5 / 900 |
+
+The last trade has its own age limit (`entry_trade_max_age_seconds`, 300, at most 900) separate
+from the quote's 60 s. COLB, NSC and GEHC auto-entries were refused on 2026-11-10/11/12 with
+fresh quotes because the sparse IEX last print was over a minute old; a read-only probe found
+30.5% of names with a trade older than 60 s and 4.1% older than 300 s. The preflight drift
+check compares the last trade, and the whole IEX quote, with the approved limit. It refuses only
+when the whole quote lies outside the band, because an IEX quote is not the NBBO.
 
 Telemetry defaults: reconciliation 180s, Telegram poll 120s, worker 30s, scan 18000s,
 notification backlog 1800s, health observation interval 10s. All are configured

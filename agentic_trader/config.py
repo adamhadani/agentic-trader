@@ -868,6 +868,7 @@ class ExecutionConfig(BaseModel):
     entry_queue_max_age_seconds: float = Field(default=120, gt=0)
     signal_max_age_seconds: float = Field(default=14400, gt=0)
     entry_quote_max_age_seconds: float = Field(default=60, gt=0)
+    entry_trade_max_age_seconds: float = Field(default=300, gt=0, le=900, allow_inf_nan=False)
     entry_evidence_max_age_seconds: float = Field(default=30, gt=0, le=120, allow_inf_nan=False)
     entry_max_price_drift_pct: float = Field(default=0.01, gt=0, le=0.1)
     worker_interval_seconds: float = Field(default=2, gt=0, le=60)
