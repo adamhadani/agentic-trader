@@ -674,8 +674,9 @@ def test_cards_scorecard_prints_the_formatted_card_and_sends_nothing(runner: Cli
             scorecard_module.LaneRow(
                 lane=lane,
                 sent=0,
-                entered_auto=0,
-                entered_tap=0,
+                attempted_auto=0,
+                attempted_tap=0,
+                refused=0,
                 filled=0,
                 closed=0,
                 realized_r_sum=0.0,
@@ -683,6 +684,7 @@ def test_cards_scorecard_prints_the_formatted_card_and_sends_nothing(runner: Cli
                 record_mean_r=None,
                 open_positions=0,
                 cf_mature=0,
+                cf_total=0,
                 cf_mean_r=None,
                 cf_mean_excess_r=None,
             )

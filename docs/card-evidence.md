@@ -690,13 +690,19 @@ It is descriptive and read-only: nothing in `risk/`, admission, `card_policy` or
 `cards outcomes` producers (native labelling, the PEAD probe record, the watch block) live in the same module and
 print unchanged. One row per lane (native, PEAD probe, insider watch):
 
-- **Activity (last `activity_days`, 7, New York days).** Cards sent, entries split into auto and tap, fills, closes
-  and the sum of realized R.
+- **Activity (last `activity_days`, 7, New York days).** Cards sent, entries *attempted* (split into auto and tap),
+  `refused`, fills, closes and the sum of realized R. An attempt is not a fill: `refused` counts attempts that ended
+  with no order accepted (signal status `FAILED` with no fill, for example an admission refusal), so
+  `attempted - refused` is not `filled` row by row (a fill can be pending or still resting). Auto-entry journal events
+  are not read; the signal status is the evidence.
 - **Realized record (trailing `record_days`, 90).** Closed trades, mean realized R (`realized_pnl / risk_dollars`,
   the formula of the probe's forward record; a closed row with unknown pnl or risk is not counted) and open
   positions.
-- **Counterfactual record (same trailing window).** Matured labels and their mean `r_cost`, plus the beta-matched
-  SPY excess where the lane has one (native and watch; PEAD shows `n/a`).
+- **Counterfactual record (same trailing window).** `N of M matured so far`: matured labels over those plus the
+  events still inside their label window (the labellers' own immature counts; for PEAD the LONG-leg immature
+  misses), their mean `r_cost`, and the beta-matched SPY excess where the lane has one (native and watch; PEAD shows
+  `n/a`). While `N < M` the line carries "(early exits; stop-heavy until windows complete)": early exits are mostly
+  stops, so the mean is biased negative until the windows finish. A bar-fetch failure still renders `n/a`.
 - **Account.** Adjusted equity at the window's start and end, from ledger checkpoints, or `n/a`.
 
 Measurement notes:

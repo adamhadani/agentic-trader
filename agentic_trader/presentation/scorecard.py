@@ -14,6 +14,7 @@ SCORECARD_FOOTER = "Counterfactual labels assume study-price fills; no lane has 
 
 _TITLES = {"native": "Native cards", "pead": "PEAD paper probe", "insider_watch": "Insider watch cards"}
 _NA = "n/a"
+_EARLY_EXITS = "early exits; stop-heavy until windows complete"
 
 
 def _r(value: float | None) -> str:
@@ -25,13 +26,13 @@ def _money(value: float | None) -> str:
 
 
 def _week(row: LaneRow) -> str:
-    entered = row.entered_auto + row.entered_tap
-    if not (row.sent or entered or row.filled or row.closed):
+    attempted = row.attempted_auto + row.attempted_tap
+    if not (row.sent or attempted or row.filled or row.closed):
         return "This week: none"
     realized = _r(row.realized_r_sum) if row.closed else _NA
     return (
-        f"This week: sent {row.sent}, entered {entered} (auto {row.entered_auto}, tap {row.entered_tap}), "
-        f"filled {row.filled}, closed {row.closed}, realized {realized}"
+        f"This week: sent {row.sent}, attempted {attempted} (auto {row.attempted_auto}, tap {row.attempted_tap}), "
+        f"refused {row.refused}, filled {row.filled}, closed {row.closed}, realized {realized}"
     )
 
 
@@ -44,9 +45,12 @@ def _counterfactual(row: LaneRow) -> str:
     note = f" ({html.escape(row.note)})" if row.note else ""
     if row.cf_mature is None:
         return f"Counterfactual: {_NA}{note}"
-    matured = f"{row.cf_mature} matured" if row.cf_mature else "none matured"
+    total = row.cf_total if row.cf_total is not None else row.cf_mature
+    matured = f"{row.cf_mature} of {total} matured so far" if total else "none matured"
+    early = f" ({_EARLY_EXITS})" if row.cf_mature < total else ""
     return (
-        f"Counterfactual: {matured}, mean {_r(row.cf_mean_r)}, SPY beta-matched excess {_r(row.cf_mean_excess_r)}{note}"
+        f"Counterfactual: {matured}, mean {_r(row.cf_mean_r)}, SPY beta-matched excess {_r(row.cf_mean_excess_r)}"
+        f"{early}{note}"
     )
 
 
