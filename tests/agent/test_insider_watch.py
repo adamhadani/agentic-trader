@@ -24,7 +24,11 @@ from sqlalchemy import select, update
 
 import agentic_trader.agent.copilot as copilot_module
 import agentic_trader.agent.insider_watch as insider_watch_module
-from agentic_trader.agent.catalog_sources import CatalogCardSource, PeadDriftSource
+from agentic_trader.agent.catalog_sources import (
+    NON_NATIVE_POSITION_CAP_REACHED,
+    CatalogCardSource,
+    PeadDriftSource,
+)
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.agent.insider_watch import (
     INSIDER_WATCH_POSITION_CAP_REACHED,
@@ -1461,3 +1465,60 @@ async def test_f4_round2_the_same_scan_check_normalizes_the_symbol(watch_desk, t
 
     contracts = [s["contract"].strip("/").upper() for s in await _signals(temp_db)]
     assert sorted(contracts) == ["DDD", "WINR", "WTCH"]
+
+
+async def test_non_native_ceiling_stops_both_catalog_sources_and_keeps_their_decision_events(
+    watch_desk, temp_db, app_config
+):
+    app_config.portfolio.max_non_native_positions = 3
+    app_config.apriori.max_drift_cards_per_session = 10
+    app_config.insider_watch.max_cards_per_session = 10
+    app_config.apriori.max_open_drift_positions = 4  # neither per-source cap is reached
+    app_config.insider_watch.max_open_positions = 4
+    await _open_position(temp_db, "ALPH", strategy="alpha_x")
+    async with temp_db.session_factory() as session, session.begin():  # an alpha-versioned position is non-native
+        await session.execute(
+            update(SignalRecord).where(SignalRecord.contract == "ALPH").values(alpha_version="alpha_x:1")
+        )
+    await _open_position(temp_db, "OLDP", strategy=PEAD_STRATEGY_ID)
+    await _open_position(temp_db, "OLDW", strategy=INSIDER_WATCH_STRATEGY_ID)
+    await _open_position(temp_db, "NATV", strategy="TREND_PULLBACK")  # a native position never counts
+    watch_desk.monitor_positions = AsyncMock(return_value=0)
+    await suggestion_scan(watch_desk)
+
+    recorded = {s["contract"] for s in await _signals(temp_db)}
+    assert "WINR" not in recorded and "WTCH" not in recorded
+    [watch] = await _watch_events(temp_db)
+    assert [e["outcome"] for e in watch["payload"]["events"]] == [NON_NATIVE_POSITION_CAP_REACHED]
+    [drift] = await _drift_events(temp_db)
+    assert {e["symbol"]: e["outcome"] for e in drift["payload"]["events"]} == {"WINR": NON_NATIVE_POSITION_CAP_REACHED}
+
+
+async def test_below_the_non_native_ceiling_both_catalog_sources_still_card(watch_desk, temp_db, app_config):
+    app_config.portfolio.max_non_native_positions = 4
+    app_config.apriori.max_drift_cards_per_session = 10  # open positions were recorded today and spend budget
+    app_config.insider_watch.max_cards_per_session = 10
+    await _open_position(temp_db, "OLDP", strategy=PEAD_STRATEGY_ID)
+    await _open_position(temp_db, "OLDW", strategy=INSIDER_WATCH_STRATEGY_ID)
+    watch_desk.monitor_positions = AsyncMock(return_value=0)
+
+    await suggestion_scan(watch_desk)
+
+    assert {"WINR", "WTCH"} <= {s["contract"] for s in await _signals(temp_db)}
+
+
+async def test_no_non_native_ceiling_leaves_the_per_source_caps_alone(watch_desk, temp_db, app_config):
+    assert app_config.portfolio.max_non_native_positions is None
+    app_config.apriori.max_drift_cards_per_session = 10
+    app_config.insider_watch.max_cards_per_session = 10
+    for index in range(6):
+        await _open_position(temp_db, f"OLD{index}", strategy="alpha_x")
+    async with temp_db.session_factory() as session, session.begin():
+        await session.execute(
+            update(SignalRecord).where(SignalRecord.strategy == "alpha_x").values(alpha_version="alpha_x:1")
+        )
+    watch_desk.monitor_positions = AsyncMock(return_value=0)
+
+    await suggestion_scan(watch_desk)
+
+    assert {"WINR", "WTCH"} <= {s["contract"] for s in await _signals(temp_db)}

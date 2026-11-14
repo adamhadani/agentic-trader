@@ -1517,7 +1517,7 @@ class TradingCopilot:
                 for event in prep.events:
                     symbol = event["symbol"]
                     if run.capped:
-                        run.outcomes[symbol] = run.source.position_cap_reason
+                        run.outcomes[symbol] = run.cap_reason
                         continue
                     try:
                         cand = run.source.candidate(event, datasets.get(symbol), prep)
@@ -2023,6 +2023,8 @@ class TradingCopilot:
                             "probe_risk_cap": self.config.alpha_pipeline.probe_risk_dollars
                             if candidate.probe
                             else None,
+                            # The source fact marks only a "card_facts" card (insider watch); a PEAD ("drift") card
+                            # renders the generic auto-entry line and carries no source fact.
                             **(
                                 {
                                     catalog.source.notification_key: {**facts, AUTO_ENTRY_SOURCE_FACT: True}

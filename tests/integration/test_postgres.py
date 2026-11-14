@@ -693,3 +693,44 @@ async def test_postgres_scan_journal_event_and_notice_commit_together(postgres_t
         assert item.payload["arguments"] == {"text": notice.text, "formatted": False}
     finally:
         await db.engine.dispose()
+
+
+async def test_postgres_non_native_capacity_counts_open_and_in_flight_entries(postgres_test_db, app_config):
+    """The O3 cap against real PostgreSQL: EXECUTED plus SUBMITTING non-native signals count, a native one never does."""
+    db = SignalDatabase(db_url=postgres_test_db)
+    try:
+
+        async def signal(contract: str, status: str, *, strategy: str = "pead_long", policy: dict | None = None) -> int:
+            return await db.record_signal(
+                contract=contract,
+                strategy=strategy,
+                direction="LONG",
+                entry_price=100.0,
+                stop_loss=95.0,
+                take_profit=110.0,
+                risk_dollars=5.0,
+                asset_class="EQUITY",
+                quantity=1,
+                status=status,
+                alpha_policy={"kind": "bracket"} if policy is None and strategy == "pead_long" else policy,
+            )
+
+        await signal("OPEN1", "EXECUTED")
+        await signal("OPEN2", "EXECUTED")
+        await signal("FLY1", "SUBMITTING")
+        await signal("NATV", "EXECUTED", strategy="TREND_PULLBACK")  # native: never counted
+        pending = await signal("NEXT", "PENDING")
+        native = await signal("NATN", "PENDING", strategy="TREND_PULLBACK")
+
+        async def judge(signal_id: int, cap: int | None) -> str | None:
+            app_config.portfolio.max_non_native_positions = cap
+            async with db.session_factory() as session, session.begin():
+                row = await session.get(SignalRecord, signal_id)
+                return await db.workflows._non_native_capacity_rejection(session, row, app_config)
+
+        assert (await judge(pending, 3)).startswith("non_native_capacity")  # 3 counted + itself > 3
+        assert await judge(pending, 4) is None
+        assert await judge(native, 3) is None
+        assert await judge(pending, None) is None
+    finally:
+        await db.engine.dispose()

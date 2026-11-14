@@ -45,6 +45,7 @@ from agentic_trader.execution.durable import (
     WorkKind,
     WorkStatus,
 )
+from agentic_trader.execution.scope import is_non_native
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.alpha.validation import ValidationPolicy
 from agentic_trader.research.apriori.probe import CATALOG_KIND, CATALOG_STRATEGY_IDS
@@ -91,6 +92,10 @@ def _event_view(row: DomainEventRecord) -> dict[str, Any]:
 
 # The decision_provenance key of an insider watch card's event (InsiderWatchSource.provenance_key).
 WATCH_PROVENANCE_KEY = "insider_watch"
+
+# The refusal of a non-native entry (catalog, watch, probe or alpha) while portfolio.max_non_native_positions of them
+# are open or in flight. A capacity refusal like the per-source caps: no halt, nothing reserved.
+NON_NATIVE_CAPACITY_REASON = "non_native_capacity"
 
 
 def _catalog_signal_rejection(signal: SignalRecord, definition: dict) -> str | None:
@@ -774,6 +779,15 @@ class WorkflowStore:
                 return None, "Signal is not pending."
             if reason := await self._alpha_entry_rejection(session, signal):
                 return None, reason
+            if reason := await self._non_native_capacity_rejection(session, signal, config):
+                session.add(
+                    self.db._audit(
+                        AuditEventType.ENTRY_ADMISSION_REJECTED,
+                        request.signal_id,
+                        {"reason": reason, "request": request.model_dump(mode="json")},
+                    )
+                )
+                return None, reason
             try:
                 risk = await self._entry_risk(session, config)
             except ValueError as exc:
@@ -933,6 +947,51 @@ class WorkflowStore:
             return "Alpha signal differs from its immutable strategy contract."
         return None
 
+    async def _non_native_capacity_rejection(
+        self, session: AsyncSession, signal: SignalRecord, config: AppConfig
+    ) -> str | None:
+        """Refuse a non-native entry when the non-native slots are full (operator decision O3).
+
+        Counts the scope's other non-native signals that are open (``EXECUTED``) or in flight (``SUBMITTING``, a
+        durable entry work item not yet resolved), plus this entry. A capacity/admission rule beside the
+        per-source ``max_open_*`` caps, not an entry-risk rule: it reads no prices or exposure. A native signal and
+        a ``None`` cap are never judged. Runs under the trading lock, then the alpha lock (the registry's order).
+        """
+        cap = config.portfolio.max_non_native_positions
+        if cap is None or not is_non_native(
+            strategy=signal.strategy,
+            alpha_version=signal.alpha_version,
+            alpha_policy=json.loads(signal.alpha_policy) if signal.alpha_policy else None,
+            provenance=json.loads(signal.decision_provenance) if signal.decision_provenance else None,
+        ):
+            return None
+        await self.lock(session, resource="alpha")
+        rows = (
+            await session.scalars(
+                select(SignalRecord).where(
+                    *self.db._scope(),
+                    SignalRecord.status.in_((SignalStatus.SUBMITTING, SignalStatus.EXECUTED)),
+                    SignalRecord.id != signal.id,
+                )
+            )
+        ).all()
+        others = sum(
+            1
+            for row in rows
+            if is_non_native(
+                strategy=row.strategy,
+                alpha_version=row.alpha_version,
+                alpha_policy=json.loads(row.alpha_policy) if row.alpha_policy else None,
+                provenance=json.loads(row.decision_provenance) if row.decision_provenance else None,
+            )
+        )
+        if others + 1 > cap:
+            return (
+                f"{NON_NATIVE_CAPACITY_REASON}: {others} of {cap} non-native slots are open or in flight "
+                "(catalog, watch, probe and alpha positions); a native entry is unaffected."
+            )
+        return None
+
     async def begin_submission(
         self,
         item: WorkItem,
@@ -986,6 +1045,8 @@ class WorkflowStore:
             # comparisons, so the operator sees which alpha gate refused rather than
             # one message covering every clause. Same lock, same relative position.
             if reason := await self._alpha_entry_rejection(session, signal):
+                return f"{reason} No order submitted."
+            if reason := await self._non_native_capacity_rejection(session, signal, config):
                 return f"{reason} No order submitted."
             try:
                 risk = await self._entry_risk(session, config)

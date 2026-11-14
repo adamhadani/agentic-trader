@@ -21,6 +21,7 @@ from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from agentic_trader.execution.durable import EventKind, NotificationKind
+from agentic_trader.execution.scope import is_non_native
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.screeners.earnings_drift import (
     PEAD_DECISION_TIME_ET,
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DRIFT_POSITION_CAP_REACHED",
+    "NON_NATIVE_POSITION_CAP_REACHED",
     "CatalogCardSource",
     "CatalogDecision",
     "CatalogPreparation",
@@ -51,6 +53,8 @@ __all__ = [
 
 # A PEAD event's outcome when apriori.max_open_drift_positions PEAD positions are already open.
 DRIFT_POSITION_CAP_REACHED = "drift position cap reached"
+# Any catalog event's outcome when portfolio.max_non_native_positions non-native positions are already open.
+NON_NATIVE_POSITION_CAP_REACHED = "non-native position cap reached"
 
 
 @runtime_checkable
@@ -154,8 +158,10 @@ class CatalogRun:
     source: CatalogCardSource[Any]
     open_positions: int  # open positions carrying the source's strategy id
     # At the cap the session's events are still prepared and journaled (the counterfactual set),
-    # but none is carded.
+    # but none is carded. ``cap_reason`` is each event's outcome then: the source's own cap, or the combined
+    # non-native ceiling (checked second: the source's own cap is the more specific reason).
     capped: bool
+    cap_reason: str
     preparation: Any = None  # the source's CatalogPreparation, or None when it does not decide this scan
     ranked: list[tuple[Any, Any, Any]] = field(default_factory=list)  # admitted (candidate, evaluation, risk)
     outcomes: dict[str, str] = field(default_factory=dict)  # event outcomes by symbol
@@ -167,7 +173,27 @@ class CatalogRun:
         cls, source: CatalogCardSource[Any], positions: Sequence[Mapping[str, Any]], config: AppConfig
     ) -> CatalogRun:
         open_positions = sum(1 for p in positions if p.get("strategy") == source.strategy_id)
-        return cls(source, open_positions, open_positions >= source.max_open_positions(config))
+        if open_positions >= source.max_open_positions(config):
+            return cls(source, open_positions, True, source.position_cap_reason)
+        ceiling = config.portfolio.max_non_native_positions
+        non_native = 0
+        if ceiling is not None:
+            non_native = sum(
+                1
+                for p in positions
+                if is_non_native(
+                    strategy=p.get("strategy"),
+                    alpha_version=p.get("alpha_version"),
+                    alpha_policy=p.get("alpha_policy"),
+                    provenance=p.get("decision_provenance"),
+                )
+            )
+        return cls(
+            source,
+            open_positions,
+            ceiling is not None and non_native >= ceiling,
+            NON_NATIVE_POSITION_CAP_REACHED,
+        )
 
 
 def pead_base_rate_block(rate: PeadBaseRate | None, sha256: str | None) -> dict:

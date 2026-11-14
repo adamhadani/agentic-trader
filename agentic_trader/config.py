@@ -600,6 +600,10 @@ class PortfolioConfig(BaseModel):
     max_notional_exposure: float = 60000.0
     max_concurrent_contracts: int = 2
     max_concurrent_positions: int = 4
+    # Open plus in-flight catalog, watch, probe and alpha positions at which a non-native entry is refused at
+    # admission and the catalog sources stop carding, so natives keep the rest of ``max_concurrent_positions``.
+    # None (the code default) applies no non-native ceiling. A capacity rule, not an entry-risk rule.
+    max_non_native_positions: int | None = Field(default=None, ge=1)
     default_equity_risk_dollars: float = 250.0
     max_futures_exposure: float = 40000.0
     max_equity_exposure: float = 40000.0
@@ -608,6 +612,16 @@ class PortfolioConfig(BaseModel):
     max_correlation_threshold: float = 0.85
     enable_dynamic_correlation: bool = False
     correlation_groups: dict[str, list[str]] = Field(default_factory=lambda: dict(DEFAULT_CORRELATION_GROUPS))
+
+    @model_validator(mode="after")
+    def _non_native_cap_fits_the_book(self) -> PortfolioConfig:
+        cap = self.max_non_native_positions
+        if cap is not None and cap > self.max_concurrent_positions:
+            raise ValueError(
+                f"max_non_native_positions ({cap}) cannot exceed max_concurrent_positions "
+                f"({self.max_concurrent_positions})"
+            )
+        return self
 
 
 class RiskConfig(BaseModel):
