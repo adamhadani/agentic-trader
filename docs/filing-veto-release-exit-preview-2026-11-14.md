@@ -47,7 +47,7 @@ the cited negative drift (convertibles, equity) does not apply.
 | Measure | Result |
 | --- | --- |
 | Passes | 4 of 4 (11-09..11-12), all `preview`, journaled 15:30–15:32 ET |
-| Entries | 14: 11 native `none`, 3 `exempt` (BLK, PEAD) |
+| Entries | 14: 11 native `none`, 3 `exempt` catalog-probe entries |
 | Decisions | 0 `would_close`, 0 `unknown`, 0 closes, 0 notices, 0 `release_exit_*` failure log lines |
 | Nasdaq 403 (11-10 10:38 → 11-12 07:50 ET) | the 11-10 and 11-11 passes had `live_verified: false` and decided from the capture alone (11-11 used the 11-10 capture) |
 | Held names | BLK, TMO, UNH, CSX: none reports within the captures' ~28-day horizon, so `none` was right |
@@ -65,8 +65,9 @@ The release exit uses the same close service, which is why its `enforce` follows
 - Catalog (`pead`, `insider_watch`), paper-probe and alpha-versioned cards are exempt at the evaluator and tap
   gates, the release exit's scope, so a frozen probe's entry population does not change.
 - `release_exit.mode: enforce`.
-- The morning operations summary lists the release exit's gaps: a missing pass, `unknown` native positions and
-  closes never notified, each with `/close SIGNAL_ID`.
+- The morning operations summary lists the release exit's gaps: a missing pass, `unknown` native positions,
+  refused, failed or errored closes never notified, and owed closes never attempted, each position with
+  `/close SIGNAL_ID`.
 
 ## Open gap
 

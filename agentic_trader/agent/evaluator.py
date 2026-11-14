@@ -20,7 +20,7 @@ from agentic_trader.agent.earnings import (
     earnings_note,
     resolve_earnings,
 )
-from agentic_trader.agent.filing_veto import filing_veto_evidence
+from agentic_trader.agent.filing_veto import filing_veto_evidence, filing_veto_exempt
 from agentic_trader.agent.llm_gate import LLM_KEY_MISSING, classify_gate_reply, llm_unavailable_reason
 from agentic_trader.agent.position_sizing import PositionSizingResult, calculate_dynamic_sizing
 from agentic_trader.agent.prompts import USER_EVALUATION_TEMPLATE, build_system_prompt, gate_prompt_sha256
@@ -72,18 +72,6 @@ _INVALID_BRACKET = "Quantity and bracket prices must be finite and positive."
 _TICK_EPSILON = 1e-6
 # How much of an unusable gate reply the local DEBUG log keeps (never the journal or a card).
 REPLY_HEAD_CHARS = 200
-
-
-def _filing_veto_exempt(candidate: ScreenerCandidate) -> bool:
-    """Whether a card is exempt from the filing veto: the cards `TradingCopilot._release_exit_scope` calls
-    non-native. Catalog cards carry `catalog_event` (their `alpha_policy` too), paper probes `probe`, alpha
-    cards `alpha_version`/`alpha_policy`; a native strategy candidate carries none of them."""
-    return (
-        candidate.catalog_event is not None
-        or candidate.probe
-        or candidate.alpha_version is not None
-        or candidate.alpha_policy is not None
-    )
 
 
 @dataclass(frozen=True)
@@ -680,7 +668,7 @@ class RiskEvaluator:
         # 2d. Filing veto (agentic_trader.risk.filing_veto_block; long equities only, a short never evaluates
         # it). A missing or stale capture, or one that did not cover this symbol ("uncovered"), never refuses;
         # preview annotates; enforce refuses an enforced-category filing inside its window. A non-native card
-        # (catalog, probe, alpha-versioned: `_filing_veto_exempt`) gets the block labelled `exempt` and is never
+        # (catalog, probe, alpha-versioned: `filing_veto_exempt`) gets the block labelled `exempt` and is never
         # refused, matching the release exit's exempt set and the tap gate.
         filings_block: dict[str, Any] | None = None
         filing_policy = self.config.filing_veto
@@ -695,7 +683,7 @@ class RiskEvaluator:
                 candidate.contract,
                 evaluated_at.astimezone(ET_TZ).date(),
                 filing_policy,
-                exempt=_filing_veto_exempt(candidate),
+                exempt=filing_veto_exempt(candidate),
             )
             if rejection is not None and filing_policy.entry_block == "enforce":
                 return _rejected(

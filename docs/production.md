@@ -1665,7 +1665,8 @@ rule ([spec](superpowers/specs/2026-11-06-release-exit-filing-veto-design.md)).
   3. Done: catalog (`pead`, `insider_watch`), paper-probe and alpha-versioned cards are exempt from the filing veto
      at both gates (the release exit's scope); their `filings` block records `exempt: true`.
   4. Done: the morning operations summary lists the release exit's gaps (a missing pass, `unknown` native
-     positions, owed closes never notified; see the release exit's Failure and Notice bound items).
+     positions, owed closes never notified, owed closes never attempted; see the release exit's Failure and
+     Notice bound items).
 
 ### Release exit
 
@@ -1731,8 +1732,10 @@ never touches the trading halt and opens no lifetime review.
   alert window; 13:30 on an early close). A failed owed close, or an unavailable date, found later is journaled
   (`notified: false` on the `release_exit_close` event) and logged (`release_exit_close_not_submitted`,
   `release_exit_unavailable`), never sent as a live notice. The next morning's operations summary lists each
-  such close (symbol, signal ID, `/close SIGNAL_ID`), every native position whose status was `unknown`, and a
-  missing pass, for the trading day that ended the quiet period.
+  such refused, failed or errored close (symbol, signal ID, `/close SIGNAL_ID`; a `submitted` or `already_exiting`
+  close owes no notice), every native position whose status was `unknown`, every owed close with no close event
+  at all (the process died or the host slept between the pass and its closes, and was not restarted that day),
+  and a missing pass, for the trading day that ended the quiet period.
 - **Runbook.** Inspect with `uv run copilot db events --stream release-exit --limit 5` and the `release_exit`
   block of `uv run copilot cards outcomes` ([card evidence](card-evidence.md#release-exit)). The daemon log
   carries `release_exit_failed`, `release_exit_lookup_failed`, `release_exit_unavailable` and
@@ -1752,7 +1755,8 @@ never touches the trading halt and opens no lifetime review.
   3. Done: catalog (`pead`, `insider_watch`), paper-probe and alpha-versioned cards are exempt from the filing veto
      at both gates (the release exit's scope); their `filings` block records `exempt: true`.
   4. Done: the morning operations summary lists the release exit's gaps (a missing pass, `unknown` native
-     positions, owed closes never notified; see the release exit's Failure and Notice bound items).
+     positions, owed closes never notified, owed closes never attempted; see the release exit's Failure and
+     Notice bound items).
 
 ## Provider read and forecast hardening
 

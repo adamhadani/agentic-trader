@@ -120,6 +120,15 @@ def test_journal_block_summarises_only_ok_evidence():
         "would_block": True,
         "category": "late_filing",
         "would_refuse": True,
+        "exempt": False,
+    }
+    exempt, _ = filing_veto_evidence(_lookup(), "AAA", TODAY, policy, exempt=True)
+    assert journal_filings_block(exempt) == {
+        "status": "ok",
+        "would_block": True,
+        "category": "late_filing",
+        "would_refuse": False,
+        "exempt": True,
     }
     unc, _ = filing_veto_evidence(_lookup(), "BBB", TODAY, policy)
     assert journal_filings_block(unc) == {
@@ -127,6 +136,7 @@ def test_journal_block_summarises_only_ok_evidence():
         "would_block": None,
         "category": None,
         "would_refuse": None,
+        "exempt": None,
     }
     assert journal_filings_block(None) is None
 
@@ -153,12 +163,14 @@ async def test_scan_journals_a_filings_block_per_candidate(shadow_desk, temp_db)
         "would_block": True,
         "category": "late_filing",
         "would_refuse": True,
+        "exempt": False,
     }
     assert by_contract["BBB"] == {
         "status": "uncovered",
         "would_block": None,
         "category": None,
         "would_refuse": None,
+        "exempt": None,
     }
     assert by_contract["CCC"] is None  # a short never evaluates the veto
 
@@ -174,3 +186,28 @@ async def test_scan_journals_null_filings_when_the_veto_is_off(shadow_desk, temp
     [event] = [e for e in await temp_db.workflows.events() if e["kind"] == EventKind.SCAN_CANDIDATES_RANKED]
     assert event["payload"]["candidates"]
     assert all(c["filings"] is None for c in event["payload"]["candidates"])
+
+
+async def test_scan_journals_exempt_candidates_as_not_refused(shadow_desk, temp_db):  # noqa: F811
+    """An alpha-versioned or probe candidate is exempt at the evaluator and tap gates, so the journal says so too."""
+    shadow_desk.config.filing_veto = shadow_desk.config.filing_veto.model_copy(update={"entry_block": "enforce"})
+    shadow_desk._filings_lookup = AsyncMock(
+        return_value=_lookup(covered=("AAA", "BBB", "CCC"), filings={s: (_late(s),) for s in ("AAA", "BBB", "CCC")})
+    )
+    shadow_desk.evaluator.evaluate_candidate = AsyncMock(side_effect=lambda cand, **kw: evaluation(cand))
+    qualities = {"AAA": 0.6, "BBB": 0.7, "CCC": 0.8}
+    extras = {"AAA": {"alpha_version": "a1"}, "BBB": {"probe": True}, "CCC": {}}
+
+    def scan(data, **kw):
+        cand = candidate(data.contract, qualities[data.contract])
+        return [cand.model_copy(update=extras[data.contract])]
+
+    shadow_desk.strategy_engine.scan_contract.side_effect = scan
+
+    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
+
+    [event] = [e for e in await temp_db.workflows.events() if e["kind"] == EventKind.SCAN_CANDIDATES_RANKED]
+    by_contract = {c["contract"]: c["filings"] for c in event["payload"]["candidates"]}
+    for symbol in ("AAA", "BBB"):
+        assert by_contract[symbol]["would_block"] is True
+        assert by_contract[symbol]["would_refuse"] is False and by_contract[symbol]["exempt"] is True

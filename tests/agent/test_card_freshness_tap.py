@@ -623,7 +623,7 @@ async def test_the_tap_filing_veto_exempts_every_non_native_scope_without_readin
 
 
 def test_the_evaluator_and_tap_gate_exempt_the_same_cards(tap_desk):
-    from agentic_trader.agent.evaluator import _filing_veto_exempt  # noqa: PLC0415
+    from agentic_trader.agent.filing_veto import filing_veto_exempt  # noqa: PLC0415
     from agentic_trader.execution.release_exit import NATIVE_SCOPE  # noqa: PLC0415
     from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG  # noqa: PLC0415
     from agentic_trader.research.apriori.watch_contract import INSIDER_WATCH_STRATEGY_ID  # noqa: PLC0415
@@ -647,7 +647,7 @@ def test_the_evaluator_and_tap_gate_exempt_the_same_cards(tap_desk):
         (candidate(alpha_policy={"k": 1}), _scope_row(alpha_policy={"k": 1})),
     ]  # fmt: skip
     for cand, row in cases:
-        assert _filing_veto_exempt(cand) == (tap_desk._release_exit_scope(row) != NATIVE_SCOPE), cand.strategy
+        assert filing_veto_exempt(cand) == (tap_desk._release_exit_scope(row) != NATIVE_SCOPE), cand.strategy
 
 
 async def test_macro_gate_turns_a_fresh_card_into_missed(tap_desk, temp_db):

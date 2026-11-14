@@ -413,10 +413,10 @@ never feeds `card_policy` or `card_stats`.
 ## Filing veto
 
 The `filing_veto` entry rule ([risk policy](risk-policy.md)) is measured, never gated, by this block. Each
-`scan_candidates_ranked` candidate carries `filings`: `{status, would_block, category, would_refuse}` for a long
+`scan_candidates_ranked` candidate carries `filings`: `{status, would_block, category, would_refuse, exempt}` for a long
 equity candidate judged while `filing_veto.entry_block` is `preview` or `enforce`, and `null` for a short, a
 non-equity, a veto that is off or a scan without a lookup. `status` is the evidence status (`ok`, `stale`,
-`unavailable`, `uncovered`); `would_block` and `category` are set only when it is `ok`. It is
+`unavailable`, `uncovered`); `would_block`, `category`, `would_refuse` and `exempt` are set only when it is `ok`. It is
 classified from the scan's in-memory lookup by the one shared helper (`agent/filing_veto.py:filing_veto_evidence`,
 the same one the evaluator gate and tap gate use, no I/O), independently of the evaluator's result, so every
 ranked long equity candidate carries it, including one that left before the veto gate.
@@ -464,7 +464,7 @@ and close results of New York trading days inside the `--days` window:
   `already_exiting`).
 
 Gaps a day's journal can hold (a missing pass, `unknown` native positions, `release_exit_close` events with
-`notified: false`) are also listed in the next morning's operations summary
+`notified: false` and a `refused`, `failed` or `error` outcome, and owed closes never attempted) are also listed in the next morning's operations summary
 ([operational monitoring](operational-monitoring.md)).
 
 Nothing in `risk/`, `card_policy`, `card_stats` or admission reads this block.

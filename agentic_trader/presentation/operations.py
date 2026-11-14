@@ -82,6 +82,14 @@ def _release_exit_lines(gaps: ReleaseExitGaps) -> list[str]:
         )
     if len(gaps.unnotified_closes) > MAX_SUMMARY_GAPS:
         lines.append(f"… +{len(gaps.unnotified_closes) - MAX_SUMMARY_GAPS} more unnotified")
+    for position in gaps.unattempted_closes[:MAX_SUMMARY_GAPS]:
+        signal = html.escape(position.signal_id)
+        lines.append(
+            f"• {html.escape(position.symbol)} ({signal}): owed close was never attempted; "
+            f"run <code>/close {signal}</code>."
+        )
+    if len(gaps.unattempted_closes) > MAX_SUMMARY_GAPS:
+        lines.append(f"… +{len(gaps.unattempted_closes) - MAX_SUMMARY_GAPS} more not attempted")
     return lines
 
 

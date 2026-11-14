@@ -81,10 +81,11 @@ class ReleaseExitGaps(BaseModel):
     missing_pass: bool
     unknown: list[GapPosition]
     unnotified_closes: list[GapClose]
+    unattempted_closes: list[GapPosition] = []
 
     @property
     def has_gaps(self) -> bool:
-        return self.missing_pass or bool(self.unknown) or bool(self.unnotified_closes)
+        return self.missing_pass or bool(self.unknown) or bool(self.unnotified_closes) or bool(self.unattempted_closes)
 
 
 class QuietHoursSummary(BaseModel):

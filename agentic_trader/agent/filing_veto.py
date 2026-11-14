@@ -17,6 +17,20 @@ if TYPE_CHECKING:
 
     from agentic_trader.config import FilingVetoConfig
     from agentic_trader.data.filings_capture import FilingsLookup
+    from agentic_trader.screeners.base import ScreenerCandidate
+
+
+def filing_veto_exempt(candidate: ScreenerCandidate) -> bool:
+    """Whether a card is exempt from the filing veto: the cards `TradingCopilot._release_exit_scope` calls
+    non-native. Catalog cards carry `catalog_event` (their `alpha_policy` too), paper probes `probe`, alpha
+    cards `alpha_version`/`alpha_policy`; a native strategy candidate carries none of them. The evaluator gate
+    and the scan journal both read this one predicate."""
+    return (
+        candidate.catalog_event is not None
+        or candidate.probe
+        or candidate.alpha_version is not None
+        or candidate.alpha_policy is not None
+    )
 
 
 def filing_veto_evidence(
@@ -61,7 +75,7 @@ def filing_veto_evidence(
 
 def journal_filings_block(block: Mapping[str, Any] | None) -> dict[str, Any] | None:
     """The scan journal's per-candidate summary of an evidence block: ``{status, would_block, category,
-    would_refuse}``; the last three are None unless the status is ok. None when no block was built."""
+    would_refuse, exempt}``; the last four are None unless the status is ok. None when no block was built."""
     if block is None:
         return None
     ok = block.get("status") == "ok"
@@ -70,4 +84,5 @@ def journal_filings_block(block: Mapping[str, Any] | None) -> dict[str, Any] | N
         "would_block": block.get("would_block") if ok else None,
         "category": block.get("category") if ok else None,
         "would_refuse": block.get("would_refuse") if ok else None,
+        "exempt": bool(block.get("exempt")) if ok else None,
     }

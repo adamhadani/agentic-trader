@@ -515,6 +515,72 @@ async def test_postgres_quiet_summary_is_decided_once_between_independent_client
         await second.engine.dispose()
 
 
+async def test_postgres_quiet_summary_reports_release_exit_gaps(postgres_test_db, app_config):
+    """The release-exit gap reader's ``LIKE``/``IN`` query and per-event JSON reads run on PostgreSQL."""
+    db = SignalDatabase(db_url=postgres_test_db)
+    try:
+        await db.init_db()
+        store = OperationsStore(db.workflows)
+        day = "2026-11-06"  # a Friday: the Monday-morning window's period_start is Friday 16:30 ET
+        start = datetime(2026, 11, 6, 21, 30, tzinfo=UTC)
+        end = datetime(2026, 11, 9, 14, 15, tzinfo=UTC)
+
+        def entry(signal_id, symbol, status):
+            return {"signal_id": signal_id, "symbol": symbol, "direction": "long", "scope": "native", "status": status}
+
+        async with db.session_factory() as session, session.begin():
+            await db.workflows.lock(session)
+            await db.workflows.append(
+                session,
+                stream="release-exit",
+                kind=EventKind.RELEASE_EXIT_PASS,
+                key=f"release-exit/{day}",
+                payload={
+                    "mode": "enforce",
+                    "trading_day": day,
+                    "positions": [
+                        entry(1, "AAA", "unknown"),
+                        entry(2, "BBB", "close"),
+                        entry(3, "CCC", "close"),
+                        entry(4, "DDD", "close"),
+                    ],
+                },
+            )
+            for signal_id, symbol, outcome, notified in ((2, "BBB", "submitted", False), (3, "CCC", "refused", False)):
+                await db.workflows.append(
+                    session,
+                    stream="release-exit",
+                    kind=EventKind.RELEASE_EXIT_CLOSE,
+                    key=f"release-exit/{day}/{signal_id}",
+                    payload={
+                        "trading_day": day,
+                        "signal_id": signal_id,
+                        "symbol": symbol,
+                        "outcome": outcome,
+                        "notified": notified,
+                    },
+                )
+        summary = await store.queue_quiet_summary(
+            period_start=start,
+            period_end=end,
+            observed_at=end,
+            details={},
+            ready_now=(),
+            policy=app_config.operations,
+            release_exit_mode="enforce",
+        )
+        assert summary is not None and summary.release_exit is not None
+        gaps = summary.release_exit
+        assert gaps.trading_day.isoformat() == day and not gaps.missing_pass
+        assert [(g.symbol, g.signal_id) for g in gaps.unknown] == [("AAA", "1")]
+        assert [(g.symbol, g.signal_id, g.outcome) for g in gaps.unnotified_closes] == [("CCC", "3", "refused")]
+        assert [(g.symbol, g.signal_id) for g in gaps.unattempted_closes] == [("DDD", "4")]
+        items = await db.workflows.list_work(WorkKind.NOTIFICATION)
+        assert [item.payload["kind"] for item in items] == [NotificationKind.OPERATIONS_SUMMARY]
+    finally:
+        await db.engine.dispose()
+
+
 async def test_postgres_expire_stale_signals_sweeps_only_stale_pending_cards(postgres_test_db):
     """The sweep's multi-statement transaction (a SELECT, per-row conditional UPDATEs and
     ``add_notification`` inserts, all sharing one ``AsyncSession``) against real

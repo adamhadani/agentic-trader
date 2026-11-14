@@ -104,6 +104,7 @@ def test_release_exit_gaps_render_fixed_blocks_and_nothing_when_absent():
         missing_pass=True,
         unknown=[GapPosition(symbol="ACME", signal_id="sig-1")],
         unnotified_closes=[GapClose(symbol="BETA", signal_id="sig-2", outcome="refused <x>")],
+        unattempted_closes=[GapPosition(symbol="GAMMA", signal_id="sig-3")],
     )
     summary = make([], [])
     summary = summary.model_copy(update={"release_exit": gaps})
@@ -112,7 +113,31 @@ def test_release_exit_gaps_render_fixed_blocks_and_nothing_when_absent():
     assert "No release-exit pass was journaled for 2026-11-02." in text
     assert "ACME (sig-1): earnings timing unknown; review and run <code>/close sig-1</code> if needed." in text
     assert "BETA (sig-2): close outcome refused &lt;x&gt; was never notified; run <code>/close sig-2</code>." in text
+    assert "GAMMA (sig-3): owed close was never attempted; run <code>/close sig-3</code>." in text
     only_missing = format_quiet_hours_summary(
-        summary.model_copy(update={"release_exit": gaps.model_copy(update={"unknown": [], "unnotified_closes": []})})
+        summary.model_copy(
+            update={
+                "release_exit": gaps.model_copy(
+                    update={"unknown": [], "unnotified_closes": [], "unattempted_closes": []}
+                )
+            }
+        )
     )
     assert "/close" not in only_missing
+
+
+def test_release_exit_gaps_model_counts_unattempted_closes_and_defaults_empty():
+    clean = ReleaseExitGaps(trading_day=date(2026, 11, 2), missing_pass=False, unknown=[], unnotified_closes=[])
+    assert clean.unattempted_closes == [] and not clean.has_gaps
+    owed = clean.model_copy(update={"unattempted_closes": [GapPosition(symbol="ACME", signal_id="sig-1")]})
+    assert owed.has_gaps
+
+
+def test_unattempted_closes_render_capped_with_a_remainder_line():
+    many = [GapPosition(symbol=f"S{i}", signal_id=f"sig-{i}") for i in range(12)]
+    gaps = ReleaseExitGaps(
+        trading_day=date(2026, 11, 2), missing_pass=False, unknown=[], unnotified_closes=[], unattempted_closes=many
+    )
+    text = format_quiet_hours_summary(make([], []).model_copy(update={"release_exit": gaps}))
+    assert text.count("owed close was never attempted") == 10
+    assert "… +2 more not attempted" in text

@@ -999,7 +999,7 @@ Research verdict on event-driven work that costs nothing to build.
   non-announcers. The planted check was detected (MDE 0.039R), so the null is powered
   ([result](apriori-runup-2026-11-06.md)). There will be no prospective read. The capture is kept for the
   veto layer, any later pre-event test and checking the earnings rule's dates.
-- **Built 2026-11-06, shipping in preview: an EDGAR negative-filing veto layer for long cards** (NT 10-K/10-Q,
+- **Built 2026-11-06; preview 2026-11-07, enforce since 2026-11-16: an EDGAR negative-filing veto layer for long cards** (NT 10-K/10-Q,
   8-K Items 2.04/2.05/2.06/4.02/5.01, 424B4/424B5 offering prospectuses (equity, convertible or debt; the cited
   effect is for convertibles)), **and a release exit for open native positions, long or short.** The earnings
   blackout gates entries only, so a native position opened 8 or more calendar days ahead can hold through a

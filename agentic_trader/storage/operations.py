@@ -1,6 +1,7 @@
 """Transactional incident projection and existing notification outbox integration."""
 
 import json
+import logging
 from collections.abc import Collection, Mapping
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -30,12 +31,38 @@ from agentic_trader.storage.models import DomainEventRecord, IncidentProjectionR
 from agentic_trader.storage.workflow import WorkflowStore, encode
 
 
+logger = logging.getLogger(__name__)
+
 MAX_SUMMARY_DETAIL = 120
-# Literals on purpose: the supervisor imports no execution module (agentic_trader/execution/release_exit.py owns these).
+# Literals on purpose: the supervisor imports neither `execution/release_exit.py` nor the trading modules, which
+# own the stream, the native scope and the pass/close statuses and outcomes below.
 RELEASE_EXIT_STREAM = "release-exit"
-RELEASE_EXIT_PASS_KIND = "release_exit_pass"
-RELEASE_EXIT_CLOSE_KIND = "release_exit_close"
 NATIVE_SCOPE = "native"
+PASS_STATUS_UNKNOWN = "unknown"
+PASS_STATUS_CLOSE = "close"
+# Outcomes whose notice is built (and so `notified: false` means it was withheld by the notice bound); a
+# `submitted` or `already_exiting` close is journaled `notified: false` with no notice ever owed.
+NOTICE_OUTCOMES = frozenset({"refused", "failed", "error"})
+
+
+def _skipped(event: DomainEventRecord, exc: Exception) -> None:
+    """Log one unreadable release-exit event by kind and exception type name only (never its payload)."""
+    logger.warning(
+        "Release-exit event skipped in the morning summary",
+        extra={"event": "release_exit_gap_event_skipped", "kind": event.kind, "error_type": type(exc).__name__},
+    )
+
+
+def _payload_items(event: DomainEventRecord, field: str) -> list[Mapping[str, Any]]:
+    """The event payload's list field (empty and logged when the payload is not the expected shape)."""
+    try:
+        items = json.loads(event.payload)[field]
+        if not isinstance(items, list):
+            raise TypeError(field)
+        return [item for item in items if isinstance(item, dict)]
+    except (KeyError, TypeError, ValueError) as exc:
+        _skipped(event, exc)
+        return []
 
 
 def summary_key(window_start: datetime) -> str:
@@ -216,45 +243,65 @@ class OperationsStore:
             return summary
 
     async def _release_exit_gaps(self, session: AsyncSession, trading_day: date) -> ReleaseExitGaps | None:
-        """The day's silent release-exit gaps from the journal; None when the pass is complete and clean."""
+        """The day's silent release-exit gaps from the journal; None when the pass is complete and clean.
+
+        Four kinds: no pass, a native position whose earnings timing is unknown, a refused/failed/errored close whose
+        notice was withheld, and an owed close (a ``close`` pass entry) with no close event at all. A malformed
+        payload is skipped with its exception type name logged, never the payload, so one bad event cannot cost
+        the whole summary.
+        """
         pass_key = f"{RELEASE_EXIT_STREAM}/{trading_day.isoformat()}"
         events = list(
             await session.scalars(
                 select(DomainEventRecord).where(
                     DomainEventRecord.scope == self.scope,
                     DomainEventRecord.stream == RELEASE_EXIT_STREAM,
-                    DomainEventRecord.kind.in_([RELEASE_EXIT_PASS_KIND, RELEASE_EXIT_CLOSE_KIND]),
+                    DomainEventRecord.kind.in_([EventKind.RELEASE_EXIT_PASS, EventKind.RELEASE_EXIT_CLOSE]),
                     DomainEventRecord.event_key.like(f"{pass_key}%"),
                 )
             )
         )
-        missing, unknown, unnotified = True, [], []
+        missing = True
+        unknown: list[GapPosition] = []
+        owed: list[GapPosition] = []
+        attempted: set[str] = set()
+        unnotified: list[GapClose] = []
         for event in events:
-            payload = json.loads(event.payload)
-            if event.kind == RELEASE_EXIT_PASS_KIND and event.event_key == pass_key:
+            if event.kind == EventKind.RELEASE_EXIT_PASS and event.event_key == pass_key:
                 missing = False
-                unknown = [
-                    GapPosition(symbol=str(p["symbol"]), signal_id=str(p["signal_id"]))
-                    for p in payload.get("positions", [])
-                    if p.get("scope") == NATIVE_SCOPE and p.get("status") == "unknown"
-                ]
-            elif (
-                event.kind == RELEASE_EXIT_CLOSE_KIND
-                and event.event_key.startswith(f"{pass_key}/")
-                and payload.get("notified") is False
-            ):
-                unnotified.append(
-                    GapClose(
-                        symbol=str(payload["symbol"]),
-                        signal_id=str(payload["signal_id"]),
-                        outcome=str(payload.get("outcome", "")),
-                    )
-                )
+                for entry in _payload_items(event, "positions"):
+                    try:
+                        if entry.get("scope") != NATIVE_SCOPE:
+                            continue
+                        status = entry.get("status")
+                        if status == PASS_STATUS_UNKNOWN:
+                            unknown.append(GapPosition(symbol=str(entry["symbol"]), signal_id=str(entry["signal_id"])))
+                        elif status == PASS_STATUS_CLOSE:
+                            owed.append(GapPosition(symbol=str(entry["symbol"]), signal_id=str(entry["signal_id"])))
+                    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                        _skipped(event, exc)
+            elif event.kind == EventKind.RELEASE_EXIT_CLOSE and event.event_key.startswith(f"{pass_key}/"):
+                attempted.add(event.event_key.removeprefix(f"{pass_key}/"))
+                try:
+                    payload = json.loads(event.payload)
+                    if payload.get("notified") is False and payload.get("outcome") in NOTICE_OUTCOMES:
+                        unnotified.append(
+                            GapClose(
+                                symbol=str(payload["symbol"]),
+                                signal_id=str(payload["signal_id"]),
+                                outcome=str(payload["outcome"]),
+                            )
+                        )
+                except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                    _skipped(event, exc)
         gaps = ReleaseExitGaps(
             trading_day=trading_day,
             missing_pass=missing,
             unknown=sorted(unknown, key=lambda g: (g.symbol, g.signal_id)),
             unnotified_closes=sorted(unnotified, key=lambda g: (g.symbol, g.signal_id)),
+            unattempted_closes=sorted(
+                (g for g in owed if g.signal_id not in attempted), key=lambda g: (g.symbol, g.signal_id)
+            ),
         )
         return gaps if gaps.has_gaps else None
 

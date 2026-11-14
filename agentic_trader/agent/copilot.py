@@ -38,7 +38,7 @@ from agentic_trader.agent.earnings import (
     resolve_earnings,
 )
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
-from agentic_trader.agent.filing_veto import filing_veto_evidence, journal_filings_block
+from agentic_trader.agent.filing_veto import filing_veto_evidence, filing_veto_exempt, journal_filings_block
 from agentic_trader.agent.insider_watch import CARDED_THIS_SCAN, InsiderWatchSource, build_insider_watch_source
 from agentic_trader.agent.llm_gate import (
     LLM_UNAVAILABLE_EARLIER_IN_SCAN,
@@ -2564,7 +2564,13 @@ class TradingCopilot:
             or str(candidate.direction).upper() != Direction.LONG
         ):
             return None
-        block, _ = filing_veto_evidence(lookup, candidate.contract, decided_at.astimezone(ET_TZ).date(), policy)
+        block, _ = filing_veto_evidence(
+            lookup,
+            candidate.contract,
+            decided_at.astimezone(ET_TZ).date(),
+            policy,
+            exempt=filing_veto_exempt(candidate),
+        )
         return journal_filings_block(block)
 
     async def _journal_scan_ranking(
@@ -2616,7 +2622,7 @@ class TradingCopilot:
                     "shadow": shadow_by_rank[rank - 1],
                     "llm": llm_by_rank[rank - 1],
                     "news": news_by_rank[rank - 1],
-                    # The filing-veto evidence the evaluator saw ({status, would_block, category, would_refuse}); null for a
+                    # The filing-veto evidence the evaluator saw ({status, would_block, category, would_refuse, exempt}); null for a
                     # short, a non-equity, a veto that is off or no lookup. Descriptive, never a gate.
                     "filings": self._journal_filings(candidate, filings_lookup, decided_at),
                     "signal_id": signal_ids_by_rank[rank - 1],
