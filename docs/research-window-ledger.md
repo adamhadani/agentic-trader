@@ -32,7 +32,7 @@ catch the rest.
 
 | Lane | Hypotheses | α | Declared before | Status |
 | --- | --- | --- | --- | --- |
-| Event lane, Sharadar era 2007-01 → 2016-07 | `insider-oos-v1` (H2a), `pead-sue-v3` (H2b), Holm over 2 | 0.05 one-sided | The era manifest, frozen at week 2 of the review's plan | Not declared yet; no read has happened |
+| Event lane, Sharadar era 2007-01 → 2016-07 | `insider-oos-v1` (H2a), `pead-sue-v3` (H2b), Holm over 2 | 0.05 one-sided | The era manifest, frozen at week 2 of the review's plan | Not declared yet; no read has happened. H2a's premise failed its breadth replication on 2026-11-14 (L44), so a manifest needs it re-argued or carries H2b alone |
 | Price lane, Sharadar era | `composite-ic-v1` | 0.05 one-sided | The same manifest | Not declared yet; no read has happened |
 | IC lane, development window 2016-08-01 → 2023-12-29 | `composite-ic-v1` gate on cohort v3 (v2 reported); checks A-IC and C-IC; the 64-pair re-score | 0.05 one-sided | The frozen `composite-ic-v1.json`, `rescore-v1.json`, `sectors-v1.json` and `ff12-sic-v1.json`, committed with rows L40–L42 | No α: development only; `t ≥ 2` at h = 20 behaves as about 5% one-sided (calibration in [the contract](alpha-ic-lane.md#6-the-ic-statistic)) |
 | Pre-earnings run-up, development read | `runup` v1 | No α: development only | `runup-v1.json`, committed with L43 | Development read; a prospective read declares its α in its own row |
@@ -184,6 +184,19 @@ Declared before the read, read on 2026-11-06. Frozen file `config/research/aprio
 | Id | Date | Lane / study | Cohort | What will be read | Result doc | Verdict |
 | --- | --- | --- | --- | --- | --- | --- |
 | L43 | 2026-11-06 | `runup` v1, pre-earnings run-up development read | Cohort v3 (`cohort3-events-v1`) | Outcomes, decisions 2016-08-01 → 2026-07-17; development only, cannot pass | [results](apriori-runup-2026-11-06.md) | **Fail, lane closed:** P1 −0.070R net of beta-matched SPY (ci90 [−0.101, −0.037]); P2 −0.006R vs matched controls (ci90 [−0.026, +0.014]); P3, P5 fail; planted detected, MDE 0.039R. No α claim |
+
+### Insider breadth replication (cohort xu, W6 on disjoint names)
+
+Declared before the read on 2026-11-14 (operator approval "approved all, proceed"). Frozen files
+`config/research/apriori/insider-v2.json` and `config/research/pooled/cohort-xu-insider-v1.json`. A count-only
+sizing step (no prices or labels) found 1,724 accepted triggers: 432 large and 1,292 small/mid, 618 from 2023.
+The exception to v1's "new window" clause is declared in the
+[spec](superpowers/specs/2026-11-14-insider-breadth-replication-design.md). The names are disjoint from cohort v3
+and the market path is shared, which is why P1 is descriptive.
+
+| Id | Date | Lane / study | Cohort | What will be read | Result doc | Verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| L44 | 2026-11-14 | `insider` v2, breadth replication of v1's frozen event rule | Cohort xu (ranks 1–400 and 1,401–2,156 of the cohort-v3 ranking; 1,156 names, disjoint from v3) | Outcomes, decisions 2016-08-01 → 2026-07-31; P2 primary with P4 required, P1 and P3 descriptive | [results](apriori-insider-breadth-2026-11-14.md) | **Fail, not replicated; insider lane closed:** P2 +0.011R vs matched controls (ci90 [−0.049, +0.074]); P4 held (1,048 events, 430 since 2023); P1 +0.030R, descriptive. No α claim |
 
 ### Prospective from 2026-08-01
 
