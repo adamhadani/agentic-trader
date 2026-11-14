@@ -33,11 +33,16 @@ from agentic_trader.execution.auto_entry import (
 )
 from agentic_trader.execution.durable import EntryTrigger, EventKind, NotificationKind, ScanTrigger, WorkKind
 from agentic_trader.execution.freshness import ExecutionReply
-from agentic_trader.execution.lifetime_policy import NATIVE_ENTRY_LIFETIME_KEY, NativeEntryLifetimePolicy
+from agentic_trader.execution.lifetime_policy import (
+    NATIVE_ENTRY_LIFETIME_KEY,
+    NativeEntryLifetimePolicy,
+    SessionLifetimePolicy,
+)
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import AUTO_REFUSED_LINE, TelegramNotifier, format_alert_card
 from agentic_trader.presentation.auto_entry_digest import format_auto_entry_digest
+from agentic_trader.research.apriori.watch_outcomes import watch_signals
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.models import DomainEventRecord, SignalRecord, WorkItemRecord
 from agentic_trader.storage.workflow import WorkflowStore
@@ -108,6 +113,7 @@ async def record_auto_card(
     rank: int = 1,
     contract: str = "SPY",
     provenance_extra: dict | None = None,
+    strategy: str = "TREND_PULLBACK",
 ) -> int:
     """Record a marked native card exactly as ``run_scan`` does: provenance, marker and its queued card."""
     evaluation = original_evaluation().model_copy(update={"contract": contract})
@@ -122,7 +128,7 @@ async def record_auto_card(
     }
     signal_id = await db.record_signal(
         contract=contract,
-        strategy="TREND_PULLBACK",
+        strategy=strategy,
         timeframe="4h",
         direction="LONG",
         entry_price=100.0,
@@ -373,6 +379,181 @@ async def test_no_marker_for_operator_scan_swing_drift_watch_alpha_futures_or_in
     provenance, card = recorded[contract]
     assert AUTO_ENTRY_KEY not in provenance
     assert "auto_entry" not in card
+
+
+# --- catalog sources: an enabled PEAD / insider-watch card is marked like a native one ------------------------
+
+CATALOG_POLICY = {
+    "kind": "apriori_bracket_v1",
+    "lifetime": asdict(SessionLifetimePolicy(resting_seconds=57_600, holding_sessions=20)),
+}
+
+
+def _enable_catalog(config, *sources: str) -> None:
+    config.execution.auto_entry_catalog = tuple(sources)
+
+
+def _give_pead_a_lifetime(desk, policy=CATALOG_POLICY) -> None:
+    source = desk.earnings_drift
+    source.candidates = {s: c.model_copy(update={"alpha_policy": policy}) for s, c in source.candidates.items()}
+
+
+@pytest.mark.parametrize(
+    ("case", "contract", "source"), [("drift", "WINR", "pead"), ("watch", "WTCH", "insider_watch")]
+)
+async def test_an_enabled_catalog_source_marks_its_card(
+    case, contract, source, request, temp_db, app_config, monkeypatch
+):
+    monkeypatch.setattr("agentic_trader.agent.copilot.requires_account_risk", lambda config: False)
+    desk = request.getfixturevalue("watch_desk" if case == "watch" else "drift_desk")
+    _give_pead_a_lifetime(desk)
+    install(desk, Gate())
+    _enable_catalog(app_config, source)
+
+    await suggestion_scan(desk)
+
+    recorded = await _recorded(temp_db)
+    provenance, card = recorded[contract]
+    assert provenance[AUTO_ENTRY_KEY] == {"mode": "paper"}
+    assert card["auto_entry"] == "placing"
+    # Never a native lifetime marker: the card's own policy lifetime governs.
+    assert NATIVE_ENTRY_LIFETIME_KEY not in provenance
+    # The other catalog source and the native card are unaffected.
+    other = {"WINR", "WTCH"} - {contract}
+    for symbol in other & set(recorded):
+        assert AUTO_ENTRY_KEY not in recorded[symbol][0]
+    inspect.signature(TelegramNotifier.send_signal_alert).bind(None, **card)
+
+
+async def test_a_disabled_catalog_source_stays_tap_only_beside_an_enabled_one(
+    watch_desk,  # noqa: F811
+    temp_db,
+    app_config,
+    monkeypatch,
+):
+    monkeypatch.setattr("agentic_trader.agent.copilot.requires_account_risk", lambda config: False)
+    _give_pead_a_lifetime(watch_desk)
+    install(watch_desk, Gate())
+    _enable_catalog(app_config, "insider_watch")
+
+    await suggestion_scan(watch_desk)
+
+    recorded = await _recorded(temp_db)
+    assert recorded["WTCH"][0][AUTO_ENTRY_KEY] == {"mode": "paper"}
+    assert AUTO_ENTRY_KEY not in recorded["WINR"][0] and "auto_entry" not in recorded["WINR"][1]
+    # Native cards keep their own rule: the LLM approved DDD.
+    assert recorded["DDD"][0][AUTO_ENTRY_KEY] == {"mode": "paper"}
+
+
+async def test_an_enabled_catalog_card_is_marked_when_the_commentary_failed(
+    drift_desk,  # noqa: F811
+    temp_db,
+    app_config,
+    monkeypatch,
+):
+    monkeypatch.setattr("agentic_trader.agent.copilot.requires_account_risk", lambda config: False)
+    _give_pead_a_lifetime(drift_desk)
+    install(drift_desk, Gate(WINR="Timeout"))
+    _enable_catalog(app_config, "pead")
+
+    await suggestion_scan(drift_desk)
+
+    provenance, card = (await _recorded(temp_db))["WINR"]
+    assert provenance["llm_verdict"]["applied"] is False and provenance["llm_verdict"]["error"]
+    assert provenance[AUTO_ENTRY_KEY] == {"mode": "paper"}
+    assert card["auto_entry"] == "placing"
+
+
+@pytest.mark.parametrize("policy", [{"kind": "apriori_bracket_v1"}, {"kind": "apriori_bracket_v1", "lifetime": None}])
+async def test_an_enabled_catalog_card_without_a_resolvable_lifetime_stays_a_tap_card(
+    policy,
+    drift_desk,  # noqa: F811
+    temp_db,
+    app_config,
+    monkeypatch,
+):
+    monkeypatch.setattr("agentic_trader.agent.copilot.requires_account_risk", lambda config: False)
+    _give_pead_a_lifetime(drift_desk, policy)
+    install(drift_desk, Gate())
+    _enable_catalog(app_config, "pead")
+
+    await suggestion_scan(drift_desk)
+
+    provenance, card = (await _recorded(temp_db))["WINR"]
+    assert AUTO_ENTRY_KEY not in provenance and "auto_entry" not in card
+
+
+@pytest.mark.parametrize("case", ["operator_scan", "swing_scan", "inactive"])
+async def test_an_enabled_catalog_source_is_still_not_marked_off_the_scheduled_scan_or_paper(
+    case,
+    watch_desk,  # noqa: F811
+    temp_db,
+    app_config,
+    monkeypatch,
+):
+    monkeypatch.setattr("agentic_trader.agent.copilot.requires_account_risk", lambda config: False)
+    _give_pead_a_lifetime(watch_desk)
+    install(watch_desk, Gate())
+    _enable_catalog(app_config, "pead", "insider_watch")
+    scan = {"operator_scan": _operator, "swing_scan": _swing}.get(case, suggestion_scan)
+    if case == "inactive":
+        app_config.execution.auto_entry = "off"
+
+    await scan(watch_desk)
+
+    recorded = await _recorded(temp_db)
+    for symbol in {"WINR", "WTCH"} & set(recorded):
+        assert AUTO_ENTRY_KEY not in recorded[symbol][0]
+
+
+async def test_an_enabled_watch_card_reads_auto_entered_and_a_disabled_one_tap_only(
+    watch_desk,  # noqa: F811
+    temp_db,
+    app_config,
+    monkeypatch,
+):
+    monkeypatch.setattr("agentic_trader.agent.copilot.requires_account_risk", lambda config: False)
+    install(watch_desk, Gate())
+    _enable_catalog(app_config, "insider_watch")
+
+    await suggestion_scan(watch_desk)
+
+    _, card = (await _recorded(temp_db))["WTCH"]
+    text = format_alert_card(**_card_kwargs(card))
+    assert "auto-entered on paper; unvalidated; earns no promotion credit" in text
+    assert "tap-only, never auto-entered" not in text
+
+
+def _card_kwargs(card: dict) -> dict:
+    """The queued payload as ``send_signal_alert`` renders it: the evaluation, strategy and card facts."""
+    return {
+        "eval_res": original_evaluation(),  # the scan's mocked evaluator queues an empty one
+        "strategy": card["strategy"],
+        "card_facts": card.get("card_facts"),
+        "auto_entry": card.get("auto_entry"),
+    }
+
+
+async def test_watch_signals_carry_the_entry_trigger_of_their_entry_item(temp_db, monkeypatch):
+    auto = await record_auto_card(temp_db, strategy="insider_watch_long")
+    tapped = await record_auto_card(temp_db, contract="QQQ", strategy="insider_watch_long")
+    none = await record_auto_card(temp_db, contract="IWM", strategy="insider_watch_long")
+    other = await record_auto_card(temp_db, contract="DIA")
+    # The real query is `WorkflowStore.entry_work_states`; a signal with no entry item is absent from it.
+    monkeypatch.setattr(
+        temp_db.workflows,
+        "entry_work_states",
+        AsyncMock(return_value={auto: ("queued", EntryTrigger.AUTO), tapped: ("queued", EntryTrigger.TAP)}),
+    )
+
+    signals = {s["id"]: s for s in await watch_signals(temp_db, datetime.now(UTC) - timedelta(days=1))}
+
+    assert set(signals) == {auto, tapped, none}  # the native card is not a watch signal
+    assert other not in signals
+    assert signals[auto]["entry_trigger"] == EntryTrigger.AUTO
+    assert signals[tapped]["entry_trigger"] == EntryTrigger.TAP
+    assert "entry_trigger" not in signals[none]
+    assert signals[auto]["decision_provenance"][AUTO_ENTRY_KEY] == {"mode": "paper"}
 
 
 async def test_repriced_card_drops_the_auto_marker(auto_desk, temp_db):

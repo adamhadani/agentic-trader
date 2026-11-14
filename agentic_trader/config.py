@@ -905,6 +905,9 @@ class ExecutionConfig(BaseModel):
     native_entry_lifetime: Literal["off", "session"] = "off"
     # "paper": native suggestion-scan cards are entered automatically on the Alpaca paper account; "off": tap only.
     auto_entry: Literal["off", "paper"] = "off"
+    # Catalog card sources the auto-entry sweep also enters (no LLM approval needed: their evidence is the frozen
+    # rule): "pead" (the PEAD probe) and "insider_watch". Valid only with `auto_entry: paper`.
+    auto_entry_catalog: tuple[Literal["pead", "insider_watch"], ...] = ()
     # Consecutive failed reconciliation passes of one timed signal's evidence read before it becomes a review halt
     # (1: first failure). A pass is the 60 s monitor plus one per stream update and scan.
     lifetime_evidence_review_after_failures: int = Field(default=5, ge=1, le=60)
@@ -1532,6 +1535,8 @@ def load_config(
         alpaca_data_feed=alpaca_data_feed,
         alpaca_paper=alpaca_paper,
     )
+    if config.execution.auto_entry_catalog and config.execution.auto_entry != "paper":
+        raise ValueError("execution.auto_entry_catalog requires execution.auto_entry: paper")
     if config.execution.auto_entry == "paper":
         if execution_mode == ExecutionMode.ALPACA and not alpaca_paper:
             raise ValueError("execution.auto_entry: paper is refused on a live Alpaca account; set it to off")

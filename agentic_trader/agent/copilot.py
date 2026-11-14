@@ -98,6 +98,7 @@ from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessServi
 from agentic_trader.execution.auto_entry import (
     ABANDONED_REASON,
     AUTO_ENTRY_KEY,
+    AUTO_ENTRY_SOURCE_FACT,
     EXPIRED_REASON,
     NOT_PAPER_REASON,
     REJECTED_AT_SUBMISSION_REASON,
@@ -141,7 +142,11 @@ from agentic_trader.execution.freshness import (
     round_to_tick,
     valid_until_from_provenance,
 )
-from agentic_trader.execution.lifetime_policy import NATIVE_ENTRY_LIFETIME_KEY, native_entry_lifetime_marker
+from agentic_trader.execution.lifetime_policy import (
+    NATIVE_ENTRY_LIFETIME_KEY,
+    entry_lifetime_of,
+    native_entry_lifetime_marker,
+)
 from agentic_trader.execution.lifetimes import RestingCancelResult, TradeLifetimeService
 from agentic_trader.execution.release_exit import NATIVE_SCOPE, ReleaseExitService, RunStatus
 from agentic_trader.market.session import (
@@ -787,6 +792,14 @@ class TradingCopilot:
     def _today_et() -> date:
         """The current New York date: the session a catalog decision is dated by."""
         return datetime.now(UTC).astimezone(ET_TZ).date()
+
+    @staticmethod
+    def _catalog_lifetime_resolves(alpha_policy: Mapping[str, Any] | None) -> bool:
+        """Whether a catalog card's policy declares an entry lifetime the one resolver reads (never raises)."""
+        try:
+            return entry_lifetime_of({"alpha_policy": alpha_policy}) is not None
+        except ValueError:
+            return False
 
     def _catalog_strategy_ids(self) -> frozenset[str]:
         return frozenset(source.strategy_id for source in self.catalog_sources)
@@ -1925,13 +1938,27 @@ class TradingCopilot:
                     # Paper auto-entry (item 1.4): a native, lifetime-marked card of a scheduled suggestion scan
                     # that the LLM gate approved is entered by the sweep (`auto_enter_pending`) instead of waiting
                     # for a tap. A card no LLM approved (a `--no-llm` scan's) stays an ordinary tap card.
+                    # A catalog source listed in `execution.auto_entry_catalog` (PEAD probe, insider watch) is
+                    # entered too, without an LLM approval, but only when its policy's lifetime resolves through
+                    # the one resolver: a card whose lifetime cannot be resolved stays a tap card. A catalog
+                    # card carries the policy (and the PEAD probe a version) of its source, so only a non-catalog
+                    # card with one is a registry alpha.
+                    catalog_source = catalog.source.source_id if catalog is not None else None
+                    if catalog_source is not None and not self._catalog_lifetime_resolves(candidate.alpha_policy):
+                        logger.warning(
+                            "Catalog card %s has no resolvable entry lifetime; it stays a tap card",
+                            catalog_source,
+                            extra={"event": "catalog_auto_entry_lifetime_unresolved", "source": catalog_source},
+                        )
+                        catalog_source = None
                     auto_marker = auto_entry_marker(
                         self.config,
                         trigger=trigger,
                         is_catalog=is_catalog,
-                        alpha=bool(candidate.alpha_policy or candidate.alpha_version),
+                        alpha=not is_catalog and bool(candidate.alpha_policy or candidate.alpha_version),
                         lifetime_marker=lifetime_marker,
                         llm_verdict=llm_by_rank[rank - 1],
+                        catalog_source=catalog_source,
                     )
 
                     # Record to database
@@ -1997,7 +2024,11 @@ class TradingCopilot:
                             if candidate.probe
                             else None,
                             **(
-                                {catalog.source.notification_key: facts}
+                                {
+                                    catalog.source.notification_key: {**facts, AUTO_ENTRY_SOURCE_FACT: True}
+                                    if auto_marker and catalog.source.notification_key == "card_facts"
+                                    else facts
+                                }
                                 if catalog is not None
                                 and (facts := catalog.source.card_facts(candidate, catalog.preparation)) is not None
                                 else {}

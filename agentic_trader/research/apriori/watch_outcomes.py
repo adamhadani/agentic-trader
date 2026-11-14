@@ -20,6 +20,8 @@ import pandas as pd
 from sqlalchemy import select
 
 from agentic_trader.constants import SignalStatus
+from agentic_trader.execution.auto_entry import AUTO_ENTRY_KEY
+from agentic_trader.execution.durable import EntryTrigger
 from agentic_trader.research.apriori.pead_study import decision_price, utc_index
 from agentic_trader.research.apriori.watch_contract import INSIDER_WATCH_STRATEGY_ID
 from agentic_trader.research.pooled.cube import BracketSpec
@@ -260,12 +262,24 @@ def _block(rows: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+def _is_tap(signal: Mapping[str, Any]) -> bool:
+    trigger = signal.get("entry_trigger")
+    if trigger is not None:
+        return trigger == EntryTrigger.TAP
+    marked = bool((signal.get("decision_provenance") or {}).get(AUTO_ENTRY_KEY))
+    return signal.get("status") not in _NOT_TAPPED and not marked
+
+
 def summarize_watch(frame: pd.DataFrame, labels: pd.DataFrame, signals: list[dict[str, Any]]) -> dict[str, Any]:
     """Counts, the labelled R blocks for all, sent and unsent events, taps and fills.
 
     ``signals`` is one dict per ``insider_watch_long`` signal in the window (``SignalRecord.to_dict()``).
-    A tap is a signal that left the card (any status but pending, dismissed or expired); a fill is one with
-    an ``executed_at``. Counts of events the labeller could not score are kept by reason, never dropped.
+    ``watch_signals`` adds each signal's ``entry_trigger`` (its entry work item's, absent without one). An
+    auto entry is a signal whose entry item the sweep queued (``auto``). A tap is a signal whose entry item
+    is a ``tap``, or one that left the card (any status but pending, dismissed or expired) with no entry item
+    and no auto-entry marker (an item that predates the trigger reads as a tap, so a signal without the key
+    is the same). A fill is one with an ``executed_at``. Counts of events the labeller could not score are kept
+    by reason, never dropped.
     """
     labelled = labels if not labels.empty else pd.DataFrame(columns=[*_COLUMNS, "r_cost", "beta_excess_r", "reason"])
     sent = labelled[labelled["sent"].astype(bool)] if not labelled.empty else labelled
@@ -279,16 +293,26 @@ def summarize_watch(frame: pd.DataFrame, labels: pd.DataFrame, signals: list[dic
         "sent_events": _block(sent),
         "unsent_events": _block(unsent),
         "unlabelled": dict(sorted(reasons.items())),
-        "taps": sum(1 for s in watch if s.get("status") not in _NOT_TAPPED),
+        "taps": sum(1 for s in watch if _is_tap(s)),
+        "auto_entries": sum(1 for s in watch if s.get("entry_trigger") == EntryTrigger.AUTO),
         "fills": sum(1 for s in watch if s.get("executed_at") is not None),
         "note": "Descriptive record of an unvalidated watch rule; never a gate, never promotion evidence.",
     }
 
 
 async def watch_signals(db: SignalDatabase, since: datetime) -> list[dict[str, Any]]:
-    """``insider_watch_long`` signals in ``db``'s own scope, recorded since ``since``."""
+    """``insider_watch_long`` signals in ``db``'s own scope, recorded since ``since``.
+
+    Each signal with an entry work item carries its ``entry_trigger`` (``tap`` or ``auto``), read the way
+    ``execution_evidence.collect_execution`` reads it; one without an item has no such key.
+    """
     async with db.session_factory() as session:
         stmt = select(SignalRecord).where(
             *db._scope(), SignalRecord.strategy == WATCH_STRATEGY, SignalRecord.timestamp >= since
         )
-        return [record.to_dict() for record in (await session.execute(stmt)).scalars().all()]
+        signals = [record.to_dict() for record in (await session.execute(stmt)).scalars().all()]
+    triggers = await db.workflows.entry_work_states([int(signal["id"]) for signal in signals])
+    return [
+        {**signal, "entry_trigger": triggers[int(signal["id"])][1].value} if int(signal["id"]) in triggers else signal
+        for signal in signals
+    ]

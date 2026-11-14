@@ -144,3 +144,43 @@ def test_bars_completing_after_the_as_of_bound_never_mature_a_label():
     later = datetime.combine(SESSION, time(13, 0), tzinfo=ET_TZ)
     labels = label_watch_events(frame, hourly, {}, None, None, BRACKET, COST_BPS, as_of=later)
     assert labels.iloc[0]["hit"] == "target"
+
+
+def _signal(status, *, trigger=None, marked=False, executed_at=None):
+    return {
+        "strategy": "insider_watch_long",
+        "status": status,
+        "executed_at": executed_at,
+        "entry_trigger": trigger,
+        "decision_provenance": {"auto_entry": {"mode": "paper"}} if marked else {},
+    }
+
+
+def test_summarize_watch_separates_taps_from_auto_entries():
+    frame = decision_frame([_payload("s1", [_event("AAA", "sent")])])
+    labels = label_watch_events(frame, {}, {}, None, None, BRACKET, COST_BPS)
+    signals = [
+        _signal("EXECUTED", trigger="tap", executed_at="2026-10-05 14:36:00"),
+        _signal("EXECUTED", trigger="auto", marked=True, executed_at="2026-10-05 14:40:00"),
+        _signal("SUBMITTING", trigger="auto", marked=True),
+        # Left the card with no entry work item and no marker (a pre-trigger-era signal): a tap.
+        _signal("EXECUTED"),
+        # A marked card that never reached a work item (still pending, or expired): neither.
+        _signal("PENDING", marked=True),
+        _signal("EXPIRED", marked=True),
+        # An unmarked card nobody tapped.
+        _signal("EXPIRED"),
+    ]
+
+    summary = summarize_watch(frame, labels, signals)
+
+    assert summary["taps"] == 2
+    assert summary["auto_entries"] == 2
+    assert summary["fills"] == 2
+
+
+def test_summarize_watch_counts_no_auto_entries_without_signals():
+    frame = decision_frame([_payload("s1", [_event("AAA", "sent")])])
+    labels = label_watch_events(frame, {}, {}, None, None, BRACKET, COST_BPS)
+
+    assert summarize_watch(frame, labels, [])["auto_entries"] == 0

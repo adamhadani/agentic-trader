@@ -305,14 +305,41 @@ async def test_outbox_delivers_card_auto_entered(temp_db):
     assert (await temp_db.workflows.list_work(WorkKind.NOTIFICATION))[-1].status == WorkStatus.DELIVERED
 
 
-def test_watch_card_still_says_tap_only(eval_res):
-    facts = {
-        "kind": "insider_watch",
-        "risk_cap": 100.0,
-        "buyers": 2,
-        "opp_dollars": 1000.0,
-        "filing_dates": ["2026-10-20"],
-        "holding_sessions": 5,
-        "issuer_cik": 1,
-    }
-    assert "tap-only, never auto-entered" in format_alert_card(eval_res, "S", card_facts=facts)
+_WATCH_FACTS = {
+    "kind": "insider_watch",
+    "risk_cap": 100.0,
+    "buyers": 2,
+    "opp_dollars": 1000.0,
+    "filing_dates": ["2026-10-20"],
+    "holding_sessions": 5,
+    "issuer_cik": 1,
+}
+TAP_ONLY = "tap-only, never auto-entered; earns no promotion credit"
+AUTO_ENTERED = "auto-entered on paper; unvalidated; earns no promotion credit"
+
+
+def test_watch_card_still_says_tap_only_while_its_source_is_disabled(eval_res):
+    html = format_alert_card(eval_res, "S", card_facts=_WATCH_FACTS)
+    terminal = format_terminal_card(eval_res, "S", 10_000, card_facts=_WATCH_FACTS)
+
+    assert TAP_ONLY in html and AUTO_ENTERED not in html
+    assert TAP_ONLY in terminal and AUTO_ENTERED not in terminal
+
+
+@pytest.mark.parametrize("auto_entry", ["placing", None])
+def test_watch_card_says_auto_entered_when_its_source_is_enabled(eval_res, auto_entry):
+    # ``auto_entry`` None is the card re-rendered after the entry closed: the source flag still holds.
+    facts = {**_WATCH_FACTS, "auto_entry_source": True}
+
+    html = format_alert_card(eval_res, "S", card_facts=facts, auto_entry=auto_entry)
+    terminal = format_terminal_card(eval_res, "S", 10_000, card_facts=facts, auto_entry=auto_entry)
+
+    assert AUTO_ENTERED in html and TAP_ONLY not in html
+    assert AUTO_ENTERED in terminal and TAP_ONLY not in terminal
+
+
+@pytest.mark.parametrize("auto_entry", ["refused", "abandoned"])
+def test_watch_card_the_sweep_did_not_enter_is_tap_only_again(eval_res, auto_entry):
+    facts = {**_WATCH_FACTS, "auto_entry_source": True}
+
+    assert TAP_ONLY in format_alert_card(eval_res, "S", card_facts=facts, auto_entry=auto_entry, auto_refusal="cap")

@@ -160,6 +160,45 @@ def test_load_config_refuses_auto_entry_without_session_lifetime(tmp_path):
         load_config(_auto_entry_yaml(tmp_path, "off"), environ=environ)
 
 
+def _catalog_yaml(tmp_path, *, auto_entry: str, catalog) -> str:
+    path = tmp_path / "config.yaml"
+    document = yaml.safe_load(SHIPPED.read_text())
+    document["execution"]["auto_entry"] = auto_entry
+    document["execution"]["native_entry_lifetime"] = "session"
+    document["execution"]["auto_entry_catalog"] = catalog
+    path.write_text(yaml.safe_dump(document))
+    return str(path)
+
+
+def test_auto_entry_catalog_defaults_to_no_source_and_validates_its_ids():
+    assert ExecutionConfig().auto_entry_catalog == ()
+    assert ExecutionConfig(auto_entry_catalog=["pead", "insider_watch"]).auto_entry_catalog == ("pead", "insider_watch")
+    with pytest.raises(ValidationError):
+        ExecutionConfig(auto_entry_catalog=["exdiv"])
+
+
+def test_load_config_accepts_a_catalog_list_on_alpaca_paper(tmp_path):
+    environ = {**PRODUCTION, "EXECUTION_MODE": "alpaca", "ALPACA_PAPER": "true"}
+
+    config = load_config(_catalog_yaml(tmp_path, auto_entry="paper", catalog=["pead"]), environ=environ)
+
+    assert config.execution.auto_entry_catalog == ("pead",)
+
+
+def test_load_config_refuses_a_catalog_list_without_paper_auto_entry(tmp_path):
+    environ = {**PRODUCTION, "EXECUTION_MODE": "alpaca", "ALPACA_PAPER": "true"}
+
+    with pytest.raises(ValueError, match="auto_entry_catalog"):
+        load_config(_catalog_yaml(tmp_path, auto_entry="off", catalog=["pead"]), environ=environ)
+
+
+def test_load_config_refuses_a_catalog_list_on_live_alpaca(tmp_path):
+    environ = {**PRODUCTION, "EXECUTION_MODE": "alpaca", "ALPACA_PAPER": "false"}
+
+    with pytest.raises(ValueError, match="execution.auto_entry"):
+        load_config(_catalog_yaml(tmp_path, auto_entry="paper", catalog=["pead", "insider_watch"]), environ=environ)
+
+
 def test_shipped_config_lifetime_evidence_threshold():
     config = load_config(str(SHIPPED), environ=PRODUCTION)
 
