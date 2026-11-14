@@ -1236,6 +1236,40 @@ class WorkflowStore:
             await self.add_notification(session, key, NotificationKind.MESSAGE, {"text": text, "formatted": True})
             return True
 
+    async def notification_queued(self, key: str) -> bool:
+        """Whether a notification with this dedup key is already queued: a plain read, without the workflow lock."""
+        async with self.db.session_factory() as session:
+            return bool(
+                await session.scalar(
+                    select(WorkItemRecord.id).where(
+                        WorkItemRecord.scope == self.scope,
+                        WorkItemRecord.kind == WorkKind.NOTIFICATION,
+                        WorkItemRecord.dedup_key == key,
+                    )
+                )
+            )
+
+    async def queue_weekly_scorecard(self, key: str, text: str, payload: dict[str, Any]) -> bool:
+        """Queue the week's scorecard message and its journal event once, in one transaction.
+
+        ``key`` is ``weekly-scorecard/{iso_year}-W{iso_week}``; False (nothing written) when it already exists.
+        """
+        async with self.db.session_factory() as session, session.begin():
+            await self.lock(session)
+            if await session.scalar(
+                select(WorkItemRecord.id).where(
+                    WorkItemRecord.scope == self.scope,
+                    WorkItemRecord.kind == WorkKind.NOTIFICATION,
+                    WorkItemRecord.dedup_key == key,
+                )
+            ):
+                return False
+            await self.add_notification(session, key, NotificationKind.MESSAGE, {"text": text, "formatted": True})
+            await self.append(
+                session, stream="scorecard/weekly", kind=EventKind.WEEKLY_SCORECARD, key=key, payload=payload
+            )
+            return True
+
     async def enqueue_notification(self, key: str, kind: str, payload: dict[str, Any]) -> str:
         async with self.db.session_factory() as session, session.begin():
             await self.lock(session)

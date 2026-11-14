@@ -554,6 +554,37 @@ class ReleaseExitConfig(BaseModel):
         return "off" if value is False else value
 
 
+class ScorecardConfig(BaseModel):
+    """The weekly lane scorecard (docs/superpowers/specs/2026-11-14-catalog-auto-entry-scorecard-design.md, part C).
+
+    The daemon's 15-minute job sends one Telegram message per ISO week, the first tick at or after the latest
+    ``due_weekday`` (Monday 0 .. Sunday 6) ``due_time_et`` New York time, so a daemon that was down at the due time
+    publishes the missed week on its next tick. ``activity_days`` New York days of activity, ``record_days`` trailing
+    days of realized and counterfactual record. The code default is on; it registers only in the daemon.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = True
+    due_weekday: int = Field(default=5, ge=0, le=6)
+    due_time_et: str = "09:00"
+    activity_days: int = Field(default=7, ge=1, le=90)
+    record_days: int = Field(default=90, ge=7, le=180)
+
+    @field_validator("due_time_et")
+    @classmethod
+    def valid_time(cls, value: str) -> str:
+        if not re.fullmatch(HHMM_PATTERN, value):
+            raise ValueError(f"Invalid HH:MM time: {value}")
+        return value
+
+    @model_validator(mode="after")
+    def record_covers_activity(self):
+        if self.record_days < self.activity_days:
+            raise ValueError("scorecard.record_days must be at least activity_days")
+        return self
+
+
 class InsiderWatchConfig(BaseModel):
     """Insider watch cards (docs/superpowers/specs/2026-10-23-insider-watch-cards-design.md).
 
@@ -1211,6 +1242,7 @@ class AppConfig(BaseModel):
     earnings_capture: EarningsCaptureConfig = Field(default_factory=EarningsCaptureConfig)
     filing_veto: FilingVetoConfig = Field(default_factory=FilingVetoConfig)
     release_exit: ReleaseExitConfig = Field(default_factory=ReleaseExitConfig)
+    scorecard: ScorecardConfig = Field(default_factory=ScorecardConfig)
     explicit_contracts: tuple[str, ...] | None = None
     risk: RiskConfig = Field(default_factory=RiskConfig)
     strategies: StrategyConfig = Field(default_factory=StrategyConfig)
@@ -1491,6 +1523,7 @@ def load_config(
         earnings_capture=EarningsCaptureConfig(**(cfg_dict.get("earnings_capture") or {})),
         filing_veto=FilingVetoConfig(**(cfg_dict.get("filing_veto") or {})),
         release_exit=ReleaseExitConfig(**(cfg_dict.get("release_exit") or {})),
+        scorecard=ScorecardConfig(**(cfg_dict.get("scorecard") or {})),
         explicit_contracts=tuple(explicit_contracts),
         risk=RiskConfig(**cfg_dict.get("risk", {})),
         strategies=strategies_config,

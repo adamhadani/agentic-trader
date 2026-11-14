@@ -171,6 +171,7 @@ from agentic_trader.presentation.formatters import (
     TelegramHtmlFormatter,
     TerminalFormatter,
 )
+from agentic_trader.presentation.scorecard import format_scorecard
 from agentic_trader.research.alpha.evidence import load_forward_evidence
 from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG, is_paper_scope
 from agentic_trader.research.alpha.shadow import AlphaShadowService
@@ -188,6 +189,7 @@ from agentic_trader.research.setups.ranker import (
     setup_features,
     shadow_blocks,
 )
+from agentic_trader.research.setups.scorecard import build_scorecard, scorecard_due, scorecard_key
 from agentic_trader.research.setups.sources import build_bar_source
 from agentic_trader.resilience.reads import DEFAULT_READ_WORKERS, BoundedReadExecutor
 from agentic_trader.risk import (
@@ -5347,6 +5349,50 @@ class TradingCopilot:
             )
         except Exception:
             logger.exception("Auto-entry digest failed", extra={"event": "auto_entry_digest_failed"})
+            return False
+
+    async def publish_weekly_scorecard(self, now: datetime | None = None) -> bool:
+        """Queue the weekly lane scorecard once per ISO week (the daemon's 15-minute job); True when queued.
+
+        Due from ``scorecard.due_weekday`` / ``due_time_et`` New York time and for ``SCORECARD_CATCH_UP`` after
+        it, so a daemon down at the due time publishes the missed week on its next tick, a restart after a publish
+        sends nothing (the key exists) and a restart late in the week sends nothing. A scan in flight, a key already queued or a not-yet-due
+        week returns False; a failure logs only its type name, returns False and retries on the next tick.
+        Nothing raises into the scheduler.
+        """
+        settings = self.config.scorecard
+        if not settings.enabled:
+            return False
+        current = now or datetime.now(UTC)
+        try:
+            due = scorecard_due(current, weekday=settings.due_weekday, time_et=settings.due_time_et)
+            if due is None:
+                return False
+            key = scorecard_key(due)
+            if await self.db.workflows.notification_queued(key):
+                return False
+            if self.scan_running:
+                logger.debug("Weekly scorecard deferred: a scan is running", extra={"event": "weekly_scorecard"})
+                return False
+            card = await build_scorecard(
+                self.db,
+                self.config,
+                now=current,
+                activity_days=settings.activity_days,
+                record_days=settings.record_days,
+            )
+            return await self.db.workflows.queue_weekly_scorecard(
+                key,
+                format_scorecard(card),
+                {"due": due.isoformat(), "window_start": card.window_start.isoformat()},
+            )
+        except Exception as exc:
+            # The type name only: a provider's message can name a host or an account.
+            logger.warning(
+                "Weekly scorecard failed (%s); retrying next tick",
+                type(exc).__name__,
+                extra={"event": "weekly_scorecard_failed", "error_type": type(exc).__name__},
+            )
             return False
 
     async def publish_scan_digest(self, et_date: str | None = None) -> str:

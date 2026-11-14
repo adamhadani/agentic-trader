@@ -72,6 +72,7 @@ class EventKind(StrEnum):
     RELEASE_EXIT_CLOSE = "release_exit_close"
     INSIDER_WATCH_DECISION = "insider_watch_decision"
     AUTO_ENTRY_ATTEMPTED = "auto_entry_attempted"
+    WEEKLY_SCORECARD = "weekly_scorecard"
 
 
 class EntryTrigger(StrEnum):

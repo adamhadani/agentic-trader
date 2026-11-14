@@ -11,6 +11,7 @@ import pytest
 import agentic_trader.research.setups.scorecard as scorecard_module
 from agentic_trader.execution.durable import EntryTrigger, EventKind
 from agentic_trader.research.setups.scorecard import LaneScorecard, build_scorecard
+from agentic_trader.storage.db import UNKNOWN_EXECUTION_MODE, SignalDatabase
 from agentic_trader.storage.ledger import LEDGER_STREAM
 from agentic_trader.storage.models import DomainEventRecord, SignalRecord
 
@@ -18,6 +19,14 @@ from agentic_trader.storage.models import DomainEventRecord, SignalRecord
 NOW = datetime(2026, 11, 14, 14, 0, tzinfo=UTC)  # Saturday 09:00 New York (EST)
 SESSION = "2026-11-10"
 SECRET = "secret-detail-must-not-leak"
+
+
+@pytest.fixture
+def temp_db(tmp_path, app_config) -> SignalDatabase:
+    """A database bound to the config's execution mode (the conftest one has the unknown mode)."""
+    db = SignalDatabase(str(tmp_path / "scorecard.db"), config=app_config)
+    assert db.execution_mode != UNKNOWN_EXECUTION_MODE
+    return db
 
 
 class FakeBars:
@@ -150,6 +159,19 @@ async def seed_signals(db) -> dict[str, int]:
             db, contract="WW2", strategy="insider_watch_long", ts=_at(12), status="EXECUTED", executed_at=_at(12)
         ),
     }
+    # A closed win whose execution mode is unknown cannot be attributed to this paper scope: like
+    # ``storage/probe_state.py``'s forward record, the scorecard counts it nowhere (``db._scope()`` would admit it).
+    rows["UNKNOWN_MODE"] = _signal(
+        db,
+        contract="UUU",
+        strategy="BREAKOUT",
+        ts=_at(11),
+        status="CLOSED_WIN",
+        executed_at=_at(11),
+        exit_timestamp=_at(12),
+        realized_pnl=500.0,
+    )
+    rows["UNKNOWN_MODE"].execution_mode = UNKNOWN_EXECUTION_MODE
     async with db.session_factory() as session, session.begin():
         session.add_all(rows.values())
     return {name: row.id for name, row in rows.items()}

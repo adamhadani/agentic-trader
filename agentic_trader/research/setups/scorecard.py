@@ -77,6 +77,7 @@ if TYPE_CHECKING:
     from agentic_trader.storage.db import SignalDatabase
 
 __all__ = [
+    "SCORECARD_CATCH_UP",
     "AccountRow",
     "LaneRow",
     "LaneScorecard",
@@ -86,12 +87,16 @@ __all__ = [
     "insider_watch_summary",
     "native_outcomes",
     "pead_probe_summary",
+    "scorecard_due",
+    "scorecard_key",
     "sip_reader",
 ]
 
 LaneName = Literal["native", "pead", "insider_watch"]
 LANES: tuple[LaneName, ...] = ("native", "pead", "insider_watch")
 _FETCH_FAILED = "fetch_failed"
+# How long after its due time a missed weekly scorecard is still published (a week the daemon slept through).
+SCORECARD_CATCH_UP = timedelta(days=4)
 
 
 class LaneRow(BaseModel):
@@ -337,6 +342,27 @@ class _Counterfactual:
     split: tuple[int, int] | None = None  # (auto, tap) when a lane summary already split the entries
 
 
+def scorecard_due(now: datetime, *, weekday: int, time_et: str) -> datetime | None:
+    """The weekly due instant ``now`` publishes for, or ``None`` when no scorecard is due.
+
+    It is the latest ``weekday`` (Monday 0) ``time_et`` New York instant at or before ``now``, when that instant is
+    less than ``SCORECARD_CATCH_UP`` ago: a daemon that was down at the due time publishes the missed week on its
+    next tick (Saturday down, Monday up), while Friday night, or a restart late in the week, sends nothing.
+    """
+    now_et = now.astimezone(ET_TZ)
+    monday = now_et.date() - timedelta(days=now_et.weekday())
+    due = datetime.combine(monday + timedelta(days=weekday), time.fromisoformat(time_et), tzinfo=ET_TZ)
+    if due > now_et:
+        due -= timedelta(days=7)
+    return due if now_et - due < SCORECARD_CATCH_UP else None
+
+
+def scorecard_key(due: datetime) -> str:
+    """The idempotent notification key of the ISO week the due instant falls in."""
+    iso_year, iso_week, _ = due.astimezone(ET_TZ).isocalendar()
+    return f"weekly-scorecard/{iso_year}-W{iso_week:02d}"
+
+
 def _finite(value: Any) -> float | None:
     if value is None:
         return None
@@ -367,10 +393,24 @@ def _lane_of(record: SignalRecord, provenance: dict[str, Any] | None) -> LaneNam
 
 
 async def _lane_signals(db: SignalDatabase, since: datetime) -> list[_Signal]:
-    """Every lane's signals recorded since ``since`` in ``db``'s scope, with each one's entry trigger."""
+    """Every lane's signals recorded since ``since`` in ``db``'s scope, with each one's entry trigger.
+
+    Deliberately not ``db._scope()`` (which also admits unknown-execution-mode rows): like
+    ``storage/probe_state.load_forward_record``, evidence that cannot be attributed to this paper scope is not
+    counted, and a quarantined signal is not evidence at all.
+    """
     async with db.session_factory() as session:
         records = list(
-            (await session.execute(select(SignalRecord).where(*db._scope(), SignalRecord.timestamp >= since)))
+            (
+                await session.execute(
+                    select(SignalRecord).where(
+                        SignalRecord.is_quarantined.is_(False),
+                        SignalRecord.environment == db.environment,
+                        SignalRecord.execution_mode == db.execution_mode,
+                        SignalRecord.timestamp >= since,
+                    )
+                )
+            )
             .scalars()
             .all()
         )
