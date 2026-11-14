@@ -691,10 +691,11 @@ It is descriptive and read-only: nothing in `risk/`, admission, `card_policy` or
 print unchanged. One row per lane (native, PEAD probe, insider watch):
 
 - **Activity (last `activity_days`, 7, New York days).** Cards sent, entries *attempted* (split into auto and tap),
-  `refused`, fills, closes and the sum of realized R. An attempt is not a fill: `refused` counts attempts that ended
-  with no order accepted (signal status `FAILED` with no fill, for example an admission refusal), so
-  `attempted - refused` is not `filled` row by row (a fill can be pending or still resting). Auto-entry journal events
-  are not read; the signal status is the evidence.
+  `unfilled`, fills, closes and the sum of realized R. An attempt is not a fill: `unfilled` counts attempts that
+  ended with no fill (signal status `FAILED` with no fill). That is an admission refusal or rejected order, but also
+  an entry that rested and expired unfilled at the session close, so it does not say why. It is counted over the same
+  attempted signals as `attempted` and never exceeds it; `attempted - unfilled` is not `filled` row by row (an entry
+  can still be pending or resting). Auto-entry journal events are not read; the signal status is the evidence.
 - **Realized record (trailing `record_days`, 90).** Closed trades, mean realized R (`realized_pnl / risk_dollars`,
   the formula of the probe's forward record; a closed row with unknown pnl or risk is not counted) and open
   positions.

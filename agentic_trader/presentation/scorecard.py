@@ -32,7 +32,7 @@ def _week(row: LaneRow) -> str:
     realized = _r(row.realized_r_sum) if row.closed else _NA
     return (
         f"This week: sent {row.sent}, attempted {attempted} (auto {row.attempted_auto}, tap {row.attempted_tap}), "
-        f"refused {row.refused}, filled {row.filled}, closed {row.closed}, realized {realized}"
+        f"unfilled {row.unfilled}, filled {row.filled}, closed {row.closed}, realized {realized}"
     )
 
 

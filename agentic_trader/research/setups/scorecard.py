@@ -104,8 +104,10 @@ class LaneRow(BaseModel):
     """One lane's week and trailing record. ``cf_*`` are ``None`` when the labels could not be read (see ``note``).
 
     ``attempted_*`` count signals whose entry was attempted (auto sweep or tap), whether or not an order was accepted.
-    ``refused`` counts the attempts that ended with no order accepted: a signal in status ``FAILED`` with no fill
-    (the signal status is the evidence every lane's signal row exposes; auto-entry journal events are not read).
+    ``unfilled`` counts the attempts that ended with no fill: a signal in status ``FAILED`` with no fill, which is
+    an admission refusal or a rejected order but also an entry that rested and expired at the session close
+    (``storage/lifetimes.py``). It is counted over the same attempted signals as ``attempted_*`` and clamped to
+    ``attempted_auto + attempted_tap``. Signal status is the evidence; auto-entry journal events are not read.
     ``cf_total`` is ``cf_mature`` plus the lane's events still inside their label window (the labellers' own
     ``immature`` counts, not recomputed).
     """
@@ -116,7 +118,7 @@ class LaneRow(BaseModel):
     sent: int
     attempted_auto: int
     attempted_tap: int
-    refused: int
+    unfilled: int
     filled: int
     closed: int
     realized_r_sum: float
@@ -256,8 +258,8 @@ async def pead_probe_record(
 ) -> tuple[dict[str, Any] | None, int]:
     """``pead_probe_summary`` and the count of LONG-leg events still immature (no label yet).
 
-    The summary is ``None`` when there are no payloads. ``signals_since`` bounds the ``pead_long`` signals counted by ``summarize_probe``. Per-symbol bar failures
-    are kept in ``bar_failures`` (``"Type: message"``), never raised.
+    The summary is ``None`` when there are no payloads. ``signals_since`` bounds the ``pead_long`` signals counted
+    by ``summarize_probe``. Per-symbol bar failures are kept in ``bar_failures`` (``"Type: message"``), never raised.
     """
     if not payloads:
         return None, 0
@@ -567,10 +569,17 @@ def _lane_row(
 ) -> LaneRow:
     week = [s for s in signals if s.timestamp >= window_start]
     auto = sum(1 for s in week if s.trigger == EntryTrigger.AUTO)
-    refused = sum(1 for s in week if s.status == SignalStatus.FAILED and s.executed_at is None)
     tap = sum(1 for s in week if is_tap(s.row))
+    unfilled = sum(
+        1
+        for s in week
+        if s.status == SignalStatus.FAILED
+        and s.executed_at is None
+        and (s.trigger == EntryTrigger.AUTO or is_tap(s.row))
+    )
     if cf.split is not None:
         auto, tap = cf.split
+    unfilled = min(unfilled, auto + tap)
     closed_week = [s for s in signals if s.closed and s.exit_time >= window_start]
     closed_record = [s for s in signals if s.closed and s.exit_time >= record_start]
     record_r = [s.realized_r for s in closed_record if s.realized_r is not None]
@@ -579,7 +588,7 @@ def _lane_row(
         sent=len(week),
         attempted_auto=auto,
         attempted_tap=tap,
-        refused=refused,
+        unfilled=unfilled,
         filled=sum(1 for s in week if s.executed_at is not None),
         closed=len(closed_week),
         realized_r_sum=float(sum(s.realized_r for s in closed_week if s.realized_r is not None)),

@@ -676,7 +676,7 @@ def test_cards_scorecard_prints_the_formatted_card_and_sends_nothing(runner: Cli
                 sent=0,
                 attempted_auto=0,
                 attempted_tap=0,
-                refused=0,
+                unfilled=0,
                 filled=0,
                 closed=0,
                 realized_r_sum=0.0,
