@@ -32,6 +32,7 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 
+from agentic_trader.constants import SignalStatus
 from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.execution.durable import EntryTrigger, EventKind
@@ -100,14 +101,24 @@ SCORECARD_CATCH_UP = timedelta(days=4)
 
 
 class LaneRow(BaseModel):
-    """One lane's week and trailing record. ``cf_*`` are ``None`` when the labels could not be read (see ``note``)."""
+    """One lane's week and trailing record. ``cf_*`` are ``None`` when the labels could not be read (see ``note``).
+
+    ``attempted_*`` count signals whose entry was attempted (auto sweep or tap), whether or not an order was accepted.
+    ``unfilled`` counts the attempts that ended with no fill: a signal in status ``FAILED`` with no fill, which is
+    an admission refusal or a rejected order but also an entry that rested and expired at the session close
+    (``storage/lifetimes.py``). It is counted over the same attempted signals as ``attempted_*`` and clamped to
+    ``attempted_auto + attempted_tap``. Signal status is the evidence; auto-entry journal events are not read.
+    ``cf_total`` is ``cf_mature`` plus the lane's events still inside their label window (the labellers' own
+    ``immature`` counts, not recomputed).
+    """
 
     model_config = ConfigDict(frozen=True)
 
     lane: LaneName
     sent: int
-    entered_auto: int
-    entered_tap: int
+    attempted_auto: int
+    attempted_tap: int
+    unfilled: int
     filled: int
     closed: int
     realized_r_sum: float
@@ -115,6 +126,7 @@ class LaneRow(BaseModel):
     record_mean_r: float | None
     open_positions: int
     cf_mature: int | None
+    cf_total: int | None
     cf_mean_r: float | None
     cf_mean_excess_r: float | None
     note: str | None = None
@@ -231,13 +243,26 @@ async def pead_probe_summary(
     now: datetime,
     signals_since: datetime,
 ) -> dict[str, Any] | None:
-    """The PEAD probe record over journaled ``pead_decision`` payloads; ``None`` when there are none.
+    """The PEAD probe record over journaled ``pead_decision`` payloads; ``None`` when there are none."""
+    return (await pead_probe_record(db, config, payloads, sip=sip, now=now, signals_since=signals_since))[0]
 
-    ``signals_since`` bounds the ``pead_long`` signals counted by ``summarize_probe``. Per-symbol bar failures
-    are kept in ``bar_failures`` (``"Type: message"``), never raised.
+
+async def pead_probe_record(
+    db: SignalDatabase,
+    config: AppConfig,
+    payloads: list[dict[str, Any]],
+    *,
+    sip: Callable[[], BarSource],
+    now: datetime,
+    signals_since: datetime,
+) -> tuple[dict[str, Any] | None, int]:
+    """``pead_probe_summary`` and the count of LONG-leg events still immature (no label yet).
+
+    The summary is ``None`` when there are no payloads. ``signals_since`` bounds the ``pead_long`` signals counted
+    by ``summarize_probe``. Per-symbol bar failures are kept in ``bar_failures`` (``"Type: message"``), never raised.
     """
     if not payloads:
-        return None
+        return None, 0
     sip_through = now - SIP_HISTORY_DELAY
     entry = load_pead_entry(Path(config.apriori.pead_entry_path)).entry
     decisions = decision_frame(payloads)
@@ -256,7 +281,7 @@ async def pead_probe_summary(
                 hourly[symbol] = completed_bars(read, sip_through)
             except Exception as exc:
                 bar_failures[symbol] = f"{type(exc).__name__}: {exc}"
-    labels, _ = await asyncio.to_thread(label_events, decisions[list(EVENT_COLUMNS)], hourly, entry)
+    labels, misses = await asyncio.to_thread(label_events, decisions[list(EVENT_COLUMNS)], hourly, entry)
     labels = labels[(labels["direction"] == "LONG") & labels["is_leg"]] if not labels.empty else labels
     report = [r for r in await AlphaRepository(db.workflows).probe_report(now=now) if r.get("kind") == "apriori"]
     summary = await asyncio.to_thread(
@@ -268,7 +293,7 @@ async def pead_probe_summary(
         report[0]["study_mean_r"] if report else None,
     )
     summary["bar_failures"] = bar_failures
-    return summary
+    return summary, int(misses.get("legs", {}).get("immature", {}).get("LONG", 0))
 
 
 async def insider_watch_summary(
@@ -340,6 +365,7 @@ class _Signal:
 @dataclass(frozen=True)
 class _Counterfactual:
     mature: int | None = 0
+    total: int | None = 0
     mean_r: float | None = None
     mean_excess_r: float | None = None
     note: str | None = None
@@ -471,13 +497,15 @@ async def _native_counterfactual(
         failed = frame[frame["sent"].astype(bool) & (frame["hit"] == _FETCH_FAILED)]
         if not failed.empty:
             return _Counterfactual(
-                None, None, None, _failure_note({str(reason).split(":", 1)[0] for reason in failed["reason"]})
+                None, None, None, None, _failure_note({str(reason).split(":", 1)[0] for reason in failed["reason"]})
             )
     summary = outcomes.summary
     sent_rate = summary["base_rates"]["sent"]
     exposure = summary["market_exposure"]["sent"]
+    mature = sent_rate["n"] if sent_rate else 0
     return _Counterfactual(
-        mature=sent_rate["n"] if sent_rate else 0,
+        mature=mature,
+        total=mature + summary["counts"]["sent"]["immature"],
         mean_r=sent_rate["mean_r_cost"] if sent_rate else None,
         mean_excess_r=exposure["mean_beta_excess_r"] if exposure else None,
     )
@@ -493,15 +521,14 @@ async def _pead_counterfactual(
     window_start: datetime,
 ) -> _Counterfactual:
     payloads = await decision_events(db, record_days, now=now, kind=EventKind.PEAD_DECISION)
-    summary = await pead_probe_summary(db, config, payloads, sip=sip, now=now, signals_since=window_start)
+    summary, immature = await pead_probe_record(db, config, payloads, sip=sip, now=now, signals_since=window_start)
     if summary is None:
         return _Counterfactual()
     if summary["bar_failures"]:
-        return _Counterfactual(None, None, None, _failure_note(_error_types(summary["bar_failures"])))
+        return _Counterfactual(None, None, None, None, _failure_note(_error_types(summary["bar_failures"])))
     labelled = summary["counterfactual"]
-    return _Counterfactual(
-        mature=labelled["mature"] if labelled else 0, mean_r=labelled["mean_r_cost"] if labelled else None
-    )
+    mature = labelled["mature"] if labelled else 0
+    return _Counterfactual(mature=mature, total=mature + immature, mean_r=labelled["mean_r_cost"] if labelled else None)
 
 
 async def _watch_counterfactual(
@@ -519,9 +546,14 @@ async def _watch_counterfactual(
         return _Counterfactual()
     split = (int(summary["auto_entries"]), int(summary["taps"]))
     if summary["bar_failures"]:
-        return _Counterfactual(None, None, None, _failure_note(_error_types(summary["bar_failures"])), split)
+        return _Counterfactual(
+            None, None, None, None, _failure_note(_error_types(summary["bar_failures"])), split=split
+        )
     block = summary["all"]
-    return _Counterfactual(block["n"], block["mean_r_cost"], block["mean_beta_excess_r"], None, split)
+    immature = int(summary["unlabelled"].get("immature", 0))
+    return _Counterfactual(
+        block["n"], block["n"] + immature, block["mean_r_cost"], block["mean_beta_excess_r"], None, split
+    )
 
 
 async def _contained(coro: Any) -> _Counterfactual:
@@ -529,7 +561,7 @@ async def _contained(coro: Any) -> _Counterfactual:
     try:
         return await coro
     except Exception as exc:
-        return _Counterfactual(None, None, None, f"counterfactual unavailable: {type(exc).__name__}")
+        return _Counterfactual(None, None, None, None, f"counterfactual unavailable: {type(exc).__name__}")
 
 
 def _lane_row(
@@ -538,16 +570,25 @@ def _lane_row(
     week = [s for s in signals if s.timestamp >= window_start]
     auto = sum(1 for s in week if s.trigger == EntryTrigger.AUTO)
     tap = sum(1 for s in week if is_tap(s.row))
+    unfilled = sum(
+        1
+        for s in week
+        if s.status == SignalStatus.FAILED
+        and s.executed_at is None
+        and (s.trigger == EntryTrigger.AUTO or is_tap(s.row))
+    )
     if cf.split is not None:
         auto, tap = cf.split
+    unfilled = min(unfilled, auto + tap)
     closed_week = [s for s in signals if s.closed and s.exit_time >= window_start]
     closed_record = [s for s in signals if s.closed and s.exit_time >= record_start]
     record_r = [s.realized_r for s in closed_record if s.realized_r is not None]
     return LaneRow(
         lane=lane,
         sent=len(week),
-        entered_auto=auto,
-        entered_tap=tap,
+        attempted_auto=auto,
+        attempted_tap=tap,
+        unfilled=unfilled,
         filled=sum(1 for s in week if s.executed_at is not None),
         closed=len(closed_week),
         realized_r_sum=float(sum(s.realized_r for s in closed_week if s.realized_r is not None)),
@@ -555,6 +596,7 @@ def _lane_row(
         record_mean_r=float(sum(record_r) / len(record_r)) if record_r else None,
         open_positions=sum(1 for s in signals if s.status == "EXECUTED"),
         cf_mature=cf.mature,
+        cf_total=cf.total,
         cf_mean_r=cf.mean_r,
         cf_mean_excess_r=cf.mean_excess_r,
         note=cf.note,

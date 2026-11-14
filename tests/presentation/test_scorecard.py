@@ -10,8 +10,9 @@ def _row(lane: str, **values) -> LaneRow:
     base = {
         "lane": lane,
         "sent": 0,
-        "entered_auto": 0,
-        "entered_tap": 0,
+        "attempted_auto": 0,
+        "attempted_tap": 0,
+        "unfilled": 0,
         "filled": 0,
         "closed": 0,
         "realized_r_sum": 0.0,
@@ -19,6 +20,7 @@ def _row(lane: str, **values) -> LaneRow:
         "record_mean_r": None,
         "open_positions": 0,
         "cf_mature": 0,
+        "cf_total": 0,
         "cf_mean_r": None,
         "cf_mean_excess_r": None,
         "note": None,
@@ -40,28 +42,31 @@ def test_full_card_snapshot():
         _row(
             "native",
             sent=4,
-            entered_auto=2,
-            entered_tap=1,
-            filled=3,
+            attempted_auto=2,
+            attempted_tap=1,
+            unfilled=1,
+            filled=2,
             closed=2,
             realized_r_sum=1.0,
             record_closed=3,
             record_mean_r=0.8333,
             open_positions=1,
             cf_mature=12,
+            cf_total=40,
             cf_mean_r=0.05,
             cf_mean_excess_r=-0.02,
         ),
         _row(
             "pead",
             sent=2,
-            entered_auto=1,
+            attempted_auto=1,
             filled=1,
             closed=1,
             realized_r_sum=-0.5,
             record_closed=1,
             record_mean_r=-0.5,
             cf_mature=2,
+            cf_total=2,
             cf_mean_r=0.2,
         ),
         _row("insider_watch"),
@@ -72,14 +77,14 @@ def test_full_card_snapshot():
         "📊 <b>Weekly lane scorecard</b> 2026-11-08 to 2026-11-14 (ET)",
         "",
         "<b>Native cards</b>",
-        "This week: sent 4, entered 3 (auto 2, tap 1), filled 3, closed 2, realized +1.00R",
+        "This week: sent 4, attempted 3 (auto 2, tap 1), unfilled 1, filled 2, closed 2, realized +1.00R",
         "Last 90 days: 3 closed, mean +0.83R, 1 open",
-        "Counterfactual: 12 matured, mean +0.05R, SPY beta-matched excess -0.02R",
+        "Counterfactual: 12 of 40 matured so far, mean +0.05R, SPY beta-matched excess -0.02R (early exits; stop-heavy until windows complete)",
         "",
         "<b>PEAD paper probe</b>",
-        "This week: sent 2, entered 1 (auto 1, tap 0), filled 1, closed 1, realized -0.50R",
+        "This week: sent 2, attempted 1 (auto 1, tap 0), unfilled 0, filled 1, closed 1, realized -0.50R",
         "Last 90 days: 1 closed, mean -0.50R, 0 open",
-        "Counterfactual: 2 matured, mean +0.20R, SPY beta-matched excess n/a",
+        "Counterfactual: 2 of 2 matured so far, mean +0.20R, SPY beta-matched excess n/a",
         "",
         "<b>Insider watch cards</b>",
         "This week: none",
@@ -97,7 +102,7 @@ def test_footer_text_is_fixed():
 
 def test_missing_account_and_unavailable_counterfactual_render_n_a():
     card = _card(
-        _row("native", cf_mature=None, note="bar fetch failed: TimeoutError"),
+        _row("native", cf_mature=None, cf_total=None, note="bar fetch failed: TimeoutError"),
         _row("pead"),
         _row("insider_watch"),
     )
@@ -114,6 +119,15 @@ def test_account_with_one_missing_end_is_n_a():
 
 
 def test_notes_are_html_escaped():
-    card = _card(_row("native", cf_mature=None, note="<b>x</b> & y"))
+    card = _card(_row("native", cf_mature=None, cf_total=None, note="<b>x</b> & y"))
     text = format_scorecard(card)
     assert "&lt;b&gt;x&lt;/b&gt; &amp; y" in text and "<b>x</b>" not in text
+
+
+def test_nothing_matured_yet_names_the_total_and_the_early_exit_caveat_once():
+    text = format_scorecard(_card(_row("native", cf_mature=0, cf_total=5), _row("pead"), _row("insider_watch")))
+    assert (
+        "Counterfactual: 0 of 5 matured so far, mean n/a, SPY beta-matched excess n/a"
+        " (early exits; stop-heavy until windows complete)"
+    ) in text
+    assert text.count("early exits") == 1

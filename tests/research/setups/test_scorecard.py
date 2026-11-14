@@ -314,6 +314,15 @@ def fake_pead_labels(monkeypatch):
     return seen
 
 
+@pytest.fixture
+def immature_pead_labels(monkeypatch):
+    def label_events(events, frames, entry):
+        labels = pd.DataFrame({"direction": ["LONG"], "is_leg": [True], "r_cost": [0.5]})
+        return labels, {"immature": 8, "legs": {"immature": {"LONG": 3, "SHORT": 0}}}
+
+    monkeypatch.setattr(scorecard_module, "label_events", label_events)
+
+
 def lane(card: LaneScorecard, name: str):
     return {row.lane: row for row in card.lanes}[name]
 
@@ -332,32 +341,89 @@ async def test_lane_numbers_are_exact(temp_db, config, monkeypatch, fake_pead_la
     assert [row.lane for row in card.lanes] == ["native", "pead", "insider_watch"]
 
     native = lane(card, "native")
-    assert (native.sent, native.entered_auto, native.entered_tap, native.filled) == (4, 2, 1, 3)
+    assert (native.sent, native.attempted_auto, native.attempted_tap, native.filled) == (4, 2, 1, 3)
     assert native.closed == 3
     assert native.realized_r_sum == pytest.approx(2.0)  # +2R, -1R and the +1R opened last month, closed in the window
     assert native.record_closed == 4
     assert native.record_mean_r == pytest.approx((2.0 - 1.0 + 1.5 + 1.0) / 4)
     assert native.open_positions == 1
-    assert native.cf_mature == 1 and native.cf_mean_r is not None and native.cf_mean_r > 1.0
+    assert native.cf_mature == 1 and native.cf_total == 1 and native.cf_mean_r is not None and native.cf_mean_r > 1.0
     assert native.note is None
+    assert native.unfilled == 0
 
     pead = lane(card, "pead")
-    assert (pead.sent, pead.entered_auto, pead.entered_tap, pead.filled, pead.closed) == (2, 1, 0, 1, 1)
+    assert (pead.sent, pead.attempted_auto, pead.attempted_tap, pead.filled, pead.closed) == (2, 1, 0, 1, 1)
     assert pead.realized_r_sum == pytest.approx(-0.5)
     assert (pead.record_closed, pead.record_mean_r, pead.open_positions) == (1, pytest.approx(-0.5), 0)
-    assert pead.cf_mature == 2 and pead.cf_mean_r == pytest.approx(0.2)
+    assert pead.cf_mature == 2 and pead.cf_total == 2 and pead.cf_mean_r == pytest.approx(0.2)
     assert pead.cf_mean_excess_r is None  # the PEAD record has no SPY control
     assert pead.note is None
     assert {call[0] for call in sip.calls} >= {"PPP", "WW1", "SPY"}
 
     watch = lane(card, "insider_watch")
-    assert (watch.sent, watch.entered_auto, watch.entered_tap, watch.filled, watch.closed) == (2, 1, 1, 2, 0)
+    assert (watch.sent, watch.attempted_auto, watch.attempted_tap, watch.filled, watch.closed) == (2, 1, 1, 2, 0)
     assert watch.realized_r_sum == 0.0
     assert (watch.record_closed, watch.record_mean_r, watch.open_positions) == (0, None, 2)
-    assert watch.cf_mature == 1 and watch.cf_mean_r is not None and watch.cf_mean_r > 0
+    assert watch.cf_mature == 1 and watch.cf_total == 1 and watch.cf_mean_r is not None and watch.cf_mean_r > 0
 
     assert card.account is not None
     assert (card.account.start_equity, card.account.end_equity) == (100000.0, 101500.5)
+
+
+async def test_pead_total_adds_the_long_legs_still_immature(temp_db, config, immature_pead_labels):
+    await seed_journals(temp_db)
+
+    card = await build_scorecard(temp_db, config, now=NOW, bars=native_bars(), sip=lambda: sip_bars())
+
+    pead = lane(card, "pead")
+    assert (pead.cf_mature, pead.cf_total) == (1, 4)  # 3 LONG-leg immature, not the 8 both-direction misses
+
+
+async def test_unfilled_counts_attempts_that_ended_with_no_fill(temp_db, config, monkeypatch):
+    async with temp_db.session_factory() as session, session.begin():
+        failed = _signal(temp_db, contract="RRR", strategy="BREAKOUT", ts=_at(12), status="FAILED")
+        failed_tap = _signal(temp_db, contract="SSS", strategy="BREAKOUT", ts=_at(12), status="FAILED")
+        filled = _signal(
+            temp_db, contract="TTT", strategy="BREAKOUT", ts=_at(12), status="EXECUTED", executed_at=_at(12)
+        )
+        session.add_all([failed, failed_tap, filled])
+    triggers = {failed.id: EntryTrigger.AUTO, failed_tap.id: EntryTrigger.TAP, filled.id: EntryTrigger.AUTO}
+
+    async def entry_work_states(signal_ids):
+        return {i: ("done", triggers[i]) for i in signal_ids if i in triggers}
+
+    monkeypatch.setattr(temp_db.workflows, "entry_work_states", entry_work_states)
+
+    card = await build_scorecard(
+        temp_db, config, now=NOW, bars=FakeBars(pd.DataFrame()), sip=lambda: FakeBars(pd.DataFrame())
+    )
+
+    native = lane(card, "native")
+    assert (native.sent, native.attempted_auto, native.attempted_tap) == (3, 2, 1)
+    assert (native.unfilled, native.filled) == (2, 1)
+
+
+def test_unfilled_is_clamped_to_the_lanes_attempts():
+    window_start = datetime(2026, 11, 8, 5, 0, tzinfo=UTC)
+    failed = [
+        scorecard_module._Signal(
+            lane="insider_watch",
+            timestamp=_at(12),
+            status="FAILED",
+            executed_at=None,
+            exit_time=_at(12),
+            realized_r=None,
+            row={"status": "FAILED", "entry_trigger": "auto"},
+        )
+        for _ in range(3)
+    ]
+    cf = scorecard_module._Counterfactual(split=(1, 0))  # the lane summary saw only one attempt
+
+    row = scorecard_module._lane_row(
+        "insider_watch", failed, window_start=window_start, record_start=window_start, cf=cf
+    )
+
+    assert (row.attempted_auto, row.attempted_tap, row.unfilled) == (1, 0, 1)
 
 
 async def test_a_lane_with_no_cards_still_builds(temp_db, config):
@@ -366,9 +432,15 @@ async def test_a_lane_with_no_cards_still_builds(temp_db, config):
     card = await build_scorecard(temp_db, config, now=NOW, bars=bars, sip=lambda: sip)
 
     for row in card.lanes:
-        assert (row.sent, row.entered_auto, row.entered_tap, row.filled, row.closed) == (0, 0, 0, 0, 0)
+        assert (row.sent, row.attempted_auto, row.attempted_tap, row.filled, row.closed) == (0, 0, 0, 0, 0)
         assert (row.realized_r_sum, row.record_closed, row.record_mean_r, row.open_positions) == (0.0, 0, None, 0)
-        assert row.cf_mature == 0 and row.cf_mean_r is None and row.cf_mean_excess_r is None
+        assert (
+            row.unfilled == 0
+            and row.cf_mature == 0
+            and row.cf_total == 0
+            and row.cf_mean_r is None
+            and row.cf_mean_excess_r is None
+        )
         assert row.note is None
     assert card.account is None
     assert bars.calls == [] and sip.calls == []
@@ -391,7 +463,7 @@ async def test_a_bar_failure_voids_that_lanes_counterfactual_and_names_the_type_
 
     native, pead, watch = (lane(card, name) for name in ("native", "pead", "insider_watch"))
     for row, error_type in ((native, "TimeoutError"), (pead, "ConnectionError"), (watch, "ConnectionError")):
-        assert (row.cf_mature, row.cf_mean_r, row.cf_mean_excess_r) == (None, None, None)
+        assert (row.cf_mature, row.cf_total, row.cf_mean_r, row.cf_mean_excess_r) == (None, None, None, None)
         assert row.note is not None and error_type in row.note and SECRET not in row.note
     # Activity and the realized record do not depend on bars.
     assert native.sent == 4 and native.record_closed == 4
@@ -404,12 +476,12 @@ async def test_an_unexpected_failure_in_a_lane_is_contained(temp_db, config, mon
     async def broken(*args, **kwargs):
         raise KeyError(SECRET)
 
-    monkeypatch.setattr(scorecard_module, "pead_probe_summary", broken)
+    monkeypatch.setattr(scorecard_module, "pead_probe_record", broken)
 
     card = await build_scorecard(temp_db, config, now=NOW, bars=native_bars(), sip=lambda: sip_bars())
 
     pead = lane(card, "pead")
-    assert pead.cf_mature is None and pead.note is not None
+    assert pead.cf_mature is None and pead.cf_total is None and pead.note is not None
     assert "KeyError" in pead.note and SECRET not in pead.note
     assert lane(card, "insider_watch").cf_mature == 1
 
