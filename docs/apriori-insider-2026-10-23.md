@@ -11,6 +11,10 @@ revisited.
 
 This is the first a priori leg whose matched-control difference clears zero.
 
+> **2026-11-14:** a breadth replication on 1,156 disjoint names (`insider` v2) did not reproduce P2
+> (+0.011R, ci90 [−0.049, +0.074]), so the insider lane is closed
+> ([result](apriori-insider-breadth-2026-11-14.md)).
+
 ## Protocol and run
 
 - **Entry and inputs.** Entry `config/research/apriori/insider-v1.json`, SHA-256 `12907738…5fc8`,

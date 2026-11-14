@@ -23,6 +23,7 @@ Run: `copilot alpha apriori-study config/research/apriori/<entry>.json --output 
 | `pead` | 2 | Same, decisions from 2016-08-01 | **eligible** (+0.149R; +0.055R vs control) | failed (−0.064R) | [result](apriori-pead-2026-09-26.md), [spec](superpowers/specs/2026-09-25-apriori-pead-study-design.md) |
 | `exdiv` | 1 | Regular quarterly payers run up in the five sessions before the ex-date (Hartzmark & Solomon 2013); long from E−5 at 10:35 to the last cum-dividend close; same-name mid-quarter placebo | failed (+0.069R, ci90 [+0.035, +0.102]; but the same-name placebo earns +0.046R and the paired difference +0.025R has ci90 [−0.026, +0.072], so P2 fails) | — | failed on P2, 2026-10-12 ([result](apriori-exdiv-2026-10-12.md), [spec](superpowers/specs/2026-10-12-exdiv-leg-design.md)) |
 | `insider` | 1 | Opportunistic insider cluster purchases (two or more officers or directors within 21 sessions) drift up (Cohen, Malloy and Pomorski 2012; Alldredge and Blank 2019); long on the cohort-v3 cube cell after the filing; matched-control cell, same session and liquidity tercile | failed (+0.087R, ci90 [−0.008, +0.189], so P1 fails; but +0.070R over same-session matched controls, ci90 [+0.009, +0.134], so P2 holds) | — | failed on P1, 2026-10-23 ([result](apriori-insider-2026-10-23.md), [spec](superpowers/specs/2026-10-23-apriori-insider-leg-design.md)) |
+| `insider` | 2 | Breadth replication: v1's frozen rule, unchanged, on cohort xu (1,156 names disjoint from cohort v3, ranks 1–400 and 1,401–2,156), same window; P2 primary, P4 required, P1 and P3 descriptive | not replicated (+0.011R over matched controls, ci90 [−0.049, +0.074], so P2 fails; P4 holds with 1,048 events) | — | failed on P2, 2026-11-14; insider lane closed ([result](apriori-insider-breadth-2026-11-14.md), [spec](superpowers/specs/2026-11-14-insider-breadth-replication-design.md)) |
 
 ## Entry 2: pre-ex-dividend run-up
 
@@ -263,6 +264,16 @@ digest-pinned SEC Form 3/4/5 archives and corporate actions) as one a priori hyp
 - **Result (2026-10-23): failed on P1.** +0.087R per trade (ci90 [−0.008, +0.189]) over 1,062 events; P2 holds
   (+0.070R over the matched controls, ci90 [+0.009, +0.134]), P3 and P4 hold. No probe. See
   [result](apriori-insider-2026-10-23.md).
+- **Version 2: breadth replication (2026-11-14), failed on P2.**
+  - **Design.** `insider-v2.json` applies v1's frozen rule, unchanged, to cohort xu over the same window
+    ([spec](superpowers/specs/2026-11-14-insider-breadth-replication-design.md)). Cohort xu is 1,156 names
+    disjoint from cohort v3: ranks 1–400 and 1,401–2,156 of the same ranking.
+  - **Rule.** It holds iff P2 and P4 hold. P1 and P3 are descriptive, because the two cohorts share a market
+    path.
+  - **Result.** P2 fails: +0.011R over the matched controls, ci90 [−0.049, +0.074]. P4 holds with 1,048 events,
+    430 of them since 2023.
+  - **Consequence.** The insider lane is closed as an alpha source. There is no market-neutral probe, and
+    `insider-oos-v1` loses its premise. See [result](apriori-insider-breadth-2026-11-14.md).
 
 ### Watch cards
 
@@ -270,7 +281,8 @@ On 2026-10-23 the operator asked to see this leg's setups as discretionary cards
 ([spec](superpowers/specs/2026-10-23-insider-watch-cards-design.md)). The result is informative (+0.070R
 over matched names, P2 significant), so the **frozen** rule runs live and nothing about the leg changes.
 A watch card is not a probe: no registry entry, no enrolment, no shadow, holdout or promotion credit, and the
-card says "INSIDER WATCH — unvalidated".
+card says "INSIDER WATCH — unvalidated". The 2026-11-14 breadth replication did not reproduce P2 on disjoint names, so
+the label stays and the lane has no validation path.
 
 - **Decision.** At the 10:35 New York suggestion scan only (a gated, late or other-time scan journals a
   `skipped` decision; lateness reuses `apriori.max_drift_lateness_seconds`, shared with PEAD). The frozen
