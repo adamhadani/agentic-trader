@@ -999,14 +999,16 @@ Research verdict on event-driven work that costs nothing to build.
   non-announcers. The planted check was detected (MDE 0.039R), so the null is powered
   ([result](apriori-runup-2026-11-06.md)). There will be no prospective read. The capture is kept for the
   veto layer, any later pre-event test and checking the earnings rule's dates.
-- **Built 2026-11-06, shipping in preview: an EDGAR negative-filing veto layer for long cards** (NT 10-K/10-Q,
+- **Built 2026-11-06; preview 2026-11-07, enforce since 2026-11-16: an EDGAR negative-filing veto layer for long cards** (NT 10-K/10-Q,
   8-K Items 2.04/2.05/2.06/4.02/5.01, 424B4/424B5 offering prospectuses (equity, convertible or debt; the cited
   effect is for convertibles)), **and a release exit for open native positions, long or short.** The earnings
   blackout gates entries only, so a native position opened 8 or more calendar days ahead can hold through a
   report; the release exit closes it before the session of a report through the existing close service. Both
-  ship in `preview` (`filing_veto.entry_block`, `release_exit.mode`); enforce is the operator's call on
-  journaled evidence, which shows in the `cards outcomes` `filing_veto` and `release_exit` blocks, after the
-  "Before enforce" items in [production](production.md#release-exit). Lock-up expiry and PDUFA dates stay out
+  shipped in `preview` (2026-11-07) and ship `enforce` since 2026-11-16 (`filing_veto.entry_block` for
+  `late_filing` and `adverse_8k`, `offering` journal-only and non-native cards exempt; `release_exit.mode`),
+  on the evidence in [the preview-week result](filing-veto-release-exit-preview-2026-11-14.md); the
+  `cards outcomes` `filing_veto` and `release_exit` blocks keep measuring, and covering dynamic-universe names
+  is the open gap ([production](production.md#release-exit)). Lock-up expiry and PDUFA dates stay out
   of v1.
 - **Later: analyst and investor days,** after an EDGAR count of announcements.
 - **Dropped:** the unconditional announcement premium; hold-through surprise bets (scheduling, seasonality,

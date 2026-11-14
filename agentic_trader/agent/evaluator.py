@@ -20,7 +20,7 @@ from agentic_trader.agent.earnings import (
     earnings_note,
     resolve_earnings,
 )
-from agentic_trader.agent.filing_veto import filing_veto_evidence
+from agentic_trader.agent.filing_veto import filing_veto_evidence, filing_veto_exempt
 from agentic_trader.agent.llm_gate import LLM_KEY_MISSING, classify_gate_reply, llm_unavailable_reason
 from agentic_trader.agent.position_sizing import PositionSizingResult, calculate_dynamic_sizing
 from agentic_trader.agent.prompts import USER_EVALUATION_TEMPLATE, build_system_prompt, gate_prompt_sha256
@@ -667,7 +667,9 @@ class RiskEvaluator:
 
         # 2d. Filing veto (agentic_trader.risk.filing_veto_block; long equities only, a short never evaluates
         # it). A missing or stale capture, or one that did not cover this symbol ("uncovered"), never refuses;
-        # preview annotates; enforce refuses a late-filing notice, adverse 8-K or offering inside its window.
+        # preview annotates; enforce refuses an enforced-category filing inside its window. A non-native card
+        # (catalog, probe, alpha-versioned: `filing_veto_exempt`) gets the block labelled `exempt` and is never
+        # refused, matching the release exit's exempt set and the tap gate.
         filings_block: dict[str, Any] | None = None
         filing_policy = self.config.filing_veto
         if (
@@ -677,7 +679,11 @@ class RiskEvaluator:
             and filing_policy.entry_block != "off"
         ):
             filings_block, rejection = filing_veto_evidence(
-                filings, candidate.contract, evaluated_at.astimezone(ET_TZ).date(), filing_policy
+                filings,
+                candidate.contract,
+                evaluated_at.astimezone(ET_TZ).date(),
+                filing_policy,
+                exempt=filing_veto_exempt(candidate),
             )
             if rejection is not None and filing_policy.entry_block == "enforce":
                 return _rejected(

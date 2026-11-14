@@ -179,15 +179,23 @@ def _corporate_action_line(block: dict[str, Any] | None, *, markup: bool) -> str
 
 
 def _filing_veto_line(block: dict[str, Any] | None, *, markup: bool) -> str:
-    """The filing-veto line, newline-terminated: only a fresh preview block that would block (in ``enforce`` that
-    card is never sent). The rule's reason is shown without its own "Filing veto: " lead and closing period."""
-    if not block or block.get("status") != "ok" or block.get("mode") != "preview" or not block.get("would_block"):
+    """The filing-veto line, newline-terminated: a fresh preview block that would block, or an enforce block that
+    would block but would not refuse (a preview-only category or an exempt card); an enforce card that would be
+    refused is never sent. The reason is shown without its own "Filing veto: " lead and closing period."""
+    if not block or block.get("status") != "ok" or not block.get("would_block"):
+        return ""
+    mode = block.get("mode")
+    if mode == "preview":
+        label = "Filing veto (preview)"
+    elif mode == "enforce" and block.get("would_refuse") is False:
+        label = "Filing (not enforced)"
+    else:
         return ""
     reason = block.get("reason")
     if not isinstance(reason, str) or not reason:
         return ""
     detail = reason.removeprefix("Filing veto: ").removesuffix(".")
-    text = f"🗂 Filing veto (preview): {detail} — card unchanged"
+    text = f"🗂 {label}: {detail} — card unchanged"
     return (html.escape(text) if markup else text) + "\n"
 
 

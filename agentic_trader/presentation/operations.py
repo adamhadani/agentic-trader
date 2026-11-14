@@ -10,6 +10,7 @@ from agentic_trader.diagnostics.incidents import (
     OpenIncident,
     OperationalNotice,
     QuietHoursSummary,
+    ReleaseExitGaps,
 )
 from agentic_trader.market.session import ET_TZ
 
@@ -36,6 +37,7 @@ def format_operational_notice(notice: OperationalNotice) -> str:
 
 MAX_SUMMARY_TALLIES = 12
 MAX_SUMMARY_OPEN = 10
+MAX_SUMMARY_GAPS = 10
 
 
 def _et(at: datetime) -> str:
@@ -57,6 +59,38 @@ def _open_line(incident: OpenIncident) -> str:
         status = f"{incident.phase} since {since} ET"
     detail = f": {html.escape(incident.detail)}" if incident.detail and not incident.ready_now else ""
     return f"• {html.escape(incident.component)} ({status}){detail}"
+
+
+def _release_exit_lines(gaps: ReleaseExitGaps) -> list[str]:
+    day = gaps.trading_day.isoformat()
+    lines = [f"Release exit {day}:"]
+    if gaps.missing_pass:
+        lines.append(f"• No release-exit pass was journaled for {day}.")
+    for position in gaps.unknown[:MAX_SUMMARY_GAPS]:
+        signal = html.escape(position.signal_id)
+        lines.append(
+            f"• {html.escape(position.symbol)} ({signal}): earnings timing unknown; "
+            f"review and run <code>/close {signal}</code> if needed."
+        )
+    if len(gaps.unknown) > MAX_SUMMARY_GAPS:
+        lines.append(f"… +{len(gaps.unknown) - MAX_SUMMARY_GAPS} more unknown")
+    for close in gaps.unnotified_closes[:MAX_SUMMARY_GAPS]:
+        signal = html.escape(close.signal_id)
+        lines.append(
+            f"• {html.escape(close.symbol)} ({signal}): close outcome {html.escape(close.outcome)} "
+            f"was never notified; run <code>/close {signal}</code>."
+        )
+    if len(gaps.unnotified_closes) > MAX_SUMMARY_GAPS:
+        lines.append(f"… +{len(gaps.unnotified_closes) - MAX_SUMMARY_GAPS} more unnotified")
+    for position in gaps.unattempted_closes[:MAX_SUMMARY_GAPS]:
+        signal = html.escape(position.signal_id)
+        lines.append(
+            f"• {html.escape(position.symbol)} ({signal}): owed close was never attempted; "
+            f"run <code>/close {signal}</code>."
+        )
+    if len(gaps.unattempted_closes) > MAX_SUMMARY_GAPS:
+        lines.append(f"… +{len(gaps.unattempted_closes) - MAX_SUMMARY_GAPS} more not attempted")
+    return lines
 
 
 def format_quiet_hours_summary(summary: QuietHoursSummary) -> str:
@@ -87,6 +121,8 @@ def format_quiet_hours_summary(summary: QuietHoursSummary) -> str:
         seconds = summary.failure_seconds
         wait = f"{seconds / 60:g} min" if seconds % 60 == 0 else f"{seconds:g} s"
         lines.append(f"An incident still failing {wait} after this summary sends its own alert.")
+    if summary.release_exit is not None:
+        lines.extend(_release_exit_lines(summary.release_exit))
     if summary.tallies:
         lines.append(
             "Incidents that open and recover overnight usually mean the host slept (<code>pmset -g log</code>)."

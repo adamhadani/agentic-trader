@@ -38,7 +38,7 @@ from agentic_trader.agent.earnings import (
     resolve_earnings,
 )
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
-from agentic_trader.agent.filing_veto import filing_veto_evidence, journal_filings_block
+from agentic_trader.agent.filing_veto import filing_veto_evidence, filing_veto_exempt, journal_filings_block
 from agentic_trader.agent.insider_watch import CARDED_THIS_SCAN, InsiderWatchSource, build_insider_watch_source
 from agentic_trader.agent.llm_gate import (
     LLM_UNAVAILABLE_EARLIER_IN_SCAN,
@@ -2564,7 +2564,13 @@ class TradingCopilot:
             or str(candidate.direction).upper() != Direction.LONG
         ):
             return None
-        block, _ = filing_veto_evidence(lookup, candidate.contract, decided_at.astimezone(ET_TZ).date(), policy)
+        block, _ = filing_veto_evidence(
+            lookup,
+            candidate.contract,
+            decided_at.astimezone(ET_TZ).date(),
+            policy,
+            exempt=filing_veto_exempt(candidate),
+        )
         return journal_filings_block(block)
 
     async def _journal_scan_ranking(
@@ -2616,7 +2622,7 @@ class TradingCopilot:
                     "shadow": shadow_by_rank[rank - 1],
                     "llm": llm_by_rank[rank - 1],
                     "news": news_by_rank[rank - 1],
-                    # The filing-veto evidence the evaluator saw ({status, would_block, category}); null for a
+                    # The filing-veto evidence the evaluator saw ({status, would_block, category, would_refuse, exempt}); null for a
                     # short, a non-equity, a veto that is off or no lookup. Descriptive, never a gate.
                     "filings": self._journal_filings(candidate, filings_lookup, decided_at),
                     "signal_id": signal_ids_by_rank[rank - 1],
@@ -3995,11 +4001,16 @@ class TradingCopilot:
         )
         return rejection.reason if rejection is not None else None
 
-    async def _filing_veto_reason(self, contract: str, direction: str, now: datetime) -> str | None:
-        """The evaluator's filing veto at tap time: enforce refuses a long; preview, a short, stale or missing
-        evidence and a symbol the latest pass did not cover (uncovered) never do."""
+    async def _filing_veto_reason(
+        self, contract: str, direction: str, now: datetime, sig: Mapping[str, Any]
+    ) -> str | None:
+        """The evaluator's filing veto at tap time: enforce refuses a long; preview, a short, a non-native card
+        (catalog, probe or alpha: `_release_exit_scope`, checked before any read), stale or missing evidence
+        and a symbol the latest pass did not cover (uncovered) never do."""
         policy = self.config.filing_veto
         if policy.entry_block != "enforce" or str(direction).upper() != Direction.LONG:
+            return None
+        if self._release_exit_scope(sig) != NATIVE_SCOPE:
             return None
         lookup = await self._filings_lookup(now)
         if lookup is None or lookup.status != "ok" or not lookup.covers(contract):
@@ -4021,7 +4032,7 @@ class TradingCopilot:
         if asset_class.upper() == AssetClass.EQUITY:
             reason = await self._earnings_blackout_reason(sig["contract"], now)
             reason = reason or await self._corporate_action_reason(sig["contract"], now)
-            return reason or await self._filing_veto_reason(sig["contract"], sig["direction"], now)
+            return reason or await self._filing_veto_reason(sig["contract"], sig["direction"], now, sig)
         return None
 
     async def _journal_card_tap(

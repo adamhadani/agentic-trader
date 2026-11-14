@@ -1,7 +1,7 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from agentic_trader.config import load_config
-from agentic_trader.diagnostics.incidents import ComponentTally, QuietHoursSummary
+from agentic_trader.diagnostics.incidents import ComponentTally, GapPosition, QuietHoursSummary, ReleaseExitGaps
 from agentic_trader.execution.durable import NotificationKind
 from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.presentation.operations import format_quiet_hours_summary
@@ -35,3 +35,28 @@ async def test_dispatcher_renders_operations_summary(temp_db):
     dispatcher = NotificationDispatcher(temp_db.workflows, notifier, load_config().execution)
     assert await dispatcher.dispatch_one() is True
     assert notifier.sent == [format_quiet_hours_summary(summary)]
+
+
+async def test_dispatcher_renders_release_exit_gaps_after_the_outbox_round_trip(temp_db):
+    summary = QuietHoursSummary(
+        period_start=datetime(2026, 11, 2, 21, 30, tzinfo=UTC),
+        period_end=datetime(2026, 11, 3, 14, 15, tzinfo=UTC),
+        observed_at=datetime(2026, 11, 3, 14, 15, tzinfo=UTC),
+        failure_seconds=120,
+        tallies=[],
+        open_incidents=[],
+        release_exit=ReleaseExitGaps(
+            trading_day=date(2026, 11, 2),
+            missing_pass=False,
+            unknown=[GapPosition(symbol="ACME", signal_id="sig-1")],
+            unnotified_closes=[],
+        ),
+    )
+    await temp_db.workflows.enqueue_notification(
+        "operations-summary/2026-11-03", NotificationKind.OPERATIONS_SUMMARY, summary.model_dump(mode="json")
+    )
+    notifier = RecordingNotifier()
+    dispatcher = NotificationDispatcher(temp_db.workflows, notifier, load_config().execution)
+    assert await dispatcher.dispatch_one() is True
+    assert notifier.sent == [format_quiet_hours_summary(summary)]
+    assert "<code>/close sig-1</code>" in notifier.sent[0]

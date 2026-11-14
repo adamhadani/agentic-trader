@@ -581,9 +581,73 @@ async def test_the_tap_time_filing_veto_never_refuses_a_short(tap_desk):
     tap_desk.filings_capture.latest.return_value = filings_pass()
     now = datetime.now(UTC)
 
-    assert await tap_desk._filing_veto_reason("SPY", "SHORT", now) is None
+    assert await tap_desk._filing_veto_reason("SPY", "SHORT", now, _scope_row()) is None
     tap_desk.filings_capture.latest.assert_not_awaited()
-    assert (await tap_desk._filing_veto_reason("SPY", "long", now) or "").startswith("Filing veto: SPY filed 424B5")
+    assert (await tap_desk._filing_veto_reason("SPY", "long", now, _scope_row()) or "").startswith(
+        "Filing veto: SPY filed 424B5"
+    )
+
+
+def _scope_row(strategy="TREND_PULLBACK", *, probe=False, alpha_version=None, alpha_policy=None):
+    return {
+        "strategy": strategy,
+        "decision_provenance": {"paper_probe": probe} if probe else {},
+        "alpha_version": alpha_version,
+        "alpha_policy": alpha_policy,
+    }
+
+
+async def test_the_tap_filing_veto_exempts_every_non_native_scope_without_reading(tap_desk):
+    from agentic_trader.execution.release_exit import NATIVE_SCOPE  # noqa: PLC0415
+    from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG  # noqa: PLC0415
+    from agentic_trader.research.apriori.watch_contract import INSIDER_WATCH_STRATEGY_ID  # noqa: PLC0415
+
+    tap_desk.config.filing_veto.entry_block = "enforce"
+    tap_desk.filings_capture = AsyncMock()
+    tap_desk.filings_capture.latest.return_value = filings_pass()
+    now = datetime.now(UTC)
+    rows = {
+        "pead": _scope_row(tap_desk.pead_source.strategy_id),
+        "insider_watch": _scope_row(INSIDER_WATCH_STRATEGY_ID),
+        "probe": {**_scope_row(), "decision_provenance": {PAPER_PROBE_TAG: True}},
+        "alpha": _scope_row(alpha_version="a1"),
+        "alpha_policy_only": _scope_row(alpha_policy={"k": 1}),
+    }
+    for scope, row in rows.items():
+        assert tap_desk._release_exit_scope(row) not in (NATIVE_SCOPE, None), scope
+        assert await tap_desk._filing_veto_reason("SPY", "LONG", now, row) is None, scope
+    tap_desk.filings_capture.latest.assert_not_awaited()
+    native = _scope_row()
+    assert tap_desk._release_exit_scope(native) == NATIVE_SCOPE
+    assert (await tap_desk._filing_veto_reason("SPY", "LONG", now, native) or "").startswith("Filing veto: SPY")
+
+
+def test_the_evaluator_and_tap_gate_exempt_the_same_cards(tap_desk):
+    from agentic_trader.agent.filing_veto import filing_veto_exempt  # noqa: PLC0415
+    from agentic_trader.execution.release_exit import NATIVE_SCOPE  # noqa: PLC0415
+    from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG  # noqa: PLC0415
+    from agentic_trader.research.apriori.watch_contract import INSIDER_WATCH_STRATEGY_ID  # noqa: PLC0415
+    from agentic_trader.screeners.base import ScreenerCandidate  # noqa: PLC0415
+
+    def candidate(strategy="TREND_PULLBACK", **extra):
+        return ScreenerCandidate(
+            contract="SPY", asset_class=AssetClass.EQUITY, timeframe="4h", strategy=strategy, direction="LONG",
+            current_price=100.0, ema_20=1.0, ema_50=1.0, ema_200=1.0, rsi_14=1.0, atr_14=1.0,
+            candle_timestamp="t", recent_swing_low=1.0, recent_swing_high=2.0, trigger_detail="d", **extra,
+        )  # fmt: skip
+
+    pead = tap_desk.pead_source.strategy_id
+    cases = [
+        (candidate(), _scope_row()),
+        (candidate(pead, catalog_event={"k": 1}, probe=True, alpha_policy={"k": 1}, alpha_version="v"),
+         {**_scope_row(pead), "decision_provenance": {PAPER_PROBE_TAG: True}, "alpha_policy": {"k": 1}, "alpha_version": "v"}),
+        (candidate(INSIDER_WATCH_STRATEGY_ID, catalog_event={"k": 1}, alpha_policy={"k": 1}), _scope_row(INSIDER_WATCH_STRATEGY_ID, alpha_policy={"k": 1})),
+        (candidate(probe=True), {**_scope_row(), "decision_provenance": {PAPER_PROBE_TAG: True}}),
+        (candidate(alpha_version="a1", alpha_policy={"k": 1}), _scope_row(alpha_version="a1", alpha_policy={"k": 1})),
+        (candidate(alpha_policy={"k": 1}), _scope_row(alpha_policy={"k": 1})),
+    ]  # fmt: skip
+    for cand, row in cases:
+        assert filing_veto_exempt(cand) == (tap_desk._release_exit_scope(row) != NATIVE_SCOPE), cand.strategy
 
 
 async def test_macro_gate_turns_a_fresh_card_into_missed(tap_desk, temp_db):

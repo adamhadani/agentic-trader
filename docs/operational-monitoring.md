@@ -172,6 +172,18 @@ build failure is logged (`quiet_summary_failed`), appends nothing and is retried
 next pass; a failed decision read is logged as `quiet_summary_read_failed`. Observations
 still run in both cases. Nothing is decided when notifications are disabled.
 
+When `release_exit.mode` is not `off`, the summary also carries a release-exit section for the trading day
+that ends the quiet period (`period_start`'s New York date, if it was an alert day), read from the
+`release-exit` journal by `copilot doctor --monitor` (it imports no broker, trading or earnings module): a
+missing `release-exit/{ET date}` pass, native positions whose status was `unknown`, `release_exit_close`
+events with `notified: false` and a `refused`, `failed` or `error` outcome (an owed close that failed after the
+notice bound; a `submitted` or `already_exiting` close never owes a notice and is not listed), and owed closes
+never attempted (a native `close` entry in the pass with no `release_exit_close` event, for example after the
+host slept between the pass and its closes). Each position names its symbol, signal ID and `/close SIGNAL_ID`.
+A malformed release-exit event is skipped and logged by exception type name only, so it cannot cost the summary. A summary is queued when there are withheld tallies, open
+incidents or any release-exit gap; it is still one decision per window, and the notification kind is
+unchanged (`operations_summary`).
+
 ## Configuration
 
 All policy below is under `operations` in YAML; omitted values use validated defaults.

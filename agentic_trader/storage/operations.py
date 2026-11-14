@@ -1,32 +1,68 @@
 """Transactional incident projection and existing notification outbox integration."""
 
 import json
+import logging
 from collections.abc import Collection, Mapping
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agentic_trader.config import TRADING_HALT_CHECK, OperationsConfig
+from agentic_trader.config import TRADING_HALT_CHECK, EntryBlockMode, OperationsConfig
 from agentic_trader.diagnostics.incidents import (
     ComponentTally,
+    GapClose,
+    GapPosition,
     IncidentPhase,
     IncidentState,
     NoticeKind,
     OpenIncident,
     OperationalNotice,
     QuietHoursSummary,
+    ReleaseExitGaps,
     WithheldReason,
     advance,
 )
+from agentic_trader.diagnostics.quiet_hours import is_alert_day
 from agentic_trader.execution.durable import EventKind, NotificationKind, WorkStatus
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.storage.models import DomainEventRecord, IncidentProjectionRecord, WorkItemRecord
 from agentic_trader.storage.workflow import WorkflowStore, encode
 
 
+logger = logging.getLogger(__name__)
+
 MAX_SUMMARY_DETAIL = 120
+# Literals on purpose: the supervisor imports neither `execution/release_exit.py` nor the trading modules, which
+# own the stream, the native scope and the pass/close statuses and outcomes below.
+RELEASE_EXIT_STREAM = "release-exit"
+NATIVE_SCOPE = "native"
+PASS_STATUS_UNKNOWN = "unknown"
+PASS_STATUS_CLOSE = "close"
+# Outcomes whose notice is built (and so `notified: false` means it was withheld by the notice bound); a
+# `submitted` or `already_exiting` close is journaled `notified: false` with no notice ever owed.
+NOTICE_OUTCOMES = frozenset({"refused", "failed", "error"})
+
+
+def _skipped(event: DomainEventRecord, exc: Exception) -> None:
+    """Log one unreadable release-exit event by kind and exception type name only (never its payload)."""
+    logger.warning(
+        "Release-exit event skipped in the morning summary",
+        extra={"event": "release_exit_gap_event_skipped", "kind": event.kind, "error_type": type(exc).__name__},
+    )
+
+
+def _payload_items(event: DomainEventRecord, field: str) -> list[Mapping[str, Any]]:
+    """The event payload's list field (empty and logged when the payload is not the expected shape)."""
+    try:
+        items = json.loads(event.payload)[field]
+        if not isinstance(items, list):
+            raise TypeError(field)
+        return [item for item in items if isinstance(item, dict)]
+    except (KeyError, TypeError, ValueError) as exc:
+        _skipped(event, exc)
+        return []
 
 
 def summary_key(window_start: datetime) -> str:
@@ -113,6 +149,7 @@ class OperationsStore:
         details: Mapping[str, str],
         ready_now: Collection[str],
         policy: OperationsConfig,
+        release_exit_mode: EntryBlockMode = "off",
     ) -> QuietHoursSummary | None:
         """Queue the one morning summary of a quiet period; None when already queued or nothing to say."""
         key = summary_key(period_end)
@@ -173,8 +210,12 @@ class OperationsStore:
                         )
                     )
             open_incidents.sort(key=lambda i: (i.component != TRADING_HALT_CHECK, i.failed_since, i.component))
+            gaps = None
+            trading_day = period_start.astimezone(ET_TZ).date()
+            if release_exit_mode != "off" and is_alert_day(trading_day):
+                gaps = await self._release_exit_gaps(session, trading_day)
             summary = None
-            if tallies or open_incidents:
+            if tallies or open_incidents or gaps is not None:
                 summary = QuietHoursSummary(
                     period_start=period_start,
                     period_end=period_end,
@@ -182,6 +223,7 @@ class OperationsStore:
                     failure_seconds=policy.failure_seconds,
                     tallies=tallies,
                     open_incidents=open_incidents,
+                    release_exit=gaps,
                 )
                 await self.store.add_notification(
                     session, key, NotificationKind.OPERATIONS_SUMMARY, summary.model_dump(mode="json")
@@ -199,6 +241,69 @@ class OperationsStore:
                 },
             )
             return summary
+
+    async def _release_exit_gaps(self, session: AsyncSession, trading_day: date) -> ReleaseExitGaps | None:
+        """The day's silent release-exit gaps from the journal; None when the pass is complete and clean.
+
+        Four kinds: no pass, a native position whose earnings timing is unknown, a refused/failed/errored close whose
+        notice was withheld, and an owed close (a ``close`` pass entry) with no close event at all. A malformed
+        payload is skipped with its exception type name logged, never the payload, so one bad event cannot cost
+        the whole summary.
+        """
+        pass_key = f"{RELEASE_EXIT_STREAM}/{trading_day.isoformat()}"
+        events = list(
+            await session.scalars(
+                select(DomainEventRecord).where(
+                    DomainEventRecord.scope == self.scope,
+                    DomainEventRecord.stream == RELEASE_EXIT_STREAM,
+                    DomainEventRecord.kind.in_([EventKind.RELEASE_EXIT_PASS, EventKind.RELEASE_EXIT_CLOSE]),
+                    DomainEventRecord.event_key.like(f"{pass_key}%"),
+                )
+            )
+        )
+        missing = True
+        unknown: list[GapPosition] = []
+        owed: list[GapPosition] = []
+        attempted: set[str] = set()
+        unnotified: list[GapClose] = []
+        for event in events:
+            if event.kind == EventKind.RELEASE_EXIT_PASS and event.event_key == pass_key:
+                missing = False
+                for entry in _payload_items(event, "positions"):
+                    try:
+                        if entry.get("scope") != NATIVE_SCOPE:
+                            continue
+                        status = entry.get("status")
+                        if status == PASS_STATUS_UNKNOWN:
+                            unknown.append(GapPosition(symbol=str(entry["symbol"]), signal_id=str(entry["signal_id"])))
+                        elif status == PASS_STATUS_CLOSE:
+                            owed.append(GapPosition(symbol=str(entry["symbol"]), signal_id=str(entry["signal_id"])))
+                    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                        _skipped(event, exc)
+            elif event.kind == EventKind.RELEASE_EXIT_CLOSE and event.event_key.startswith(f"{pass_key}/"):
+                attempted.add(event.event_key.removeprefix(f"{pass_key}/"))
+                try:
+                    payload = json.loads(event.payload)
+                    if payload.get("notified") is False and payload.get("outcome") in NOTICE_OUTCOMES:
+                        unnotified.append(
+                            GapClose(
+                                symbol=str(payload["symbol"]),
+                                signal_id=str(payload["signal_id"]),
+                                outcome=str(payload["outcome"]),
+                            )
+                        )
+                except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                    _skipped(event, exc)
+        gaps = ReleaseExitGaps(
+            trading_day=trading_day,
+            missing_pass=missing,
+            unknown=sorted(unknown, key=lambda g: (g.symbol, g.signal_id)),
+            unnotified_closes=sorted(unnotified, key=lambda g: (g.symbol, g.signal_id)),
+            unattempted_closes=sorted(
+                (g for g in owed if g.signal_id not in attempted), key=lambda g: (g.symbol, g.signal_id)
+            ),
+        )
+        return gaps if gaps.has_gaps else None
 
     async def summary_decided_at(self, window_start: datetime) -> datetime | None:
         """The pass time that decided this alert window's summary: the window's first pass, or None if undecided."""

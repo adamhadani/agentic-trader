@@ -1404,10 +1404,11 @@ FILING_VETO_GROUPS = ("static", "dynamic")
 
 def _filing_veto_group(blocks: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """``n``, ``by_status``, ``coverage`` (the ok share; None with none) and the ok-status ``would_block`` count
-    with its ``by_category`` and ``rate`` (over ok-status candidates; None with none)."""
+    with its ``by_category`` and ``rate`` (over ok-status candidates; None with none), plus the ``would_refuse`` count
+    (ok-status candidates an enforced category would refuse)."""
     by_status: dict[str, int] = {}
     by_category: dict[str, int] = {}
-    n_ok = n_block = 0
+    n_ok = n_block = n_refuse = 0
     for block in blocks:
         status = str(block.get("status"))
         _count(by_status, status)
@@ -1417,11 +1418,14 @@ def _filing_veto_group(blocks: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         if block.get("would_block") is True:
             n_block += 1
             _count(by_category, block.get("category"))
+        if block.get("would_refuse") is True:
+            n_refuse += 1
     return {
         "n": len(blocks),
         "by_status": dict(sorted(by_status.items())),
         "coverage": n_ok / len(blocks) if blocks else None,
         "would_block": n_block,
+        "would_refuse": n_refuse,
         "by_category": dict(sorted(by_category.items())),
         "rate": n_block / n_ok if n_ok else None,
     }
@@ -1460,6 +1464,7 @@ def filing_veto_summary(events: Sequence[Mapping[str, Any]], frame: pd.DataFrame
     return {
         "candidates": {"n": total["n"], "by_status": total["by_status"], "coverage": total["coverage"]},
         "would_block": {"total": total["would_block"], "by_category": total["by_category"], "rate": total["rate"]},
+        "would_refuse": total["would_refuse"],
         "by_universe": {group: _filing_veto_group(blocks) for group, blocks in groups.items()},
         "cards": {"n_would_block": n_cards, "mean_net_excess_r": mean_excess, "n_matured": n_matured},
     }

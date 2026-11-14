@@ -492,14 +492,17 @@ def blocking_filing[F: FilingLike](
     filings: Sequence[F], symbol: str, today: date, *, windows: Mapping[str, int]
 ) -> F | None:
     """The newest filing on ``symbol`` with ``0 <= today - filing_date <= windows[category]`` (calendar days, both
-    ends inclusive); a filing dated after ``today`` never blocks. Symbols match case-insensitively; same-date
+    ends inclusive); a filing dated after ``today`` never blocks, and a category with no entry in ``windows`` never
+    blocks. Symbols match case-insensitively; same-date
     filings keep the given order (the capture's newest first).
     """
     wanted = symbol.strip().upper()
     qualifying = [
         f
         for f in filings
-        if f.symbol.strip().upper() == wanted and 0 <= (today - f.filing_date).days <= windows[f.category]
+        if f.symbol.strip().upper() == wanted
+        and f.category in windows
+        and 0 <= (today - f.filing_date).days <= windows[f.category]
     ]
     return max(qualifying, key=lambda f: f.filing_date, default=None)
 

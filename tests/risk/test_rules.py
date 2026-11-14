@@ -497,6 +497,13 @@ def test_filing_veto_windows_are_inclusive_at_the_edge_day(category, window):
     assert blocking_filing((after,), "ACME", FV_TODAY, windows=config_windows) is None
 
 
+def test_category_without_window_never_blocks():
+    windows = {"late_filing": 30, "adverse_8k": 60}
+    offering = _filing(FilingCategory.OFFERING, 0)
+    assert blocking_filing((offering,), "ACME", FV_TODAY, windows=windows) is None
+    assert filing_veto_block((offering,), "ACME", FV_TODAY, windows=windows) is None
+
+
 def test_the_newest_qualifying_filing_wins():
     offering = _filing(FilingCategory.OFFERING, 3, accession="offering")
     late = _filing(FilingCategory.LATE_FILING, 20, accession="late")

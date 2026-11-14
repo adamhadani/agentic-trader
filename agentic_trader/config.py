@@ -478,8 +478,10 @@ class FilingVetoConfig(BaseModel):
     With ``capture`` the daemon journals each covered symbol's recent negative EDGAR filings (late-filing
     notices, adverse 8-K items, offering prospectuses) after 06:00 New York and ``pre_scan_minutes`` before
     each suggestion scan. ``entry_block`` ``preview`` labels a long equity card whose issuer filed one within
-    its category's window (calendar days); ``enforce`` refuses it. Stale, missing or uncovered evidence never
-    refuses, and a short never evaluates the rule.
+    its category's window (calendar days); ``enforce`` refuses it for the ``enforce_categories`` only (the code
+    default is all three; the shipped config enforces ``late_filing`` and ``adverse_8k`` since 2026-11-16 and
+    leaves ``offering`` journal-only). Catalog, paper-probe and alpha cards are exempt. Stale, missing or
+    uncovered evidence never refuses, and a short never evaluates the rule.
     """
 
     model_config = {"extra": "forbid"}
@@ -491,12 +493,31 @@ class FilingVetoConfig(BaseModel):
     offering_days: int = Field(default=7, ge=1, le=120)
     pre_scan_minutes: int = Field(default=30, ge=10, le=120)
     max_age_seconds: int = Field(default=345600, gt=0)
+    # Under ``enforce`` only these categories refuse; the others are journaled and labelled. All three by default.
+    enforce_categories: tuple[FilingCategory, ...] = (
+        FilingCategory.LATE_FILING,
+        FilingCategory.ADVERSE_8K,
+        FilingCategory.OFFERING,
+    )
 
     @field_validator("entry_block", mode="before")
     @classmethod
     def yaml_off(cls, value: Any) -> Any:
         # YAML 1.1 reads a bare `off` as False; that spelling means "off". `on`/True stays invalid.
         return "off" if value is False else value
+
+    @field_validator("enforce_categories")
+    @classmethod
+    def _categories_valid(cls, value: tuple[FilingCategory, ...]) -> tuple[FilingCategory, ...]:
+        if not value:
+            raise ValueError("enforce_categories must not be empty")
+        if len(set(value)) != len(value):
+            raise ValueError("enforce_categories must be distinct")
+        return value
+
+    def enforced_windows(self) -> dict[str, int]:
+        """``windows()`` restricted to ``enforce_categories``: the windows whose filings refuse under ``enforce``."""
+        return {category: days for category, days in self.windows().items() if category in self.enforce_categories}
 
     def windows(self) -> dict[str, int]:
         """Each veto category's window before the decision date, in calendar days (``filing_date`` inclusive).
@@ -517,7 +538,8 @@ class ReleaseExitConfig(BaseModel):
     Once per New York trading day, at the first five-minute tick from ``minutes_before_close`` before the
     calendar's close (an early close honoured), one pass finds every tracked native equity position whose next
     earnings report falls before the next session's open. ``preview`` journals the pass and sends one notice per
-    such position; ``enforce`` closes it through ``PositionCloseService``. An ``unknown`` status never closes.
+    such position; ``enforce`` (shipped since 2026-11-16; the code default is ``off``) closes it through
+    ``PositionCloseService``. An ``unknown`` status never closes.
     """
 
     model_config = {"extra": "forbid"}
