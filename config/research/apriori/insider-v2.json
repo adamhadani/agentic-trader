@@ -1,0 +1,49 @@
+{
+  "id": "insider",
+  "version": 2,
+  "title": "Opportunistic insider cluster purchases: breadth replication of v1's frozen rule on cohort xu, names v1 never read",
+  "references": [
+    "Seyhun (1986), Insiders' Profits, Costs of Trading, and Market Efficiency, Journal of Financial Economics",
+    "Lakonishok and Lee (2001), Are Insider Trades Informative?, Review of Financial Studies",
+    "Jeng, Metrick and Zeckhauser (2003), Estimating the Returns to Insider Trading, Review of Economics and Statistics",
+    "Cohen, Malloy and Pomorski (2012), Decoding Inside Information, Journal of Finance",
+    "Alldredge and Blank (2019), Do Insiders Cluster Trades with Colleagues?, Journal of Financial and Quantitative Analysis"
+  ],
+  "hypotheses": "LONG only, over decisions 2016-08-01..2026-07-31 on cohort xu (config/research/pooled/cohort-xu.json, 1,156 names: ranks 1-400 and 1,401-2,156 of screen-v3's ranking, disjoint from cohort v3) with v1's bracket, eligibility and 15 bp decisive cost on the cohort-xu label cube built under v1's cube spec (10:35 New York decision, 2 x ATR14 stop, 3R target, 20-session time exit, absolute $5M 20-session median dollar-volume floor, $10 minimum price): v1's event, routine rule, implausible-trade filter, cooldown and trade are applied unchanged (an event fires on an SEC Form 4 filing date F when at least two distinct officers or directors have opportunistic open-market purchases of the issuer filed within the 21 sessions ending at F; at most once per name per 63 sessions; the trade is the cube cell on D, the first session strictly after F). Control = v1's: the mean of the 5 cube cells on the same session D in the event's dollar-volume tercile (terciles per session within cohort xu), with insider coverage, no qualifying purchase filed in the 126 sessions before D, not themselves events, nearest in 20-session return to D-1. P2 (primary): mean R_cost(leg) - mean R_cost(control) > 0 with the paired ci90 lower bound > 0, pairs keyed by D. P4 (required): at least 300 labelled events, at least 100 from 2023-01-01. P1 (mean R_cost > 0, ci90 lower bound > 0) and P3 (1%-trimmed mean and mean since 2023 > 0) are descriptive, because the two populations share v1's market path. Stationary session-block bootstrap over decision sessions, block mean 10, 2000 draws, seed 20261023; ci90 = [5th, 95th] percentiles. See docs/superpowers/specs/2026-11-14-insider-breadth-replication-design.md.",
+  "decision_rule": "Declared exception (operator approval 2026-11-14): v1's clause requiring a new, non-overlapping window is amended for this one out-of-universe replication; the window is v1's, the names are disjoint from cohort v3 and the shared market path is the stated cost. The replication holds iff P2 and P4 hold; P1, P3 and every split (band, buyers, year, the 60-session hold) are descriptive and decide nothing. The runner's decision field applies v1's all-four rule and is not this entry's decision. If the replication holds, a market-neutral insider paper probe and the Sharadar era read (insider-oos-v1) each become eligible for their own spec and operator approval; a pass starts nothing by itself. If P2 fails with P4 held, the insider lane closes as an alpha source and the watch cards stay unvalidated. If P4 fails, the read is recorded as underpowered. No threshold, window, buyer count, cluster window, cooldown, control parameter or cost is revisited after the run.",
+  "window": {
+    "decisions": [
+      "2016-08-01",
+      "2026-07-31"
+    ],
+    "bars_through": "2026-09-01",
+    "recent_from": "2023-01-01"
+  },
+  "pooled_protocol": "config/research/pooled/cohort-xu-insider-v1.json",
+  "pooled_protocol_sha256": "33445bdaebaf5c95c9d7eba323a29eb1f4b1fd41f7b22af6ad4ed9b0631dc84f",
+  "cube_sha256": "f9c4c5eabe3854aca6a35c7d7d1deb43e9827e6536f8ad87d8ae351d78a01b09",
+  "event": {
+    "cluster_window_sessions": 21,
+    "min_buyers": 2,
+    "cooldown_sessions": 63,
+    "routine_rule": "same_owner_same_month_prior_year"
+  },
+  "control": {
+    "matched_controls": 5,
+    "match_return_sessions": 20,
+    "liquidity_buckets": 3,
+    "exclusion_sessions": 126,
+    "require_insider_coverage": true
+  },
+  "descriptive_hold_sessions": 60,
+  "bootstrap": {
+    "block_mean": 10,
+    "draws": 2000,
+    "seed": 20261023
+  },
+  "pass_rule": {
+    "min_events": 300,
+    "min_recent_events": 100,
+    "trim_fraction": 0.01
+  }
+}
