@@ -160,6 +160,20 @@ async def test_nothing_is_built_while_a_scan_runs(desk, builds):
     assert await desk.publish_weekly_scorecard(SATURDAY_0915) is True  # the next tick retries
 
 
+async def test_nothing_is_built_inside_a_scan_window_and_the_next_tick_retries(desk, builds):
+    desk.config.scheduler.suggestion_scan_times_et = ["10:35", "14:35"]
+    monday_1030 = datetime(2026, 11, 16, 15, 30, tzinfo=UTC)  # 10:30 New York: five minutes before the slot
+    monday_1054 = datetime(2026, 11, 16, 15, 54, tzinfo=UTC)  # still inside the 20-minute tail
+    monday_1055 = datetime(2026, 11, 16, 15, 55, tzinfo=UTC)  # the window has closed
+
+    assert await desk.publish_weekly_scorecard(monday_1030) is False
+    assert await desk.publish_weekly_scorecard(monday_1054) is False
+    assert builds == []
+    assert KEY not in await notifications(desk.db)
+    assert await desk.publish_weekly_scorecard(monday_1055) is True
+    assert len(builds) == 1
+
+
 async def test_disabled_publishes_nothing(desk, builds):
     desk.config.scorecard = ScorecardConfig(enabled=False)
     assert await desk.publish_weekly_scorecard(SATURDAY_0900) is False

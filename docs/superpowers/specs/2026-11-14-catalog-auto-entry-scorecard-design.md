@@ -26,8 +26,10 @@ paper book, and it gives the operator a weekly view of whether anything is worki
 
 - **Config.** `execution.auto_entry_catalog: tuple[Literal["pead", "insider_watch"], ...]`.
   - The code default is `()`; the shipped config is `["pead", "insider_watch"]`.
-  - It is valid only with `execution.auto_entry: paper`. `load_config` refuses a non-empty value otherwise,
-    and it inherits the existing live-account refusal.
+  - It acts only with `execution.auto_entry: paper`. With `auto_entry: "off"` a non-empty value is inert:
+    `load_config` logs one `auto_entry_catalog_inert` warning and starts (the final review found that refusing
+    made the documented off-switch leave the daemon unable to start). It inherits the existing live-account
+    refusal of `auto_entry: paper`.
 - **Marker.** When `auto_entry_active` is true, a catalog card from an enabled source on the scheduled
   suggestion scan gets the auto-entry marker. `auto_entry_marker` gains a per-source rule. For an enabled
   catalog source:

@@ -363,7 +363,7 @@ sizing:
 
 execution:
   native_entry_lifetime: session # an unfilled native entry cancels before the next open (Alpaca only)
-  auto_entry: paper # scheduled-scan native cards are entered automatically (Alpaca paper only; needs session lifetime)
+  auto_entry: paper # scheduled-scan native cards are entered automatically (Alpaca paper only; needs session lifetime); "off" (quoted: a bare off is a YAML boolean) turns all auto-entry off, the catalog list below going inert
   auto_entry_catalog: ["pead", "insider_watch"] # operator approval 2026-11-14: these catalog cards also auto-enter on the scheduled scan, with no LLM approval and the lifetime of their frozen policy; [] restores tap-only
   lifetime_evidence_review_after_failures: 5 # consecutive failed reconciliation passes (60 s monitor + stream updates and scans; about 5 min when only the monitor runs) of a timed position's evidence read before a review halt; passes while the regular session is certainly closed do not count for an entry the journal shows filled
   entry_trade_max_age_seconds: 300.0 # IEX prints are sparse on mid caps; the quote keeps its 60 s limit

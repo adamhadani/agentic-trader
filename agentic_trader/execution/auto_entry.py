@@ -59,6 +59,8 @@ def auto_entry_status_line(config: AppConfig) -> str:
     if auto_entry_active(config):
         return "Auto-entry: paper (on)"
     if config.execution.auto_entry == "off":
+        if config.execution.auto_entry_catalog:
+            return "Auto-entry: off (catalog list inert)"
         return "Auto-entry: off"
     return "Auto-entry: inactive (not an Alpaca paper account)"
 

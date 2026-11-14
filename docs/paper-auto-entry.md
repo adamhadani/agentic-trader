@@ -17,13 +17,14 @@ changes risk rules, admission, `card_policy`, book sizing or the card budget.
 
 ## Switch and scope
 
-- `execution.auto_entry: off | paper` (code default `off`; `config/config.yaml` ships `paper`), read by
+- `execution.auto_entry: "off" | "paper"` (code default `off`; `config/config.yaml` ships `paper`; quote `"off"` in
+  YAML, a bare `off` is a boolean and fails validation), read by
   `load_config`. `auto_entry_active(config)` is true only when it is `paper`, `execution_mode` is `alpaca`,
   `alpaca_paper` is true and `execution.native_entry_lifetime` is `session`. Under the simulator
   (`EXECUTION_MODE=paper`) it is inactive and nothing errors.
 - `load_config` refuses to start when `auto_entry` is `paper` and the account is Alpaca live, or
   `native_entry_lifetime` is `off` (an auto entry must never rest as an untimed GTC order). A live deploy sets
-  `auto_entry: off` explicitly.
+  `auto_entry: "off"` explicitly; `auto_entry_catalog` may stay set, inert.
 - The sweep re-checks `is_paper_scope(workflows.scope)` immediately before the entry call; a non-paper scope
   refuses with reason `not_paper_scope` and journals it.
 - A native card is auto-eligible only when it was **sent** by a `SUGGESTION_SCAN` (not the swing or intraday
@@ -44,9 +45,13 @@ changes risk rules, admission, `card_policy`, book sizing or the card budget.
 `execution.auto_entry_catalog` (code default `[]`; `config/config.yaml` ships `["pead", "insider_watch"]` since the
 2026-11-14 operator approval) lists the catalog card sources the same sweep enters. The ids are `pead` (the PEAD
 paper probe) and `insider_watch`; any other id fails validation, and a non-empty list needs `execution.auto_entry:
-paper` (`load_config` refuses otherwise, and a live Alpaca account already refuses `auto_entry`). Remove an id, or
-set `[]`, and do the [controlled restart](production.md#controlled-maintenance-and-restart) to return a source to
-tap-only.
+paper` to act: with `auto_entry: "off"` a non-empty list is inert (`auto_entry_marker` returns None before the
+catalog branch, `load_config` logs one `auto_entry_catalog_inert` warning with the mode, and `/status` reads
+"Auto-entry: off (catalog list inert)"), so `auto_entry: "off"` alone is the off-switch. A live Alpaca account
+refuses `auto_entry: paper` as before. Remove an id, or set `[]`, and do the
+[controlled restart](production.md#controlled-maintenance-and-restart) to stop new markers for a source; a card
+already marked that day is still entered by the sweep within its 1,800 s window while `auto_entry` stays on
+(`auto_entry: "off"` or `/cancel` stops it).
 
 - **Marker.** A catalog card of a listed source, recorded by a scheduled suggestion scan while `auto_entry_active`
   holds, gets the same `decision_provenance["auto_entry"] = {"mode": "paper"}` marker. It needs **no LLM approval**:
@@ -54,7 +59,8 @@ tap-only.
   It carries no native lifetime marker either: its lifetime is its `alpha_policy`'s, read through
   `entry_lifetime_of`, and a card whose stored policy resolves none is sent as a tap card. The shipped PEAD
   probe policy and the frozen insider-watch contract policy both resolve one session of resting entry and a
-  15:45 New York time exit (pinned by a shipped-config test).
+  15:45 New York time exit (a shipped-config test asserts the resolved lifetime's `resting_seconds` 57,600,
+  `holding_sessions` 20 and `close_time_et` "15:45").
 - **Unchanged.** The sweep, the 1,800 s abandonment, the re-card, the notices and the digest are the native path.
   The tap gates and admission still run in full, including `probe_block_reason` (the sticky −4R kill) for PEAD,
   the frozen-contract check for watch, the per-source caps and the risk caps ($100 for watch). Registry alpha

@@ -1,4 +1,5 @@
 import io
+import logging
 import os
 import re
 from collections.abc import Mapping
@@ -62,6 +63,7 @@ from agentic_trader.research.alpha.probe import MAX_PROBE_TERM_DAYS
 from agentic_trader.research.alpha.universe import ETF_RESEARCH_UNIVERSE
 
 
+_logger = logging.getLogger("copilot.config")
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -952,7 +954,7 @@ class ExecutionConfig(BaseModel):
     # "paper": native suggestion-scan cards are entered automatically on the Alpaca paper account; "off": tap only.
     auto_entry: Literal["off", "paper"] = "off"
     # Catalog card sources the auto-entry sweep also enters (no LLM approval needed: their evidence is the frozen
-    # rule): "pead" (the PEAD probe) and "insider_watch". Valid only with `auto_entry: paper`.
+    # rule): "pead" (the PEAD probe) and "insider_watch". Inert (a warning at load) unless `auto_entry` is "paper".
     auto_entry_catalog: tuple[Literal["pead", "insider_watch"], ...] = ()
     # Consecutive failed reconciliation passes of one timed signal's evidence read before it becomes a review halt
     # (1: first failure). A pass is the 60 s monitor plus one per stream update and scan.
@@ -1584,7 +1586,13 @@ def load_config(
         alpaca_paper=alpaca_paper,
     )
     if config.execution.auto_entry_catalog and config.execution.auto_entry != "paper":
-        raise ValueError("execution.auto_entry_catalog requires execution.auto_entry: paper")
+        # Inert, not an error: ``auto_entry_marker`` marks nothing unless ``auto_entry_active``, so
+        # ``auto_entry: "off"`` alone is the off-switch and the daemon still starts.
+        _logger.warning(
+            "auto_entry_catalog_inert: execution.auto_entry_catalog is set but execution.auto_entry mode=%s; "
+            "no catalog card is auto-entered",
+            config.execution.auto_entry,
+        )
     if config.execution.auto_entry == "paper":
         if execution_mode == ExecutionMode.ALPACA and not alpaca_paper:
             raise ValueError("execution.auto_entry: paper is refused on a live Alpaca account; set it to off")

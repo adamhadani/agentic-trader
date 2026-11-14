@@ -60,6 +60,7 @@ def test_auto_entry_active_truth_table(config, active):
     [
         (_config(), "Auto-entry: paper (on)"),
         (_config(auto="off"), "Auto-entry: off"),
+        (_config(auto="off", catalog=("pead",)), "Auto-entry: off (catalog list inert)"),
         (_config(mode=ExecutionMode.PAPER), "Auto-entry: inactive (not an Alpaca paper account)"),
         (_config(lifetime="off"), "Auto-entry: inactive (not an Alpaca paper account)"),
     ],

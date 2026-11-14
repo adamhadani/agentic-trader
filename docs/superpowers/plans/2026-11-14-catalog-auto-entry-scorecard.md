@@ -21,8 +21,9 @@ integration), pandas.
 ## Global constraints
 
 - Paper only.
-  - `execution.auto_entry_catalog` non-empty requires `execution.auto_entry: paper`; `load_config` refuses
-    otherwise.
+  - `execution.auto_entry_catalog` non-empty acts only with `execution.auto_entry: paper`; otherwise it is
+    inert and `load_config` logs one `auto_entry_catalog_inert` warning (final-review ruling I1, replacing the
+    original refusal).
   - The live-account refusal is inherited.
   - The sweep's `is_paper_scope` check stays.
 - Code defaults change nothing:

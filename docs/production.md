@@ -1362,7 +1362,8 @@ Inspect with `copilot db queue --kind entry_cancel`.
 
 Contract and measurement: [paper auto-entry](paper-auto-entry.md). `execution.auto_entry: paper` is active only
 on Alpaca paper with `execution.native_entry_lifetime: session`; a live account, or `native_entry_lifetime:
-off`, refuses to start with it set, and the simulator leaves it inactive. `/status` and
+off`, refuses to start with it set, and the simulator leaves it inactive. In YAML write the off value quoted,
+`auto_entry: "off"`: a bare `off` parses as a boolean and fails validation. `/status` and
 `scripts/verify_runtime.py` show the setting and whether it is active.
 
 - **Only LLM-approved cards.** A native card is marked for auto-entry only when the LLM gate approved it (its
@@ -1374,14 +1375,20 @@ off`, refuses to start with it set, and the simulator leaves it inactive. `/stat
   2026-11-14) also marks an enabled PEAD-probe or insider-watch card of a scheduled suggestion scan, with no LLM
   approval and the lifetime of its `alpha_policy`; admission, `probe_block_reason` and the frozen-contract check
   still apply, and the watch card line reads "auto-entered on paper; unvalidated; earns no promotion credit".
-  Remove an id (or set `[]`) and do the [controlled restart](#controlled-maintenance-and-restart) to return that
-  source to tap-only; a card already marked keeps its marker and, after the restart, expires with the session as
-  below. `portfolio.max_non_native_positions` (shipped 5 of the 8 slots, `null` removes it) refuses a catalog,
+  Remove an id (or set `[]`) and do the [controlled restart](#controlled-maintenance-and-restart) to stop new
+  markers for that source. That does not stop a card already marked that day: while `auto_entry` stays on, the
+  sweep still enters it if the restart lands inside its `execution.card_freshness.fresh_seconds` (1,800 s)
+  window. To stop it, set `auto_entry: "off"` ([turn it off](#auto-entry-paper)) or `/cancel` the entry. The list
+  is inert, with an `auto_entry_catalog_inert` warning at load and "Auto-entry: off (catalog list inert)" in
+  `/status`, whenever `auto_entry` is `"off"`. `portfolio.max_non_native_positions` (shipped 5 of the 8 slots, `null` removes it) refuses a catalog,
   probe or alpha entry with `non_native_capacity` once open plus in-flight non-native positions reach it: a
   business refusal, not a halt, so look for that reason before suspecting the broker when a catalog card is not
   entered.
-- **Turn it off.** Set `execution.auto_entry: off` in `config/config.yaml` and do the
-  [controlled restart](#controlled-maintenance-and-restart). There is no runtime command; `/panic` halts all
+- **Turn it off.** Set `execution.auto_entry: "off"` (quoted) in `config/config.yaml` and do the
+  [controlled restart](#controlled-maintenance-and-restart). Leave `auto_entry_catalog` as it is: with the
+  switch off the list is inert (`auto_entry_marker` marks nothing), `load_config` logs one
+  `auto_entry_catalog_inert` warning and the daemon starts normally. A live-account deploy sets the same
+  `auto_entry: "off"`. There is no runtime command; `/panic` halts all
   new risk at once, and `/resume` follows the usual rules. Cards recorded while it was on keep their marker;
   after the restart the sweep and digest jobs are not registered, so a marked card still `PENDING` is not
   entered: it keeps its Dismiss-only card and expires with the session.

@@ -57,10 +57,10 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    `execute_signal_by_id` for its sent native `SUGGESTION_SCAN` cards that the LLM gate approved (applied,
    `approved: true`, no error), tagged `entry_trigger: auto`; a `--no-llm` scan's native cards, alpha cards and futures stay
    tap-only. Since the 2026-11-14 operator approval `execution.auto_entry_catalog` (shipped `["pead", "insider_watch"]`, code default `[]`,
-   valid only with `auto_entry: paper`) also marks an enabled PEAD-probe or insider-watch card of that scan: no LLM
+   inert, with a load warning, unless `auto_entry: paper`) also marks an enabled PEAD-probe or insider-watch card of that scan: no LLM
    approval (its LLM pass is commentary and its evidence is the frozen rule), the lifetime of its `alpha_policy`
    through `entry_lifetime_of`, and the same admission, `probe_block_reason` and frozen-contract checks as a tap; a
-   live account refuses to start with either set ([paper auto-entry](docs/paper-auto-entry.md)). Operator decision
+   live account refuses to start with `auto_entry: paper` ([paper auto-entry](docs/paper-auto-entry.md)). Operator decision
    O3 is implemented: `portfolio.max_non_native_positions` (shipped 5 of the 8 slots, code default `None`) refuses a
    catalog, probe or alpha entry at admission with `non_native_capacity` (a business refusal, no halt) and catalog
    sources stop carding at the ceiling. Only a valid preflight token commits

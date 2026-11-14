@@ -212,10 +212,12 @@ async def native_outcomes(
         max_requests_per_minute=config.market_data.max_requests_per_minute,
     )
     execution = await collect_execution(db, frame)
-    summary = summarize(
-        attach_execution(frame, execution),
-        asset_classes=config.universe.outcome_asset_classes(),
-        slots=config.scheduler.suggestion_scan_times_et,
+    summary = await asyncio.to_thread(
+        lambda: summarize(
+            attach_execution(frame, execution),
+            asset_classes=config.universe.outcome_asset_classes(),
+            slots=config.scheduler.suggestion_scan_times_et,
+        )
     )
     return NativeOutcomes(frame, execution, summary)
 
@@ -257,7 +259,8 @@ async def pead_probe_summary(
     labels, _ = await asyncio.to_thread(label_events, decisions[list(EVENT_COLUMNS)], hourly, entry)
     labels = labels[(labels["direction"] == "LONG") & labels["is_leg"]] if not labels.empty else labels
     report = [r for r in await AlphaRepository(db.workflows).probe_report(now=now) if r.get("kind") == "apriori"]
-    summary = summarize_probe(
+    summary = await asyncio.to_thread(
+        summarize_probe,
         decisions,
         labels,
         await probe_signals(db, signals_since),
@@ -295,7 +298,8 @@ async def insider_watch_summary(
         return watch_source.fetch_bars(symbol, timeframe, start, end, adjustment="all")
 
     watch_data = await asyncio.to_thread(watch_bars, fetch, watch, sip_through)
-    watch_labels = label_watch_events(
+    watch_labels = await asyncio.to_thread(
+        label_watch_events,
         watch,
         watch_data.hourly,
         watch_data.daily,
@@ -305,7 +309,7 @@ async def insider_watch_summary(
         contract.spec.decision_cost_bps,
         as_of=sip_through,
     )
-    summary = summarize_watch(watch, watch_labels, await watch_signals(db, signals_since))
+    summary = await asyncio.to_thread(summarize_watch, watch, watch_labels, await watch_signals(db, signals_since))
     summary["bar_failures"] = watch_data.failures
     return summary
 

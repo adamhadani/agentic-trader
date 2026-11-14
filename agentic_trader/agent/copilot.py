@@ -180,6 +180,7 @@ from agentic_trader.research.apriori.pead_base_rate import BaseRateUnavailable, 
 from agentic_trader.research.apriori.watch_contract import INSIDER_WATCH_STRATEGY_ID
 from agentic_trader.research.pooled.entry import REPO_ROOT
 from agentic_trader.research.setups.card_stats import CardStatsSnapshot
+from agentic_trader.research.setups.card_stats_worker import in_scan_window
 from agentic_trader.research.setups.net_excess import NET_EXCESS_UNIT
 from agentic_trader.research.setups.ranker import (
     cached_ranker,
@@ -5356,7 +5357,7 @@ class TradingCopilot:
 
         Due from ``scorecard.due_weekday`` / ``due_time_et`` New York time and for ``SCORECARD_CATCH_UP`` after
         it, so a daemon down at the due time publishes the missed week on its next tick, a restart after a publish
-        sends nothing (the key exists) and a restart late in the week sends nothing. A scan in flight, a key already queued or a not-yet-due
+        sends nothing (the key exists) and a restart late in the week sends nothing. A scan in flight or inside its window (as for the card-stats worker), a key already queued or a not-yet-due
         week returns False; a failure logs only its type name, returns False and retries on the next tick.
         Nothing raises into the scheduler.
         """
@@ -5373,6 +5374,9 @@ class TradingCopilot:
                 return False
             if self.scan_running:
                 logger.debug("Weekly scorecard deferred: a scan is running", extra={"event": "weekly_scorecard"})
+                return False
+            if in_scan_window(current.astimezone(ET_TZ), self.config.scheduler.suggestion_scan_times_et):
+                logger.debug("Weekly scorecard deferred: a scan window", extra={"event": "weekly_scorecard"})
                 return False
             card = await build_scorecard(
                 self.db,
