@@ -10,6 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 import agentic_trader.cli.commands.cards as cards_module
+import agentic_trader.research.setups.scorecard as scorecard_module
 from agentic_trader.cli.main import cli
 from agentic_trader.config import ScanBudget, load_config
 from agentic_trader.diagnostics.doctor import ComponentHealth, DiagnosticReport
@@ -574,9 +575,9 @@ def test_cards_outcomes_reports_the_insider_watch_block(runner: CliRunner):
         patch.object(cards_module, "datetime", _FrozenDateTime),
         patch.object(cards_module, "scan_ranked_events", AsyncMock(return_value=[])),
         patch.object(cards_module, "build_bar_source", return_value=configured),
-        patch.object(cards_module, "AlpacaDataProvider", provider),
-        patch.object(cards_module, "watch_signals", AsyncMock(return_value=[])),
-        patch.object(cards_module, "_decision_events", decision_events),
+        patch.object(scorecard_module, "AlpacaDataProvider", provider),
+        patch.object(scorecard_module, "watch_signals", AsyncMock(return_value=[])),
+        patch.object(cards_module, "decision_events", decision_events),
     ):
         result = runner.invoke(cli, ["cards", "outcomes", "--days", "10"])
 
@@ -647,11 +648,11 @@ def test_cards_outcomes_reads_sip_only_through_its_delayed_bound(runner: CliRunn
         patch.object(cards_module, "datetime", _FrozenDateTime),
         patch.object(cards_module, "scan_ranked_events", AsyncMock(return_value=[])),
         patch.object(cards_module, "build_bar_source", return_value=_FakeBarSource(pd.DataFrame())),
-        patch.object(cards_module, "AlpacaDataProvider", lambda **kwargs: sip),
-        patch.object(cards_module, "label_events", label_events),
-        patch.object(cards_module, "probe_signals", AsyncMock(return_value=[])),
-        patch.object(cards_module, "watch_signals", AsyncMock(return_value=[])),
-        patch.object(cards_module, "_decision_events", decision_events),
+        patch.object(scorecard_module, "AlpacaDataProvider", lambda **kwargs: sip),
+        patch.object(scorecard_module, "label_events", label_events),
+        patch.object(scorecard_module, "probe_signals", AsyncMock(return_value=[])),
+        patch.object(scorecard_module, "watch_signals", AsyncMock(return_value=[])),
+        patch.object(cards_module, "decision_events", decision_events),
     ):
         result = runner.invoke(cli, ["cards", "outcomes", "--days", "1"])
 
@@ -662,3 +663,43 @@ def test_cards_outcomes_reads_sip_only_through_its_delayed_bound(runner: CliRunn
     [frames] = pead_hourly
     assert frames["PPP"].index.max() < bound - pd.Timedelta(hours=1) + pd.Timedelta(seconds=1)
     assert '"immature": 1' in result.output and '"sent_events"' in result.output
+
+
+def test_cards_scorecard_prints_the_formatted_card_and_sends_nothing(runner: CliRunner):
+    """`copilot cards scorecard` builds the card with the requested activity window and prints its text."""
+    card = scorecard_module.LaneScorecard(
+        window_start=datetime(2026, 11, 12, 5, 0, tzinfo=UTC),
+        window_end=datetime(2026, 11, 14, 14, 0, tzinfo=UTC),
+        lanes=tuple(
+            scorecard_module.LaneRow(
+                lane=lane,
+                sent=0,
+                entered_auto=0,
+                entered_tap=0,
+                filled=0,
+                closed=0,
+                realized_r_sum=0.0,
+                record_closed=0,
+                record_mean_r=None,
+                open_positions=0,
+                cf_mature=0,
+                cf_mean_r=None,
+                cf_mean_excess_r=None,
+            )
+            for lane in ("native", "pead", "insider_watch")
+        ),
+        account=None,
+    )
+    build = AsyncMock(return_value=card)
+    with (
+        patch.object(cards_module, "build_scorecard", build),
+        patch.object(cards_module, "build_bar_source", return_value=_FakeBarSource(pd.DataFrame())),
+    ):
+        result = runner.invoke(cli, ["cards", "scorecard", "--days", "3"])
+
+    assert result.exit_code == 0, result.output
+    assert build.await_args.kwargs["activity_days"] == 3
+    assert "Weekly lane scorecard" in result.output and "PEAD paper probe" in result.output
+    assert result.output.rstrip().endswith(
+        "Counterfactual labels assume study-price fills; no lane has validated edge."
+    )

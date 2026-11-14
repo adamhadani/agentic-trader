@@ -6,6 +6,7 @@ import pytest
 from alpaca.data.enums import DataFeed
 
 import agentic_trader.cli.commands.cards as cards_module
+import agentic_trader.research.setups.scorecard as scorecard_module
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.research.setups import sources
 
@@ -33,7 +34,7 @@ def test_the_cli_uses_the_shared_helpers():
     assert cards_module.build_bar_source is sources.build_bar_source
     assert cards_module.build_daily_bar_source is sources.build_daily_bar_source
     assert cards_module.scan_ranked_events is sources.scan_ranked_events
-    assert cards_module.DelayedBars is sources.DelayedBars
+    assert scorecard_module.DelayedBars is sources.DelayedBars
     assert cards_module.SIP_HISTORY_DELAY is sources.SIP_HISTORY_DELAY
     assert not hasattr(cards_module, "_scan_ranked_events") and not hasattr(cards_module, "_DelayedBars")
 

@@ -38,6 +38,7 @@ __all__ = [
     "WatchBars",
     "completed_bars",
     "decision_frame",
+    "is_tap",
     "label_watch_events",
     "summarize_watch",
     "watch_bars",
@@ -262,7 +263,7 @@ def _block(rows: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def _is_tap(signal: Mapping[str, Any]) -> bool:
+def is_tap(signal: Mapping[str, Any]) -> bool:
     trigger = signal.get("entry_trigger")
     if trigger is not None:
         return trigger == EntryTrigger.TAP
@@ -293,7 +294,7 @@ def summarize_watch(frame: pd.DataFrame, labels: pd.DataFrame, signals: list[dic
         "sent_events": _block(sent),
         "unsent_events": _block(unsent),
         "unlabelled": dict(sorted(reasons.items())),
-        "taps": sum(1 for s in watch if _is_tap(s)),
+        "taps": sum(1 for s in watch if is_tap(s)),
         "auto_entries": sum(1 for s in watch if s.get("entry_trigger") == EntryTrigger.AUTO),
         "fills": sum(1 for s in watch if s.get("executed_at") is not None),
         "note": "Descriptive record of an unvalidated watch rule; never a gate, never promotion evidence.",

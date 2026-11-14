@@ -1,6 +1,7 @@
 """Explicitly opted-in integration tests against a disposable test_ PostgreSQL database."""
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -18,7 +19,7 @@ from agentic_trader.diagnostics.incidents import ComponentTally, IncidentPhase
 from agentic_trader.execution.durable import EventKind, NotificationKind, ScanTrigger, WorkKind, WorkStatus
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.storage.db import SignalDatabase
-from agentic_trader.storage.ledger import LedgerStore
+from agentic_trader.storage.ledger import LEDGER_STREAM, LedgerStore
 from agentic_trader.storage.maintenance import RetentionService
 from agentic_trader.storage.migrations import (
     downgrade_migrations,
@@ -26,7 +27,7 @@ from agentic_trader.storage.migrations import (
     run_migrations_head,
     to_sync_url,
 )
-from agentic_trader.storage.models import SignalRecord
+from agentic_trader.storage.models import DomainEventRecord, SignalRecord
 from agentic_trader.storage.operations import OperationsStore
 from agentic_trader.storage.workflow import WorkflowStore
 
@@ -427,6 +428,33 @@ async def test_postgres_account_ledger_fences_independent_importers(postgres_tes
     finally:
         await first.engine.dispose()
         await second.engine.dispose()
+
+
+async def test_postgres_ledger_adjusted_equity_at_reads_checkpoint_events(postgres_test_db):
+    db = SignalDatabase(db_url=postgres_test_db)
+    try:
+        ledger = LedgerStore(db.workflows)
+        async with db.session_factory() as session, session.begin():
+            for key, day, risk in (
+                ("a", 7, {"adjusted_equity": "100000.50"}),
+                ("b", 10, None),
+                ("c", 13, {"adjusted_equity": "102500.25"}),
+            ):
+                session.add(
+                    DomainEventRecord(
+                        scope=ledger.scope,
+                        event_key=f"equity-{key}",
+                        stream=LEDGER_STREAM,
+                        kind=EventKind.LEDGER_CHECKPOINT,
+                        payload=json.dumps({"risk": risk}),
+                        recorded_at=datetime(2026, 11, day, 14, tzinfo=UTC),
+                    )
+                )
+        assert await ledger.adjusted_equity_at(datetime(2026, 11, 6, tzinfo=UTC)) is None
+        assert await ledger.adjusted_equity_at(datetime(2026, 11, 11, tzinfo=UTC)) == pytest.approx(100000.50)
+        assert await ledger.adjusted_equity_at(datetime(2026, 11, 14, tzinfo=UTC)) == pytest.approx(102500.25)
+    finally:
+        await db.engine.dispose()
 
 
 async def test_postgres_ledger_transaction_does_not_block_entry_admission_lock(postgres_test_db):
