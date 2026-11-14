@@ -1,11 +1,21 @@
 # Filing veto and release exit: preview week 2026-11-07 → 11-14
 
 Both rules shipped in `preview` on 2026-11-07 ([production](production.md#filings-capture),
-[release exit](production.md#release-exit)). This records the journaled evidence read for 11-09 → 11-12 plus the
-11-13 06:00 capture, and the decision to ship `enforce`. The evidence was read from the production journal,
-read-only.
+[release exit](production.md#release-exit)). This records the journaled evidence read for 11-09 → 11-12, the 11-13
+session (read on 11-14, below) and the decision to ship `enforce`. The evidence was read from the production
+journal, read-only.
 
-11-13 scans and release-exit pass: added before merge.
+**11-13 session.**
+- **Capture:** 3 of 3 passes, 0 failed. 157 names were requested and 130 covered, rising to 158 and 131 at the
+  14:05 pass once KDP was held.
+- **Scans:** 3 universe scans (2 suggestion, 1 journal-only swing) ranked 10 long candidates.
+  - 9 were `ok` and 1 `uncovered`; 0 would block.
+  - The `uncovered` candidate was KDP, a dynamic-universe name. It was sent as a native card at 10:35 and
+    auto-entered.
+  - The 14:05 capture then found a KDP 424B5 filed 11-12, inside the offering window. Under the shipped config
+    that match is labelled, not refused.
+- **Release exit:** 1 pass (`preview`, 15:33 ET) over 4 native positions (UNH, CSX, KDP, MSFT). All were `none`
+  and `live_verified`, with 0 `would_close` and 0 `unknown`.
 
 ## What was measured
 
@@ -13,11 +23,11 @@ read-only.
 - Which candidates and cards the filing veto would have refused, by category and universe.
 - Whether the release exit's passes ran, what they decided and whether any close or notice was owed.
 
-## Filing veto evidence
+## Filing veto evidence, 11-09 → 11-12
 
 | Measure | Result |
 | --- | --- |
-| Capture passes | 13 of 13 (3 slots a day 11-09..11-12, plus the 11-13 open slot); each 157 requested, 130 covered, 27 unmapped, 0 failed |
+| Capture passes | 12 of 12 (3 slots a day); each 157 requested, 130 covered, 27 unmapped, 0 failed |
 | `filings_capture` readiness | ready in all 1,724 observations 11-07..11-13; no `filings_capture_failed` log lines |
 | Ranked long candidates with a `filings` block | 31, across 17 universe scans (8 suggestion, 9 journal-only swing), 15 distinct symbols |
 | Status | `ok` 27, `uncovered` 4 (EWC, EWU: country ETFs EDGAR does not map), `stale` 0, `unavailable` 0 |
@@ -32,7 +42,7 @@ The week refused nothing it should not have, and almost nothing at all: the rule
 universe. The offering matches are mostly unclear by document name and the debt ones are bond issues, for which
 the cited negative drift (convertibles, equity) does not apply.
 
-## Release exit evidence
+## Release exit evidence, 11-09 → 11-12
 
 | Measure | Result |
 | --- | --- |
@@ -61,7 +71,12 @@ The release exit uses the same close service, which is why its `enforce` follows
 ## Open gap
 
 Dynamic-universe names are uncovered by the filings capture by design in v1: they journal `uncovered` and are
-never refused. The week had no dynamic candidate or card, so the gap cost nothing measured, but it is not closed.
+never refused. 11-09 → 11-12 had no dynamic candidate or card.
+
+On 11-13 the first dynamic native card (KDP) was sent and auto-entered `uncovered`. The capture covered KDP only
+once it was held, and then found an 11-12 424B5. That is an offering, journal-only under the shipped config, so
+coverage would have changed the card's label but not the entry. The gap is now observed and not closed. It is the
+next coverage item: request filings for the scan's dynamic names before ranking.
 
 ## Rollback
 
