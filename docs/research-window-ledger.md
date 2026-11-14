@@ -185,6 +185,19 @@ Declared before the read, read on 2026-11-06. Frozen file `config/research/aprio
 | --- | --- | --- | --- | --- | --- | --- |
 | L43 | 2026-11-06 | `runup` v1, pre-earnings run-up development read | Cohort v3 (`cohort3-events-v1`) | Outcomes, decisions 2016-08-01 → 2026-07-17; development only, cannot pass | [results](apriori-runup-2026-11-06.md) | **Fail, lane closed:** P1 −0.070R net of beta-matched SPY (ci90 [−0.101, −0.037]); P2 −0.006R vs matched controls (ci90 [−0.026, +0.014]); P3, P5 fail; planted detected, MDE 0.039R. No α claim |
 
+### Insider breadth replication (cohort xu, W6 on disjoint names)
+
+Declared before the read on 2026-11-14 (operator approval "approved all, proceed"). Frozen files
+`config/research/apriori/insider-v2.json` and `config/research/pooled/cohort-xu-insider-v1.json`. A count-only
+sizing step (no prices or labels) found 1,724 accepted triggers: 432 large and 1,292 small/mid, 618 from 2023.
+The exception to v1's "new window" clause is declared in the
+[spec](superpowers/specs/2026-11-14-insider-breadth-replication-design.md). The names are disjoint from cohort v3
+and the market path is shared, which is why P1 is descriptive.
+
+| Id | Date | Lane / study | Cohort | What will be read | Result doc | Verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| L44 | 2026-11-14 | `insider` v2, breadth replication of v1's frozen event rule | Cohort xu (ranks 1–400 and 1,401–2,156 of the cohort-v3 ranking; 1,156 names, disjoint from v3) | Outcomes, decisions 2016-08-01 → 2026-07-31; P2 primary with P4 required, P1 and P3 descriptive | Pending | Pending |
+
 ### Prospective from 2026-08-01
 
 No study has read outcomes from 2026-08-15 on. The native-setup holdout (L25, W5) ran through 2026-08-14,
