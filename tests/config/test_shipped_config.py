@@ -4,6 +4,7 @@ Guards the 2026-10-13 regression class: ``load_config`` once silently ignored a 
 (``corporate_actions:``), so a shipped setting never took effect.
 """
 
+import logging
 import re
 from pathlib import Path
 
@@ -15,8 +16,12 @@ from sqlalchemy.engine import make_url
 from agentic_trader.config import AppConfig, ExecutionConfig, LLMGateConfig, load_config
 from agentic_trader.constants import DEFAULT_POSTGRES_DB_URL
 from agentic_trader.data.edgar_filings import FilingCategory
-from agentic_trader.execution.auto_entry import auto_entry_active
+from agentic_trader.execution.auto_entry import auto_entry_active, auto_entry_marker
+from agentic_trader.execution.durable import ScanTrigger
+from agentic_trader.execution.lifetime_policy import entry_lifetime_of
+from agentic_trader.research.apriori.catalog import load_pead_entry, pead_execution_policy
 from agentic_trader.research.apriori.pead_base_rate import load_pead_base_rate
+from agentic_trader.research.apriori.watch_contract import frozen_watch_contract
 from agentic_trader.research.setups.card_prior import load_prior
 
 
@@ -160,6 +165,61 @@ def test_load_config_refuses_auto_entry_without_session_lifetime(tmp_path):
         load_config(_auto_entry_yaml(tmp_path, "off"), environ=environ)
 
 
+def _catalog_yaml(tmp_path, *, auto_entry: str, catalog) -> str:
+    path = tmp_path / "config.yaml"
+    document = yaml.safe_load(SHIPPED.read_text())
+    document["execution"]["auto_entry"] = auto_entry
+    document["execution"]["native_entry_lifetime"] = "session"
+    document["execution"]["auto_entry_catalog"] = catalog
+    path.write_text(yaml.safe_dump(document))
+    return str(path)
+
+
+def test_auto_entry_catalog_defaults_to_no_source_and_validates_its_ids():
+    assert ExecutionConfig().auto_entry_catalog == ()
+    assert ExecutionConfig(auto_entry_catalog=["pead", "insider_watch"]).auto_entry_catalog == ("pead", "insider_watch")
+    with pytest.raises(ValidationError):
+        ExecutionConfig(auto_entry_catalog=["exdiv"])
+
+
+def test_load_config_accepts_a_catalog_list_on_alpaca_paper(tmp_path):
+    environ = {**PRODUCTION, "EXECUTION_MODE": "alpaca", "ALPACA_PAPER": "true"}
+
+    config = load_config(_catalog_yaml(tmp_path, auto_entry="paper", catalog=["pead"]), environ=environ)
+
+    assert config.execution.auto_entry_catalog == ("pead",)
+
+
+def test_load_config_treats_a_catalog_list_with_auto_entry_off_as_inert_and_warns(tmp_path, caplog):
+    environ = {**PRODUCTION, "EXECUTION_MODE": "alpaca", "ALPACA_PAPER": "true"}
+
+    with caplog.at_level(logging.WARNING, logger="copilot.config"):
+        config = load_config(_catalog_yaml(tmp_path, auto_entry="off", catalog=["pead"]), environ=environ)
+
+    assert config.execution.auto_entry == "off"
+    assert config.execution.auto_entry_catalog == ("pead",)
+    assert auto_entry_active(config) is False
+    warnings = [record.getMessage() for record in caplog.records if "auto_entry_catalog_inert" in record.getMessage()]
+    assert len(warnings) == 1 and "mode=off" in warnings[0]
+
+
+def test_load_config_does_not_warn_when_the_catalog_list_is_active_or_empty(tmp_path, caplog):
+    environ = {**PRODUCTION, "EXECUTION_MODE": "alpaca", "ALPACA_PAPER": "true"}
+
+    with caplog.at_level(logging.WARNING, logger="copilot.config"):
+        load_config(_catalog_yaml(tmp_path, auto_entry="paper", catalog=["pead"]), environ=environ)
+        load_config(_catalog_yaml(tmp_path, auto_entry="off", catalog=[]), environ=environ)
+
+    assert not [record for record in caplog.records if "auto_entry_catalog_inert" in record.getMessage()]
+
+
+def test_load_config_refuses_a_catalog_list_on_live_alpaca(tmp_path):
+    environ = {**PRODUCTION, "EXECUTION_MODE": "alpaca", "ALPACA_PAPER": "false"}
+
+    with pytest.raises(ValueError, match="execution.auto_entry"):
+        load_config(_catalog_yaml(tmp_path, auto_entry="paper", catalog=["pead", "insider_watch"]), environ=environ)
+
+
 def test_shipped_config_lifetime_evidence_threshold():
     config = load_config(str(SHIPPED), environ=PRODUCTION)
 
@@ -251,3 +311,74 @@ def test_the_shipped_config_scans_on_delayed_sip_while_quotes_stay_iex():
     # The shipped delay equals the code default; the field being set proves the YAML block was read.
     assert {"scan_bars", "sip_delay_minutes"} <= config.market_data.model_fields_set
     assert (config.market_data.bars_feed, config.alpaca_data_feed) == ("sip", "iex")
+
+
+def test_the_shipped_config_auto_enters_the_catalog_sources_and_caps_non_native_positions():
+    """Operator approval 2026-11-14: PEAD and insider-watch cards auto-enter on paper; O3 ships at 5 of 8 slots."""
+    config = load_config(str(SHIPPED), environ=PRODUCTION)
+
+    assert config.execution.auto_entry_catalog == ("pead", "insider_watch")
+    assert config.portfolio.max_non_native_positions == 5
+    assert config.portfolio.max_non_native_positions < config.portfolio.max_concurrent_positions
+    # The shipped values differ from the code defaults ((), None); the fields set prove the YAML was read.
+    assert "auto_entry_catalog" in config.execution.model_fields_set
+    assert "max_non_native_positions" in config.portfolio.model_fields_set
+
+
+def test_the_shipped_catalog_auto_entry_is_inactive_under_the_simulator():
+    config = load_config(str(SHIPPED), environ={**PRODUCTION, "EXECUTION_MODE": "paper"})
+
+    assert config.execution.auto_entry_catalog == ("pead", "insider_watch")
+    assert auto_entry_active(config) is False
+
+
+@pytest.mark.parametrize("execution_mode", ["alpaca", "paper"])
+def test_the_shipped_config_with_auto_entry_off_loads_and_marks_no_catalog_card(tmp_path, execution_mode):
+    """The runbook's off-switch: ``auto_entry: "off"`` alone, with the shipped catalog list left in place."""
+    path = tmp_path / "config.yaml"
+    document = yaml.safe_load(SHIPPED.read_text())
+    document["execution"]["auto_entry"] = "off"
+    path.write_text(yaml.safe_dump(document))
+    environ = {**PRODUCTION, "EXECUTION_MODE": execution_mode, "ALPACA_PAPER": "true"}
+
+    config = load_config(str(path), environ=environ)
+
+    assert config.execution.auto_entry == "off"
+    assert config.execution.auto_entry_catalog == ("pead", "insider_watch")
+    assert auto_entry_active(config) is False
+    for source in ("pead", "insider_watch"):
+        assert (
+            auto_entry_marker(
+                config,
+                trigger=ScanTrigger.SUGGESTION_SCAN,
+                is_catalog=True,
+                alpha=False,
+                lifetime_marker=None,
+                llm_verdict=None,
+                catalog_source=source,
+            )
+            is None
+        )
+
+
+def test_the_shipped_scorecard_block_reaches_app_config():
+    config = load_config(str(SHIPPED), environ=PRODUCTION)
+    card = config.scorecard
+
+    assert card.enabled is True
+    assert (card.due_weekday, card.due_time_et, card.activity_days, card.record_days) == (5, "09:00", 7, 90)
+    # The shipped block equals the code defaults; the fields set prove the YAML block was read.
+    assert {"enabled", "due_weekday", "due_time_et", "activity_days", "record_days"} <= card.model_fields_set
+
+
+def test_the_real_catalog_policies_each_resolve_an_entry_lifetime_as_stored_on_the_signal():
+    """An enabled catalog card is auto-entered only if its stored `alpha_policy` resolves a lifetime."""
+    config = load_config(str(SHIPPED), environ=PRODUCTION)
+    pead = pead_execution_policy(load_pead_entry(Path(config.apriori.pead_entry_path)).entry)
+    watch = frozen_watch_contract().policy
+
+    for stored in (pead.to_dict(), watch):
+        lifetime = entry_lifetime_of({"alpha_policy": stored})
+        assert lifetime is not None
+        # One regular session of resting entry (DAILY_ENTRY_LIFETIME_SECONDS) and the 20-session 15:45 ET exit.
+        assert (lifetime.resting_seconds, lifetime.holding_sessions, lifetime.close_time_et) == (57_600, 20, "15:45")

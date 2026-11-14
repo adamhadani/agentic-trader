@@ -95,5 +95,7 @@ within-session figure is -0.010R. So the recent sign depends on the estimand, an
 R5 asks that a source's `net_excess_r_v1` on its most recent window, shrunk, be at least zero before any
 auto-entry. PEAD v2 does not meet it: the shrunk recent figure is -0.040R +/- 0.049R. It is within one standard
 error of zero, so the data do not show a loss either, but a gate that requires the figure to be at least zero
-fails. PEAD cards stay tap-only, as they are today, and the figure goes on the card so the operator sees it
-beside the card's own risk.
+fails. PEAD cards stayed tap-only at the time of this analysis, and the figure goes on the card so the operator sees
+it beside the card's own risk. (Update 2026-11-14: the operator approved paper auto-entry for PEAD cards through
+`execution.auto_entry_catalog`, an explicit operator decision taken with the figure above in view, not a pass of
+R5; the entries are capped by `portfolio.max_non_native_positions` and earn no promotion credit.)

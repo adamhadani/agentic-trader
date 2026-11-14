@@ -89,7 +89,7 @@ measurement items it does not mention.
 | --- | --- | --- |
 | O1 (Sharadar) | — | Deferred by the operator 2026-10-30, no date; direction 2 is parked. Terms verified (Bundle $69/month or $499/year, no retention after cancellation, personal-use licence, publication limit): [README](alpha-directions-2026-10-30/README.md#sharadar-terms-and-evidence-verified-2026-10-30) |
 | O2 (≈ $550 spend cap) | — | On hold with O1 |
-| O3 (non-native sources ≤ 5 of 8 slots) | — | Approved 2026-10-30 (the principle; native keeps at least 3). The config change ships with the first path-to-cards spec, so PEAD and insider watch can still fill all 8 slots until then |
+| O3 (non-native sources ≤ 5 of 8 slots) | — | Approved 2026-10-30 (the principle; native keeps at least 3). Implemented 2026-11-14 with catalog auto-entry: `portfolio.max_non_native_positions: 5` ships in `config/config.yaml`, refuses a catalog, probe or alpha entry at admission (`non_native_capacity`) and stops catalog sources carding at the ceiling |
 | DP0 (`card_policy`) | — | Decided 2026-10-30: `enforce` at 0.0, shipped with the honest-stream PR, ahead of the date and with no preview evaluations |
 | DP1–DP4 | 11-20, 12-04, 12-18, holiday week | — |
 

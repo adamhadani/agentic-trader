@@ -1,4 +1,5 @@
 import io
+import logging
 import os
 import re
 from collections.abc import Mapping
@@ -62,6 +63,7 @@ from agentic_trader.research.alpha.probe import MAX_PROBE_TERM_DAYS
 from agentic_trader.research.alpha.universe import ETF_RESEARCH_UNIVERSE
 
 
+_logger = logging.getLogger("copilot.config")
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -554,13 +556,45 @@ class ReleaseExitConfig(BaseModel):
         return "off" if value is False else value
 
 
+class ScorecardConfig(BaseModel):
+    """The weekly lane scorecard (docs/superpowers/specs/2026-11-14-catalog-auto-entry-scorecard-design.md, part C).
+
+    The daemon's 15-minute job sends one Telegram message per ISO week, the first tick at or after the latest
+    ``due_weekday`` (Monday 0 .. Sunday 6) ``due_time_et`` New York time, so a daemon that was down at the due time
+    publishes the missed week on its next tick. ``activity_days`` New York days of activity, ``record_days`` trailing
+    days of realized and counterfactual record. The code default is on; it registers only in the daemon.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = True
+    due_weekday: int = Field(default=5, ge=0, le=6)
+    due_time_et: str = "09:00"
+    activity_days: int = Field(default=7, ge=1, le=90)
+    record_days: int = Field(default=90, ge=7, le=180)
+
+    @field_validator("due_time_et")
+    @classmethod
+    def valid_time(cls, value: str) -> str:
+        if not re.fullmatch(HHMM_PATTERN, value):
+            raise ValueError(f"Invalid HH:MM time: {value}")
+        return value
+
+    @model_validator(mode="after")
+    def record_covers_activity(self):
+        if self.record_days < self.activity_days:
+            raise ValueError("scorecard.record_days must be at least activity_days")
+        return self
+
+
 class InsiderWatchConfig(BaseModel):
     """Insider watch cards (docs/superpowers/specs/2026-10-23-insider-watch-cards-design.md).
 
     The daemon captures each SEC filing date's Form 4 filings for cohort v3 once per New York date
     (from ``backfill_from`` on a first run); the 10:35 suggestion scan applies the frozen ``insider`` v1
     cluster rule to the merged history (``archive_dir`` quarterly data sets, then the journaled captures)
-    and sends at most ``max_cards_per_session`` tap-only, unvalidated watch cards, none while
+    and sends at most ``max_cards_per_session`` unvalidated watch cards (tap-only unless
+    ``execution.auto_entry_catalog`` lists ``insider_watch``), none while
     ``max_open_positions`` watch positions are open, each capped at ``max_risk_per_trade_usd``.
     """
 
@@ -600,6 +634,10 @@ class PortfolioConfig(BaseModel):
     max_notional_exposure: float = 60000.0
     max_concurrent_contracts: int = 2
     max_concurrent_positions: int = 4
+    # Open plus in-flight catalog, watch, probe and alpha positions at which a non-native entry is refused at
+    # admission and the catalog sources stop carding, so natives keep the rest of ``max_concurrent_positions``.
+    # None (the code default) applies no non-native ceiling. A capacity rule, not an entry-risk rule.
+    max_non_native_positions: int | None = Field(default=None, ge=1)
     default_equity_risk_dollars: float = 250.0
     max_futures_exposure: float = 40000.0
     max_equity_exposure: float = 40000.0
@@ -608,6 +646,16 @@ class PortfolioConfig(BaseModel):
     max_correlation_threshold: float = 0.85
     enable_dynamic_correlation: bool = False
     correlation_groups: dict[str, list[str]] = Field(default_factory=lambda: dict(DEFAULT_CORRELATION_GROUPS))
+
+    @model_validator(mode="after")
+    def _non_native_cap_fits_the_book(self) -> PortfolioConfig:
+        cap = self.max_non_native_positions
+        if cap is not None and cap > self.max_concurrent_positions:
+            raise ValueError(
+                f"max_non_native_positions ({cap}) cannot exceed max_concurrent_positions "
+                f"({self.max_concurrent_positions})"
+            )
+        return self
 
 
 class RiskConfig(BaseModel):
@@ -905,6 +953,9 @@ class ExecutionConfig(BaseModel):
     native_entry_lifetime: Literal["off", "session"] = "off"
     # "paper": native suggestion-scan cards are entered automatically on the Alpaca paper account; "off": tap only.
     auto_entry: Literal["off", "paper"] = "off"
+    # Catalog card sources the auto-entry sweep also enters (no LLM approval needed: their evidence is the frozen
+    # rule): "pead" (the PEAD probe) and "insider_watch". Inert (a warning at load) unless `auto_entry` is "paper".
+    auto_entry_catalog: tuple[Literal["pead", "insider_watch"], ...] = ()
     # Consecutive failed reconciliation passes of one timed signal's evidence read before it becomes a review halt
     # (1: first failure). A pass is the 60 s monitor plus one per stream update and scan.
     lifetime_evidence_review_after_failures: int = Field(default=5, ge=1, le=60)
@@ -1194,6 +1245,7 @@ class AppConfig(BaseModel):
     earnings_capture: EarningsCaptureConfig = Field(default_factory=EarningsCaptureConfig)
     filing_veto: FilingVetoConfig = Field(default_factory=FilingVetoConfig)
     release_exit: ReleaseExitConfig = Field(default_factory=ReleaseExitConfig)
+    scorecard: ScorecardConfig = Field(default_factory=ScorecardConfig)
     explicit_contracts: tuple[str, ...] | None = None
     risk: RiskConfig = Field(default_factory=RiskConfig)
     strategies: StrategyConfig = Field(default_factory=StrategyConfig)
@@ -1474,6 +1526,7 @@ def load_config(
         earnings_capture=EarningsCaptureConfig(**(cfg_dict.get("earnings_capture") or {})),
         filing_veto=FilingVetoConfig(**(cfg_dict.get("filing_veto") or {})),
         release_exit=ReleaseExitConfig(**(cfg_dict.get("release_exit") or {})),
+        scorecard=ScorecardConfig(**(cfg_dict.get("scorecard") or {})),
         explicit_contracts=tuple(explicit_contracts),
         risk=RiskConfig(**cfg_dict.get("risk", {})),
         strategies=strategies_config,
@@ -1532,6 +1585,14 @@ def load_config(
         alpaca_data_feed=alpaca_data_feed,
         alpaca_paper=alpaca_paper,
     )
+    if config.execution.auto_entry_catalog and config.execution.auto_entry != "paper":
+        # Inert, not an error: ``auto_entry_marker`` marks nothing unless ``auto_entry_active``, so
+        # ``auto_entry: "off"`` alone is the off-switch and the daemon still starts.
+        _logger.warning(
+            "auto_entry_catalog_inert: execution.auto_entry_catalog is set but execution.auto_entry mode=%s; "
+            "no catalog card is auto-entered",
+            config.execution.auto_entry,
+        )
     if config.execution.auto_entry == "paper":
         if execution_mode == ExecutionMode.ALPACA and not alpaca_paper:
             raise ValueError("execution.auto_entry: paper is refused on a live Alpaca account; set it to off")

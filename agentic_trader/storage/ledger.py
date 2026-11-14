@@ -14,6 +14,8 @@ from agentic_trader.storage.workflow import WorkflowStore, encode
 
 
 LEDGER_STREAM = "account/ledger"
+# A checkpoint without a risk block is rare (only before the first valid one); bound the newest-first scan.
+_EQUITY_SCAN_LIMIT = 200
 
 
 class LedgerStore:
@@ -119,6 +121,30 @@ class LedgerStore:
         async with self.store.db.session_factory() as session:
             row = await session.get(LedgerCheckpointRecord, self.scope)
             return json.loads(row.payload) if row else {}
+
+    async def adjusted_equity_at(self, at: datetime) -> float | None:
+        """Cash-flow-adjusted equity of the latest ledger checkpoint recorded at or before ``at``.
+
+        Reads the journaled ``ledger_checkpoint`` events (``payload.risk.adjusted_equity``), newest first, and
+        skips a checkpoint that carries no risk block. ``None`` when none exists by then, never zero.
+        """
+        async with self.store.db.session_factory() as session:
+            stmt = (
+                select(DomainEventRecord.payload)
+                .where(
+                    DomainEventRecord.scope == self.scope,
+                    DomainEventRecord.stream == LEDGER_STREAM,
+                    DomainEventRecord.kind == EventKind.LEDGER_CHECKPOINT,
+                    DomainEventRecord.recorded_at <= at,
+                )
+                .order_by(DomainEventRecord.id.desc())
+                .limit(_EQUITY_SCAN_LIMIT)
+            )
+            for payload in await session.scalars(stmt):
+                risk = json.loads(payload).get("risk")
+                if isinstance(risk, dict) and risk.get("adjusted_equity") is not None:
+                    return float(risk["adjusted_equity"])
+        return None
 
     async def activities(self) -> list[dict[str, Any]]:
         async with self.store.db.session_factory() as session:

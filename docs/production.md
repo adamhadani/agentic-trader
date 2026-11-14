@@ -54,8 +54,10 @@ its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID 
 
 Scans stage suggestions; on a live or simulator account an operator approves entry orders. On the Alpaca
 paper account with `execution.auto_entry: paper` (shipped) the scheduled suggestion job also enters its sent
-native cards that the LLM gate approved itself ([auto-entry runbook](#auto-entry-paper)); a `--no-llm` daemon's
-cards, catalog, watch, alpha and probe cards stay tap-only. Configuration loads at construction. The
+native cards that the LLM gate approved itself, and, with `execution.auto_entry_catalog` (shipped `["pead",
+"insider_watch"]`), its PEAD-probe and insider-watch cards with no LLM approval ([auto-entry
+runbook](#auto-entry-paper)); a `--no-llm` daemon's native cards and every registry alpha card stay tap-only.
+Configuration loads at construction. The
 journal-backed alpha registry reloads atomically between scans; external config edits still require restart.
 
 ### Suggestion scans
@@ -1360,7 +1362,8 @@ Inspect with `copilot db queue --kind entry_cancel`.
 
 Contract and measurement: [paper auto-entry](paper-auto-entry.md). `execution.auto_entry: paper` is active only
 on Alpaca paper with `execution.native_entry_lifetime: session`; a live account, or `native_entry_lifetime:
-off`, refuses to start with it set, and the simulator leaves it inactive. `/status` and
+off`, refuses to start with it set, and the simulator leaves it inactive. In YAML write the off value quoted,
+`auto_entry: "off"`: a bare `off` parses as a boolean and fails validation. `/status` and
 `scripts/verify_runtime.py` show the setting and whether it is active.
 
 - **Only LLM-approved cards.** A native card is marked for auto-entry only when the LLM gate approved it (its
@@ -1368,8 +1371,24 @@ off`, refuses to start with it set, and the simulator leaves it inactive. `/stat
   records deterministic approvals with no verdict, so its suggestion cards are ordinary tap cards (Execute and
   Dismiss, no auto line) and the sweep enters none; an LLM error withholds the native card altogether
   ([LLM gate outage](#llm-gate-outage)).
-- **Turn it off.** Set `execution.auto_entry: off` in `config/config.yaml` and do the
-  [controlled restart](#controlled-maintenance-and-restart). There is no runtime command; `/panic` halts all
+- **Catalog cards.** `execution.auto_entry_catalog` (shipped `["pead", "insider_watch"]`, operator approval
+  2026-11-14) also marks an enabled PEAD-probe or insider-watch card of a scheduled suggestion scan, with no LLM
+  approval and the lifetime of its `alpha_policy`; admission, `probe_block_reason` and the frozen-contract check
+  still apply, and the watch card line reads "auto-entered on paper; unvalidated; earns no promotion credit".
+  Remove an id (or set `[]`) and do the [controlled restart](#controlled-maintenance-and-restart) to stop new
+  markers for that source. That does not stop a card already marked that day: while `auto_entry` stays on, the
+  sweep still enters it if the restart lands inside its `execution.card_freshness.fresh_seconds` (1,800 s)
+  window. To stop it, set `auto_entry: "off"` ([turn it off](#auto-entry-paper)) or `/cancel` the entry. The list
+  is inert, with an `auto_entry_catalog_inert` warning at load and "Auto-entry: off (catalog list inert)" in
+  `/status`, whenever `auto_entry` is `"off"`. `portfolio.max_non_native_positions` (shipped 5 of the 8 slots, `null` removes it) refuses a catalog,
+  probe or alpha entry with `non_native_capacity` once open plus in-flight non-native positions reach it: a
+  business refusal, not a halt, so look for that reason before suspecting the broker when a catalog card is not
+  entered.
+- **Turn it off.** Set `execution.auto_entry: "off"` (quoted) in `config/config.yaml` and do the
+  [controlled restart](#controlled-maintenance-and-restart). Leave `auto_entry_catalog` as it is: with the
+  switch off the list is inert (`auto_entry_marker` marks nothing), `load_config` logs one
+  `auto_entry_catalog_inert` warning and the daemon starts normally. A live-account deploy sets the same
+  `auto_entry: "off"`. There is no runtime command; `/panic` halts all
   new risk at once, and `/resume` follows the usual rules. Cards recorded while it was on keep their marker;
   after the restart the sweep and digest jobs are not registered, so a marked card still `PENDING` is not
   entered: it keeps its Dismiss-only card and expires with the session.
@@ -1403,6 +1422,32 @@ off`, refuses to start with it set, and the simulator leaves it inactive. `/stat
   `copilot db queue --kind entry`; `copilot cards outcomes` for `entry_trigger`, `operator_action` and the
   `operator` block ([card evidence](card-evidence.md#operator-outcomes)). The 20-session pass criteria are in
   the [auto-entry doc](paper-auto-entry.md#measurement).
+
+### Weekly scorecard
+
+One Telegram `MESSAGE` per ISO week answers "is anything working?" for the three lanes (native cards, the PEAD
+probe, insider watch): last week's cards sent, entries (auto and tap), fills, closes and realized R, the
+trailing 90 days' realized and counterfactual records, and the account's adjusted equity at both ends of the week
+([contract](card-evidence.md#weekly-scorecard)). Configuration is the `scorecard:` block (`enabled`, code default
+`true`; `due_weekday` 5 = Saturday; `due_time_et` `"09:00"`; `activity_days` 7; `record_days` 90).
+
+- **Preview.** `copilot cards scorecard [--days 7]` prints the same text and sends nothing. It reads the journal
+  and the ledger and fetches paced SIP bars through the delayed reader, so run it outside a scan window.
+- **Key and due time.** The daemon's `weekly_scorecard` job ticks every 15 minutes and at startup. The key is
+  `weekly-scorecard/{iso_year}-W{iso_week:02d}` (a `weekly_scorecard` event on stream `scorecard/weekly` shares the
+  transaction with the message), so a second tick or a restart queues nothing. It is due from Saturday 09:00 New
+  York time and a daemon that was down then publishes the missed week on its first tick up to 4 days after the
+  due (with the shipped Saturday due, through Wednesday 09:00 ET); a start after that sends nothing for the missed
+  week, and the next Saturday publishes the next week.
+  Quiet hours do not apply: it is not an incident notice.
+- **Failure and retry.** A running scan defers it. Any failure logs one `weekly_scorecard_failed` line with the
+  exception's type name only and the next 15-minute tick retries, until the catch-up window closes; nothing
+  raises into the scheduler and nothing halts. A lane whose counterfactual bars could not be read says so with a
+  type name and shows `n/a`; the rest of the message still goes out.
+- **Disable.** Set `scorecard.enabled: false` and do the [controlled restart](#controlled-maintenance-and-restart);
+  the job is then not registered. There is no runtime command.
+- **Reading it.** Descriptive only: nothing in `risk/`, admission or `card_policy` reads it. Its footer says that
+  counterfactual labels assume study-price fills and that no lane has validated edge.
 
 ### Timed alpha lifecycle operations
 

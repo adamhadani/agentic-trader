@@ -55,9 +55,15 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    reserve risk and join the durable FIFO. On an Alpaca paper account with `execution.auto_entry: paper`
    (shipped; requires `native_entry_lifetime: session`) the scheduled suggestion job's sweep calls the same
    `execute_signal_by_id` for its sent native `SUGGESTION_SCAN` cards that the LLM gate approved (applied,
-   `approved: true`, no error), tagged `entry_trigger: auto`; a `--no-llm` scan's cards, catalog,
-   watch, alpha and probe cards stay tap-only, and a live account refuses to start with it set
-   ([paper auto-entry](docs/paper-auto-entry.md)). Only a valid preflight token commits
+   `approved: true`, no error), tagged `entry_trigger: auto`; a `--no-llm` scan's native cards, alpha cards and futures stay
+   tap-only. Since the 2026-11-14 operator approval `execution.auto_entry_catalog` (shipped `["pead", "insider_watch"]`, code default `[]`,
+   inert, with a load warning, unless `auto_entry: paper`) also marks an enabled PEAD-probe or insider-watch card of that scan: no LLM
+   approval (its LLM pass is commentary and its evidence is the frozen rule), the lifetime of its `alpha_policy`
+   through `entry_lifetime_of`, and the same admission, `probe_block_reason` and frozen-contract checks as a tap; a
+   live account refuses to start with `auto_entry: paper` ([paper auto-entry](docs/paper-auto-entry.md)). Operator decision
+   O3 is implemented: `portfolio.max_non_native_positions` (shipped 5 of the 8 slots, code default `None`) refuses a
+   catalog, probe or alpha entry at admission with `non_native_capacity` (a business refusal, no halt) and catalog
+   sources stop carding at the ceiling. Only a valid preflight token commits
    `submitting`; never expire or replay a broker submission. Unknown outcomes halt
    new risk and recover by exact client ID, including after a 404. Alpaca admission
    requires fresh journaled account drawdown; every tier shares its cap. Final
@@ -87,18 +93,21 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
 
    **Paper probes:** `probe` is a third registry list, valid only in the `…/alpaca:paper`
    scope. `probe_block_reason` is the single liveness rule for snapshot, sweep and
-   admission. Probes are risk-capped, expiring, renewable only while unkilled (−4R
+   admission; the PEAD probe card auto-enters on paper when `auto_entry_catalog` lists `pead`, otherwise it is
+   tap-only. Probes are risk-capped, expiring, renewable only while unkilled (−4R
    from first enrolment, sticky per version), and earn no shadow, holdout or promotion
    credit. Never make `active` depend on the account being paper; leaving `probe`
    never touches the broker.
 
    **Insider watch cards:** operator-requested discretionary cards from the failed-but-informative `insider` v1
    leg ([watch cards](docs/apriori-alphas.md#watch-cards)): the frozen rule runs live at the 10:35 scan
-   (`insider_watch.enabled`, `card_kind` `watch`, strategy `insider_watch_long`), tap-only, never auto-entered,
-   never enrolled in the registry or a probe, at most 2 per session and 4 open, `$100` risk cap, labelled
-   "unvalidated". They earn no shadow, holdout or promotion credit; admission refuses a tap whose policy
-   differs from the frozen contract. Only an unavailable decision notifies; `cards outcomes` reports an
-   `insider_watch` block ([card evidence](docs/card-evidence.md#insider-watch-outcomes)).
+   (`insider_watch.enabled`, `card_kind` `watch`, strategy `insider_watch_long`), auto-entered on paper when
+   `auto_entry_catalog` lists `insider_watch` (shipped; the card says "auto-entered on paper; unvalidated; earns no
+   promotion credit") and tap-only otherwise, never enrolled in the registry or a probe, at most 2 per session and 4
+   open, `$100` risk cap, labelled "unvalidated". They earn no shadow, holdout or promotion credit; admission refuses
+   a signal whose policy differs from the frozen contract. Only an unavailable decision notifies; `cards outcomes`
+   reports an `insider_watch` block that counts `taps` and `auto_entries` apart
+   ([card evidence](docs/card-evidence.md#insider-watch-outcomes)).
 2. **Closure:** `PositionCloseService` persists exclusive intent, confirms exact
    order-group cancellation, revalidates position/session and submits once.
    `/flatten` previews by default and preserves halt state. Partial/ambiguous
@@ -143,6 +152,12 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    three broker-work checks can never be removed from `exempt_components`. The summary also lists the prior trading day's
    release-exit gaps (missing pass, `unknown` native positions, refused/failed/errored closes never notified, owed closes never attempted), each position with `/close <signal_id>`.
    The daemon's earnings capture journals `earnings/calendar/<date>` once per New York weekday after 06:00 ET outside scan windows, all-or-nothing (`earnings_capture` readiness, stale after 4 days, [production](docs/production.md#earnings-calendar-capture)); the release exit reads it (`reports_between`) beside the live Nasdaq lookup, so turning the capture off makes an `unknown` release-exit status more likely; the earnings blackout (scan and tap, one `resolve_earnings`) falls back to the same capture when the live lookup fails, and with neither source `risk.earnings_calendar_unknown` `closed` (shipped; code default `open`) refuses equity entries.
+   The daemon's weekly scorecard (`scorecard:`, code default on) queues one Telegram `MESSAGE` per ISO week, key
+   `weekly-scorecard/{iso_year}-W{iso_week:02d}` with a `weekly_scorecard` journal event, from Saturday 09:00 ET
+   (catch-up up to 4 days after the due, never twice in a week): per lane (native, PEAD probe, insider watch) last
+   week's activity, the trailing-90-day realized and counterfactual records and the account's adjusted equity;
+   descriptive, never a gate, and a failure logs a type name and retries
+   ([runbook](docs/production.md#weekly-scorecard), [card evidence](docs/card-evidence.md#weekly-scorecard)).
    The daemon's EDGAR filings capture (`filing_veto.capture`) journals dated NT-filing, adverse 8-K and offering evidence for the filing veto (`filings_capture` readiness, stale after `filing_veto.max_age_seconds`; stale or missing evidence never vetoes), and ships in `enforce` with the release exit (2026-11-16).
    Suggestion scans run at configured New York times and spend a derived per-session
    card budget (signals table, ET trading day); `PENDING` cards reserve no capacity;

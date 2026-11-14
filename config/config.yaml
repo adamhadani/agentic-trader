@@ -4,6 +4,7 @@ portfolio:
   max_notional_exposure: 60000.0
   max_concurrent_contracts: 2
   max_concurrent_positions: 8 # paper desk cap (September 22)
+  max_non_native_positions: 5 # operator decision O3, approved 2026-11-14: catalog, probe and alpha entries share 5 of the 8 slots, so natives keep 3
   max_correlated_positions: 2 # open positions per correlation group (universe sectors)
   default_equity_risk_dollars: 250.0
 
@@ -362,7 +363,8 @@ sizing:
 
 execution:
   native_entry_lifetime: session # an unfilled native entry cancels before the next open (Alpaca only)
-  auto_entry: paper # scheduled-scan native cards are entered automatically (Alpaca paper only; needs session lifetime)
+  auto_entry: paper # scheduled-scan native cards are entered automatically (Alpaca paper only; needs session lifetime); "off" (quoted: a bare off is a YAML boolean) turns all auto-entry off, the catalog list below going inert
+  auto_entry_catalog: ["pead", "insider_watch"] # operator approval 2026-11-14: these catalog cards also auto-enter on the scheduled scan, with no LLM approval and the lifetime of their frozen policy; [] restores tap-only
   lifetime_evidence_review_after_failures: 5 # consecutive failed reconciliation passes (60 s monitor + stream updates and scans; about 5 min when only the monitor runs) of a timed position's evidence read before a review halt; passes while the regular session is certainly closed do not count for an entry the journal shows filled
   entry_trade_max_age_seconds: 300.0 # IEX prints are sparse on mid caps; the quote keeps its 60 s limit
   entry_evidence_max_age_seconds: 30.0 # age starts before the first account/book read
@@ -594,7 +596,8 @@ llm_gate:
 
 # Insider watch cards (docs/superpowers/specs/2026-10-23-insider-watch-cards-design.md): a nightly SEC Form 4
 # capture for cohort v3 (EDGAR_USER_AGENT from the environment) feeds the frozen `insider` v1 cluster rule; the
-# 10:35 scan sends at most 2 tap-only, unvalidated watch cards. Never auto-entered, no probe or promotion credit.
+# 10:35 scan sends at most 2 unvalidated watch cards. Auto-entered on paper since the 2026-11-14 operator approval
+# (execution.auto_entry_catalog), tap-only when that list omits insider_watch; no probe or promotion credit.
 insider_watch:
   enabled: true
   max_cards_per_session: 2
@@ -625,3 +628,13 @@ release_exit:
 earnings_capture:
   enabled: true
   horizon_days: 28
+
+# Weekly lane scorecard (docs/superpowers/specs/2026-11-14-catalog-auto-entry-scorecard-design.md): one Telegram message
+# per ISO week from Saturday 09:00 ET (catch-up up to 4 days, never twice). Operator approval 2026-11-14; preview with
+# `copilot cards scorecard`; `enabled: false` stops the job.
+scorecard:
+  enabled: true
+  due_weekday: 5       # Monday 0 .. Sunday 6
+  due_time_et: "09:00"
+  activity_days: 7
+  record_days: 90

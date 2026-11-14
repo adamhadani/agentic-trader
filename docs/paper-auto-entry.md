@@ -1,4 +1,4 @@
-# Paper auto-entry for native suggestion cards
+# Paper auto-entry for native and catalog suggestion cards
 
 Review item 1.4 (CS-R4, CS-R5, CS-R6); design `docs/superpowers/specs/2026-10-27-paper-auto-entry-design.md`.
 Operator decision D9 (2026-10-23), confirmed for this item on 2026-10-27. It builds on the
@@ -11,28 +11,77 @@ what it did. On the **Alpaca paper account** every native suggestion card is now
 path a tap uses, with every risk rule still applied at admission. The operator keeps a veto. Nothing here
 changes risk rules, admission, `card_policy`, book sizing or the card budget.
 
+**Catalog sources (2026-11-14).** The same switch also enters the PEAD probe and insider watch cards, when
+`execution.auto_entry_catalog` lists them ([catalog sources](#catalog-sources)). Operator decision O3
+(non-native sources share at most 5 of the 8 slots) shipped with it ([non-native cap](#non-native-cap)).
+
 ## Switch and scope
 
-- `execution.auto_entry: off | paper` (code default `off`; `config/config.yaml` ships `paper`), read by
+- `execution.auto_entry: "off" | "paper"` (code default `off`; `config/config.yaml` ships `paper`; quote `"off"` in
+  YAML, a bare `off` is a boolean and fails validation), read by
   `load_config`. `auto_entry_active(config)` is true only when it is `paper`, `execution_mode` is `alpaca`,
   `alpaca_paper` is true and `execution.native_entry_lifetime` is `session`. Under the simulator
   (`EXECUTION_MODE=paper`) it is inactive and nothing errors.
 - `load_config` refuses to start when `auto_entry` is `paper` and the account is Alpaca live, or
   `native_entry_lifetime` is `off` (an auto entry must never rest as an untimed GTC order). A live deploy sets
-  `auto_entry: off` explicitly.
+  `auto_entry: "off"` explicitly; `auto_entry_catalog` may stay set, inert.
 - The sweep re-checks `is_paper_scope(workflows.scope)` immediately before the entry call; a non-paper scope
   refuses with reason `not_paper_scope` and journals it.
-- A card is auto-eligible only when it was **sent** by a `SUGGESTION_SCAN` (not the swing or intraday
+- A native card is auto-eligible only when it was **sent** by a `SUGGESTION_SCAN` (not the swing or intraday
   journal-only jobs, not an operator `/scan`), is native (not a catalog card: no PEAD drift, no insider watch
   card, no `alpha_policy`/`alpha_version`), carries the 1.3 lifetime marker
   (`decision_provenance["entry_lifetime"]`), **the LLM gate approved it** (its `llm_verdict` is present, with
   `applied` and `approved` exactly `true` and `error` null), and `auto_entry_active` held at record time. It
   records `decision_provenance["auto_entry"] = {"mode": "paper"}`, which the card renderer, notices, digest and
-  `cards outcomes` read. A re-priced card never carries it: it is an ordinary tap card. Watch, catalog, alpha
-  and probe cards stay tap-only. A card no LLM approved is never auto-entered: a daemon started with
-  `copilot service daemon --no-llm` scans with deterministic approvals and no verdict, so its native cards are
+  `cards outcomes` read. A re-priced card never carries it: it is an ordinary tap card. Registry alpha cards and
+  futures stay tap-only, and so does a catalog card whose source `auto_entry_catalog` does not list. A native
+  card no LLM approved is never auto-entered: a daemon started with `copilot service daemon --no-llm` scans
+  with deterministic approvals and no verdict, so its native cards are
   ordinary tap cards (Execute and Dismiss, no auto line), and an LLM error withholds the native card altogether
   (`llm_unavailable`, [production](production.md#llm-gate-outage)).
+
+## Catalog sources
+
+`execution.auto_entry_catalog` (code default `[]`; `config/config.yaml` ships `["pead", "insider_watch"]` since the
+2026-11-14 operator approval) lists the catalog card sources the same sweep enters. The ids are `pead` (the PEAD
+paper probe) and `insider_watch`; any other id fails validation, and a non-empty list needs `execution.auto_entry:
+paper` to act: with `auto_entry: "off"` a non-empty list is inert (`auto_entry_marker` returns None before the
+catalog branch, `load_config` logs one `auto_entry_catalog_inert` warning with the mode, and `/status` reads
+"Auto-entry: off (catalog list inert)"), so `auto_entry: "off"` alone is the off-switch. A live Alpaca account
+refuses `auto_entry: paper` as before. Remove an id, or set `[]`, and do the
+[controlled restart](production.md#controlled-maintenance-and-restart) to stop new markers for a source; a card
+already marked that day is still entered by the sweep within its 1,800 s window while `auto_entry` stays on
+(`auto_entry: "off"` or `/cancel` stops it).
+
+- **Marker.** A catalog card of a listed source, recorded by a scheduled suggestion scan while `auto_entry_active`
+  holds, gets the same `decision_provenance["auto_entry"] = {"mode": "paper"}` marker. It needs **no LLM approval**:
+  its LLM pass is commentary only and its evidence is the frozen rule, so a commentary failure does not block it.
+  It carries no native lifetime marker either: its lifetime is its `alpha_policy`'s, read through
+  `entry_lifetime_of`, and a card whose stored policy resolves none is sent as a tap card. The shipped PEAD
+  probe policy and the frozen insider-watch contract policy both resolve one session of resting entry and a
+  15:45 New York time exit (a shipped-config test asserts the resolved lifetime's `resting_seconds` 57,600,
+  `holding_sessions` 20 and `close_time_et` "15:45").
+- **Unchanged.** The sweep, the 1,800 s abandonment, the re-card, the notices and the digest are the native path.
+  The tap gates and admission still run in full, including `probe_block_reason` (the sticky −4R kill) for PEAD,
+  the frozen-contract check for watch, the per-source caps and the risk caps ($100 for watch). Registry alpha
+  cards, operator `/scan`, swing and intraday journal-only scans and futures are not eligible.
+- **Card text.** The auto-entry line renders on a marked catalog card. The watch card's policy clause reads
+  "auto-entered on paper; unvalidated; earns no promotion credit" while its source is listed, and "tap-only,
+  never auto-entered; earns no promotion credit" when it is not, or when the sweep refused or abandoned the card
+  (it is a tap card again beside its refusal line). Both are pinned by tests.
+- **Labels.** `entry_trigger: auto` marks the entries; the watch block of `cards outcomes` and the weekly
+  scorecard count auto entries apart from taps.
+
+## Non-native cap
+
+`portfolio.max_non_native_positions` (code default `None`, off; shipped `5`; 1 up to
+`max_concurrent_positions`) is operator decision O3 (approved 2026-10-30, implemented 2026-11-14). Non-native means
+a catalog or watch strategy (`pead_long`, `insider_watch_long`), a registry probe, or an `alpha_version`; the
+predicate equals `_release_exit_scope != native`. Under the alpha lock, admission refuses such an entry with
+`non_native_capacity` when the scope's open non-native positions plus in-flight non-native submissions reach the
+cap: a business refusal like the per-source caps, so no halt. Catalog sources read the same combined count as a
+ceiling and never card when full; an event crowded out stays in its source's decision journal and keeps its
+counterfactual label. Natives keep at least 3 of the 8 slots. Set it to `null` and restart to remove the cap.
 
 ## The entry
 
@@ -120,7 +169,8 @@ its auto line already says it; refused and abandoned re-cards, and any card rend
     card's message id is unchanged on this path, so the strike reaches the card that said "no tap needed";
   - a `FAILED` card keeps the existing `entry/{work_id}/rejected` notice;
   - `skipped_not_pending` sends nothing.
-- The watch card's "tap-only, never auto-entered" line stays true and is pinned by a test.
+- The watch card's "tap-only, never auto-entered" line stays true for a source `auto_entry_catalog` does not list
+  and for a refused or abandoned card, and is pinned by a test.
 
 ## Notices and the digest
 
@@ -156,7 +206,13 @@ immediate notices. For an entry whose work item carries `entry_trigger: auto`:
 `cards outcomes` ([card evidence](card-evidence.md#operator-outcomes)) is descriptive and never a gate:
 
 - Every card row has `entry_trigger` (`auto | tap | none`) and `operator_action`.
-- `summarize_execution` counts `taps` and `auto_entries` apart; `mean_tap_age_seconds` is taps only.
+- `summarize_execution` counts `taps` and `auto_entries` apart; `mean_tap_age_seconds` is taps only. The
+  `insider_watch` block splits its `taps` (a tap-triggered entry) from `auto_entries` the same way
+  ([watch outcomes](card-evidence.md#insider-watch-outcomes)); the PEAD probe's forward record never read the
+  trigger and is unchanged.
+- The [weekly scorecard](card-evidence.md#weekly-scorecard) reports each lane's auto and tap entries, fills and
+  closes every Saturday. A catalog auto entry earns no promotion credit: the PEAD probe's shadow, holdout and
+  kill rules and the watch lane's "unvalidated" label are unchanged.
 - The `operator` block holds counts by slot, trigger and strategy, tap latency (taps only), `tap_era` and
   `kept_vs_vetoed`.
 
@@ -190,7 +246,8 @@ reconciled with realized R card by card.
 
 ## Out of scope
 
-Auto-entry for PEAD drift, insider watch, alpha or probe cards or any live account; a runtime on/off command
+Auto-entry for registry alpha cards, futures or any live account (PEAD drift and insider watch are in scope
+only through `auto_entry_catalog`, above); a runtime on/off command
 (the switch is config plus a controlled restart; `/panic` still halts all new risk); batching ratchet notices;
 an operator resolve path for an `UNKNOWN` cancel; any change to risk rules, admission, `card_policy`, book
 sizing or the card budget.

@@ -1,6 +1,7 @@
 """Explicitly opted-in integration tests against a disposable test_ PostgreSQL database."""
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -18,7 +19,7 @@ from agentic_trader.diagnostics.incidents import ComponentTally, IncidentPhase
 from agentic_trader.execution.durable import EventKind, NotificationKind, ScanTrigger, WorkKind, WorkStatus
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.storage.db import SignalDatabase
-from agentic_trader.storage.ledger import LedgerStore
+from agentic_trader.storage.ledger import LEDGER_STREAM, LedgerStore
 from agentic_trader.storage.maintenance import RetentionService
 from agentic_trader.storage.migrations import (
     downgrade_migrations,
@@ -26,7 +27,7 @@ from agentic_trader.storage.migrations import (
     run_migrations_head,
     to_sync_url,
 )
-from agentic_trader.storage.models import SignalRecord
+from agentic_trader.storage.models import DomainEventRecord, SignalRecord
 from agentic_trader.storage.operations import OperationsStore
 from agentic_trader.storage.workflow import WorkflowStore
 
@@ -429,6 +430,33 @@ async def test_postgres_account_ledger_fences_independent_importers(postgres_tes
         await second.engine.dispose()
 
 
+async def test_postgres_ledger_adjusted_equity_at_reads_checkpoint_events(postgres_test_db):
+    db = SignalDatabase(db_url=postgres_test_db)
+    try:
+        ledger = LedgerStore(db.workflows)
+        async with db.session_factory() as session, session.begin():
+            for key, day, risk in (
+                ("a", 7, {"adjusted_equity": "100000.50"}),
+                ("b", 10, None),
+                ("c", 13, {"adjusted_equity": "102500.25"}),
+            ):
+                session.add(
+                    DomainEventRecord(
+                        scope=ledger.scope,
+                        event_key=f"equity-{key}",
+                        stream=LEDGER_STREAM,
+                        kind=EventKind.LEDGER_CHECKPOINT,
+                        payload=json.dumps({"risk": risk}),
+                        recorded_at=datetime(2026, 11, day, 14, tzinfo=UTC),
+                    )
+                )
+        assert await ledger.adjusted_equity_at(datetime(2026, 11, 6, tzinfo=UTC)) is None
+        assert await ledger.adjusted_equity_at(datetime(2026, 11, 11, tzinfo=UTC)) == pytest.approx(100000.50)
+        assert await ledger.adjusted_equity_at(datetime(2026, 11, 14, tzinfo=UTC)) == pytest.approx(102500.25)
+    finally:
+        await db.engine.dispose()
+
+
 async def test_postgres_ledger_transaction_does_not_block_entry_admission_lock(postgres_test_db):
     db = SignalDatabase(db_url=postgres_test_db)
     try:
@@ -691,5 +719,46 @@ async def test_postgres_scan_journal_event_and_notice_commit_together(postgres_t
         [item] = await db.workflows.list_work(WorkKind.NOTIFICATION)
         assert item.payload["kind"] == NotificationKind.MESSAGE
         assert item.payload["arguments"] == {"text": notice.text, "formatted": False}
+    finally:
+        await db.engine.dispose()
+
+
+async def test_postgres_non_native_capacity_counts_open_and_in_flight_entries(postgres_test_db, app_config):
+    """The O3 cap against real PostgreSQL: EXECUTED plus SUBMITTING non-native signals count, a native one never does."""
+    db = SignalDatabase(db_url=postgres_test_db)
+    try:
+
+        async def signal(contract: str, status: str, *, strategy: str = "pead_long", policy: dict | None = None) -> int:
+            return await db.record_signal(
+                contract=contract,
+                strategy=strategy,
+                direction="LONG",
+                entry_price=100.0,
+                stop_loss=95.0,
+                take_profit=110.0,
+                risk_dollars=5.0,
+                asset_class="EQUITY",
+                quantity=1,
+                status=status,
+                alpha_policy={"kind": "bracket"} if policy is None and strategy == "pead_long" else policy,
+            )
+
+        await signal("OPEN1", "EXECUTED")
+        await signal("OPEN2", "EXECUTED")
+        await signal("FLY1", "SUBMITTING")
+        await signal("NATV", "EXECUTED", strategy="TREND_PULLBACK")  # native: never counted
+        pending = await signal("NEXT", "PENDING")
+        native = await signal("NATN", "PENDING", strategy="TREND_PULLBACK")
+
+        async def judge(signal_id: int, cap: int | None) -> str | None:
+            app_config.portfolio.max_non_native_positions = cap
+            async with db.session_factory() as session, session.begin():
+                row = await session.get(SignalRecord, signal_id)
+                return await db.workflows._non_native_capacity_rejection(session, row, app_config)
+
+        assert (await judge(pending, 3)).startswith("non_native_capacity")  # 3 counted + itself > 3
+        assert await judge(pending, 4) is None
+        assert await judge(native, 3) is None
+        assert await judge(pending, None) is None
     finally:
         await db.engine.dispose()

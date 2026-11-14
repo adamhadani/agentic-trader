@@ -90,8 +90,11 @@ v4 finalist whose picks still overlap either entry is not probe-eligible; see
 
 ## Part 2: live paper probe
 
-A passing leg runs only as a catalog paper probe — never automatically, never active
-or shadow, and never combined with the DSL registry's promotion path. The probe
+A passing leg runs only as a catalog paper probe — enrolled by the operator and never
+automatically, never active or shadow, and never combined with the DSL registry's promotion path. Since 2026-11-14
+the PEAD probe's card is auto-entered on the Alpaca paper account while `execution.auto_entry_catalog` lists
+`pead` (a tap-only card otherwise); that is an entry convenience under the same caps, not promotion credit
+([paper auto-entry](paper-auto-entry.md#catalog-sources)). The probe
 is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
 (`load_catalog_probe` rejects any leg outside `LIVE_LEGS = ("LONG",)`).
 
@@ -149,7 +152,8 @@ is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
   reached"`, `status` stays `"ok"`, payload `open_drift_positions`) but sends no
   drift card and reads no drift-only bars.
 - **LLM commentary only.** The evaluator's LLM call still runs, but its verdict is
-  stored as `llm_verdict` in the signal's evaluation and never gates the card; the
+  stored as `llm_verdict` in the signal's evaluation and never gates the card, nor its
+  paper auto-entry (`auto_entry_catalog` needs no LLM approval); the
   thesis is prefixed "LLM commentary (not a gate): …". The bracket, quantity and
   time exit come entirely from the frozen policy.
 - **Fail-closed behaviour.** Admission fails closed for the catalog strategy IDs
@@ -291,8 +295,11 @@ card says "INSIDER WATCH — unvalidated".
   (`AprioriBracketPolicy` with `SessionLifetimePolicy`, one-session resting entry), risk capped at
   `max_risk_per_trade_usd` ($100). The card shows the buyer count, total opportunistic dollars, filing dates, an
   EDGAR issuer link and the study line (+0.087R, not significant on its own; +0.070R vs matched, 90% CI
-  excludes 0). The LLM writes commentary only; every `risk/` rule still applies. The card is tap-only; nothing enters without the tap, and
-  admission refuses a signal whose `alpha_policy` differs byte for byte from the frozen contract.
+  excludes 0). The LLM writes commentary only; every `risk/` rule still applies. The card is auto-entered on paper while `execution.auto_entry_catalog`
+  lists `insider_watch` (shipped since 2026-11-14; the card says "auto-entered on paper; unvalidated; earns no promotion
+  credit") and tap-only otherwise, and either way admission refuses a signal whose `alpha_policy` differs byte for
+  byte from the frozen contract. Auto entries share the $100 risk cap and the `portfolio.max_non_native_positions`
+  ceiling and earn no probe, shadow or promotion credit.
 - **Evidence.** Every decision is one `insider_watch_decision` event (sent or not, with its outcome or
   eligibility reason); `cards outcomes` labels them
   ([block](card-evidence.md#insider-watch-outcomes)). Nothing here validates the leg: reopening it as an alpha

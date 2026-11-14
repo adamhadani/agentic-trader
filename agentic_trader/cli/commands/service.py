@@ -796,6 +796,26 @@ def register_release_exit_job(scheduler: Any, copilot: Any, config: AppConfig) -
     )
 
 
+def register_scorecard_job(scheduler: Any, copilot: Any, config: AppConfig) -> None:
+    """Register the weekly scorecard tick (every 15 minutes and once at startup); none while disabled.
+
+    ``publish_weekly_scorecard`` is due from the configured New York weekday and time, queues one Telegram
+    message per ISO week (the key makes a second tick or a restart a no-op, a missed week publishes on the first
+    tick that follows), waits for a running scan, and never raises into the scheduler. One instance at a time.
+    """
+    if not config.scorecard.enabled:
+        return
+    scheduler.add_job(
+        copilot.publish_weekly_scorecard,
+        "interval",
+        minutes=15,
+        id="weekly_scorecard",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(UTC),
+    )
+
+
 @click.command("daemon", help="Run continuous daemon scanner and trade manager")
 @click.option(
     "--no-llm",
@@ -909,6 +929,8 @@ async def daemon(no_llm: bool) -> None:
     register_auto_entry_jobs(scheduler, copilot, config)
     # The release exit: one journaled pass per trading day shortly before the close (preview or enforce).
     register_release_exit_job(scheduler, copilot, config)
+    # The weekly lane scorecard: one Telegram message per ISO week, from Saturday 09:00 ET by default.
+    register_scorecard_job(scheduler, copilot, config)
     # Schedule daily morning macro briefing (Monday - Friday)
     if config.scheduler.macro_briefing_enabled:
         scheduler.add_job(

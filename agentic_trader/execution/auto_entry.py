@@ -14,6 +14,9 @@ from agentic_trader.execution.durable import EntryTrigger, ScanTrigger
 
 AUTO_ENTRY_KEY = "auto_entry"
 AUTO_ENTRY_MARKER = {"mode": "paper"}
+# A watch card's facts carry this flag when its source is auto-entered, so the card (and a later re-render of it,
+# when the entry has closed) says so instead of "tap-only".
+AUTO_ENTRY_SOURCE_FACT = "auto_entry_source"
 # The journaled reason: a desk-authored reply without markup, at most this many characters.
 AUTO_ENTRY_REASON_CHARS = 300
 ABANDONED_REASON = "not_attempted_in_time"
@@ -56,6 +59,8 @@ def auto_entry_status_line(config: AppConfig) -> str:
     if auto_entry_active(config):
         return "Auto-entry: paper (on)"
     if config.execution.auto_entry == "off":
+        if config.execution.auto_entry_catalog:
+            return "Auto-entry: off (catalog list inert)"
         return "Auto-entry: off"
     return "Auto-entry: inactive (not an Alpaca paper account)"
 
@@ -82,21 +87,28 @@ def auto_entry_marker(
     alpha: bool,
     lifetime_marker: dict[str, Any] | None,
     llm_verdict: Mapping[str, Any] | None,
+    catalog_source: str | None = None,
 ) -> dict[str, Any] | None:
-    """The marker an eligible card records: a native, lifetime-marked card of a scheduled suggestion scan that the
-    LLM gate approved.
+    """The marker an eligible card records, or None for an ordinary tap card.
 
-    ``llm_verdict`` is the card's recorded ``llm_verdict`` block (``TradingCopilot._llm_block``); see
-    ``llm_approved``. Without an LLM approval the card is an ordinary tap card.
+    Two kinds of card are eligible, both only on a scheduled suggestion scan of an active paper account:
+
+    - a native, lifetime-marked card that the LLM gate approved (``llm_verdict`` is the card's recorded
+      ``llm_verdict`` block, ``TradingCopilot._llm_block``; see ``llm_approved``); without an approval it is
+      a tap card;
+    - a catalog card (``is_catalog``) whose source id, ``catalog_source`` (``pead`` or ``insider_watch``), is
+      in ``execution.auto_entry_catalog``. It needs no LLM approval (its evidence is the frozen rule and its
+      LLM pass is commentary only) and no native ``lifetime_marker``: its lifetime is its ``alpha_policy``'s,
+      read through ``entry_lifetime_of``, which the caller has confirmed resolves. A registry alpha card
+      (``alpha``) is never eligible.
     """
-    if (
-        not auto_entry_active(config)
-        or trigger != ScanTrigger.SUGGESTION_SCAN
-        or is_catalog
-        or alpha
-        or lifetime_marker is None
-        or not llm_approved(llm_verdict)
-    ):
+    if not auto_entry_active(config) or trigger != ScanTrigger.SUGGESTION_SCAN or alpha:
+        return None
+    if is_catalog:
+        if catalog_source is None or catalog_source not in config.execution.auto_entry_catalog:
+            return None
+        return dict(AUTO_ENTRY_MARKER)
+    if lifetime_marker is None or not llm_approved(llm_verdict):
         return None
     return dict(AUTO_ENTRY_MARKER)
 

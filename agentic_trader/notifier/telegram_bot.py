@@ -46,6 +46,7 @@ from agentic_trader.constants import (
     RuntimeEnvironment,
     SignalStatus,
 )
+from agentic_trader.execution.auto_entry import AUTO_ENTRY_SOURCE_FACT
 from agentic_trader.execution.card_evidence import (
     format_evidence_lines,
     format_pead_base_rate_lines,
@@ -302,7 +303,17 @@ def _is_watch(facts: dict[str, Any] | None) -> bool:
     return facts is not None and facts.get("kind") == "insider_watch"
 
 
-def _watch_block(facts: dict[str, Any] | None, *, markup: bool) -> str:
+def _watch_policy_line(facts: dict[str, Any], auto_entry: str | None) -> str:
+    """The watch card's policy clause: auto-entered when its source is enabled (the facts' flag), else tap-only.
+
+    A card the sweep refused or abandoned is a tap card again, so it reads tap-only beside its refusal line.
+    """
+    if facts.get(AUTO_ENTRY_SOURCE_FACT) and auto_entry not in ("refused", "abandoned"):
+        return "auto-entered on paper; unvalidated; earns no promotion credit"
+    return "tap-only, never auto-entered; earns no promotion credit"
+
+
+def _watch_block(facts: dict[str, Any] | None, *, markup: bool, auto_entry: str | None = None) -> str:
     """An insider watch card's header and cluster facts (``card_facts`` of kind ``insider_watch``), or "".
 
     The buyers are counted, never named: the line links the issuer's EDGAR insider-transactions page
@@ -329,8 +340,7 @@ def _watch_block(facts: dict[str, Any] | None, *, markup: bool) -> str:
         link = f" · EDGAR insider filings: {url}" if url else ""
         study = WATCH_STUDY_LINE
     return (
-        f"👀 {header} — risk capped at ${float(facts['risk_cap']):,.0f}; "
-        "tap-only, never auto-entered; earns no promotion credit\n"
+        f"👀 {header} — risk capped at ${float(facts['risk_cap']):,.0f}; {_watch_policy_line(facts, auto_entry)}\n"
         f"👥 {int(facts['buyers'])} officer/director buyers · "
         f"${float(facts['opp_dollars']):,.0f} opportunistic open-market purchases · filed {filed}{link}\n"
         f"⏱️ {facts['holding_sessions']}-session hold · time exit {exit_text} unless the stop or target fills first\n"
@@ -496,7 +506,7 @@ def format_alert_card(
 
     # Using HTML formatting for rock-solid reliability with special characters
     text = (
-        f"{_watch_block(card_facts, markup=True)}"
+        f"{_watch_block(card_facts, markup=True, auto_entry=auto_entry)}"
         f"{auto_block}"
         f"{drift_block}"
         f"{updated_card_prefix}"
@@ -656,7 +666,7 @@ def format_terminal_card(
     )
 
     border = "=" * 65
-    watch_block = _watch_block(card_facts, markup=False)
+    watch_block = _watch_block(card_facts, markup=False, auto_entry=auto_entry)
     return f"""
 {border}
 {watch_block}{auto_block}{updated_card_prefix}📋 SETUP: {qty_str} {eval_res.contract} ({eval_res.direction})

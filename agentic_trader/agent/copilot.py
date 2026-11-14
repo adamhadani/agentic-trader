@@ -98,6 +98,7 @@ from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessServi
 from agentic_trader.execution.auto_entry import (
     ABANDONED_REASON,
     AUTO_ENTRY_KEY,
+    AUTO_ENTRY_SOURCE_FACT,
     EXPIRED_REASON,
     NOT_PAPER_REASON,
     REJECTED_AT_SUBMISSION_REASON,
@@ -141,7 +142,11 @@ from agentic_trader.execution.freshness import (
     round_to_tick,
     valid_until_from_provenance,
 )
-from agentic_trader.execution.lifetime_policy import NATIVE_ENTRY_LIFETIME_KEY, native_entry_lifetime_marker
+from agentic_trader.execution.lifetime_policy import (
+    NATIVE_ENTRY_LIFETIME_KEY,
+    entry_lifetime_of,
+    native_entry_lifetime_marker,
+)
 from agentic_trader.execution.lifetimes import RestingCancelResult, TradeLifetimeService
 from agentic_trader.execution.release_exit import NATIVE_SCOPE, ReleaseExitService, RunStatus
 from agentic_trader.market.session import (
@@ -166,6 +171,7 @@ from agentic_trader.presentation.formatters import (
     TelegramHtmlFormatter,
     TerminalFormatter,
 )
+from agentic_trader.presentation.scorecard import format_scorecard
 from agentic_trader.research.alpha.evidence import load_forward_evidence
 from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG, is_paper_scope
 from agentic_trader.research.alpha.shadow import AlphaShadowService
@@ -174,6 +180,7 @@ from agentic_trader.research.apriori.pead_base_rate import BaseRateUnavailable, 
 from agentic_trader.research.apriori.watch_contract import INSIDER_WATCH_STRATEGY_ID
 from agentic_trader.research.pooled.entry import REPO_ROOT
 from agentic_trader.research.setups.card_stats import CardStatsSnapshot
+from agentic_trader.research.setups.card_stats_worker import in_scan_window
 from agentic_trader.research.setups.net_excess import NET_EXCESS_UNIT
 from agentic_trader.research.setups.ranker import (
     cached_ranker,
@@ -183,6 +190,7 @@ from agentic_trader.research.setups.ranker import (
     setup_features,
     shadow_blocks,
 )
+from agentic_trader.research.setups.scorecard import build_scorecard, scorecard_due, scorecard_key
 from agentic_trader.research.setups.sources import build_bar_source
 from agentic_trader.resilience.reads import DEFAULT_READ_WORKERS, BoundedReadExecutor
 from agentic_trader.risk import (
@@ -516,7 +524,7 @@ class TradingCopilot:
                         "decision_time_et": self.earnings_drift.decision_time_et,
                     },
                 )
-        # Insider watch cards (unvalidated, tap-only) at the same 10:35 decision. Construction reads the
+        # Insider watch cards (unvalidated; tap-only unless execution.auto_entry_catalog lists insider_watch) at the same 10:35 decision. Construction reads the
         # frozen entry and protocol files only; the archive and every provider read happen inside a scan.
         self.insider_watch_source: InsiderWatchSource | None = None
         if config.insider_watch.enabled:
@@ -787,6 +795,14 @@ class TradingCopilot:
     def _today_et() -> date:
         """The current New York date: the session a catalog decision is dated by."""
         return datetime.now(UTC).astimezone(ET_TZ).date()
+
+    @staticmethod
+    def _catalog_lifetime_resolves(alpha_policy: Mapping[str, Any] | None) -> bool:
+        """Whether a catalog card's policy declares an entry lifetime the one resolver reads (never raises)."""
+        try:
+            return entry_lifetime_of({"alpha_policy": alpha_policy}) is not None
+        except ValueError:
+            return False
 
     def _catalog_strategy_ids(self) -> frozenset[str]:
         return frozenset(source.strategy_id for source in self.catalog_sources)
@@ -1504,7 +1520,7 @@ class TradingCopilot:
                 for event in prep.events:
                     symbol = event["symbol"]
                     if run.capped:
-                        run.outcomes[symbol] = run.source.position_cap_reason
+                        run.outcomes[symbol] = run.cap_reason
                         continue
                     try:
                         cand = run.source.candidate(event, datasets.get(symbol), prep)
@@ -1925,13 +1941,27 @@ class TradingCopilot:
                     # Paper auto-entry (item 1.4): a native, lifetime-marked card of a scheduled suggestion scan
                     # that the LLM gate approved is entered by the sweep (`auto_enter_pending`) instead of waiting
                     # for a tap. A card no LLM approved (a `--no-llm` scan's) stays an ordinary tap card.
+                    # A catalog source listed in `execution.auto_entry_catalog` (PEAD probe, insider watch) is
+                    # entered too, without an LLM approval, but only when its policy's lifetime resolves through
+                    # the one resolver: a card whose lifetime cannot be resolved stays a tap card. A catalog
+                    # card carries the policy (and the PEAD probe a version) of its source, so only a non-catalog
+                    # card with one is a registry alpha.
+                    catalog_source = catalog.source.source_id if catalog is not None else None
+                    if catalog_source is not None and not self._catalog_lifetime_resolves(candidate.alpha_policy):
+                        logger.warning(
+                            "Catalog card %s has no resolvable entry lifetime; it stays a tap card",
+                            catalog_source,
+                            extra={"event": "catalog_auto_entry_lifetime_unresolved", "source": catalog_source},
+                        )
+                        catalog_source = None
                     auto_marker = auto_entry_marker(
                         self.config,
                         trigger=trigger,
                         is_catalog=is_catalog,
-                        alpha=bool(candidate.alpha_policy or candidate.alpha_version),
+                        alpha=not is_catalog and bool(candidate.alpha_policy or candidate.alpha_version),
                         lifetime_marker=lifetime_marker,
                         llm_verdict=llm_by_rank[rank - 1],
+                        catalog_source=catalog_source,
                     )
 
                     # Record to database
@@ -1968,7 +1998,7 @@ class TradingCopilot:
                                 if catalog is not None
                                 else self._dynamic_tag(candidate.contract, dynamic_sources)
                             ),
-                            # A watch card is tap-only: auto-entry (item 1.4) must exclude card_kind "watch".
+                            # A watch card never earns promotion credit; the auto-entry marker decides tap-only vs auto (auto_entry_catalog).
                             **(
                                 {"card_kind": "watch"} if catalog is not None and catalog.source.kind == "watch" else {}
                             ),
@@ -1996,8 +2026,14 @@ class TradingCopilot:
                             "probe_risk_cap": self.config.alpha_pipeline.probe_risk_dollars
                             if candidate.probe
                             else None,
+                            # The source fact marks only a "card_facts" card (insider watch); a PEAD ("drift") card
+                            # renders the generic auto-entry line and carries no source fact.
                             **(
-                                {catalog.source.notification_key: facts}
+                                {
+                                    catalog.source.notification_key: {**facts, AUTO_ENTRY_SOURCE_FACT: True}
+                                    if auto_marker and catalog.source.notification_key == "card_facts"
+                                    else facts
+                                }
                                 if catalog is not None
                                 and (facts := catalog.source.card_facts(candidate, catalog.preparation)) is not None
                                 else {}
@@ -5314,6 +5350,53 @@ class TradingCopilot:
             )
         except Exception:
             logger.exception("Auto-entry digest failed", extra={"event": "auto_entry_digest_failed"})
+            return False
+
+    async def publish_weekly_scorecard(self, now: datetime | None = None) -> bool:
+        """Queue the weekly lane scorecard once per ISO week (the daemon's 15-minute job); True when queued.
+
+        Due from ``scorecard.due_weekday`` / ``due_time_et`` New York time and for ``SCORECARD_CATCH_UP`` after
+        it, so a daemon down at the due time publishes the missed week on its next tick, a restart after a publish
+        sends nothing (the key exists) and a restart late in the week sends nothing. A scan in flight or inside its window (as for the card-stats worker), a key already queued or a not-yet-due
+        week returns False; a failure logs only its type name, returns False and retries on the next tick.
+        Nothing raises into the scheduler.
+        """
+        settings = self.config.scorecard
+        if not settings.enabled:
+            return False
+        current = now or datetime.now(UTC)
+        try:
+            due = scorecard_due(current, weekday=settings.due_weekday, time_et=settings.due_time_et)
+            if due is None:
+                return False
+            key = scorecard_key(due)
+            if await self.db.workflows.notification_queued(key):
+                return False
+            if self.scan_running:
+                logger.debug("Weekly scorecard deferred: a scan is running", extra={"event": "weekly_scorecard"})
+                return False
+            if in_scan_window(current.astimezone(ET_TZ), self.config.scheduler.suggestion_scan_times_et):
+                logger.debug("Weekly scorecard deferred: a scan window", extra={"event": "weekly_scorecard"})
+                return False
+            card = await build_scorecard(
+                self.db,
+                self.config,
+                now=current,
+                activity_days=settings.activity_days,
+                record_days=settings.record_days,
+            )
+            return await self.db.workflows.queue_weekly_scorecard(
+                key,
+                format_scorecard(card),
+                {"due": due.isoformat(), "window_start": card.window_start.isoformat()},
+            )
+        except Exception as exc:
+            # The type name only: a provider's message can name a host or an account.
+            logger.warning(
+                "Weekly scorecard failed (%s); retrying next tick",
+                type(exc).__name__,
+                extra={"event": "weekly_scorecard_failed", "error_type": type(exc).__name__},
+            )
             return False
 
     async def publish_scan_digest(self, et_date: str | None = None) -> str:

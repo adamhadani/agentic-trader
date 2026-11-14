@@ -33,10 +33,11 @@ APPROVED = {
 }
 
 
-def _config(*, mode=ExecutionMode.ALPACA, paper=True, lifetime="session", auto="paper") -> AppConfig:
+def _config(*, mode=ExecutionMode.ALPACA, paper=True, lifetime="session", auto="paper", catalog=()) -> AppConfig:
     config = AppConfig(execution_mode=mode, alpaca_paper=paper)
     config.execution.native_entry_lifetime = lifetime
     config.execution.auto_entry = auto
+    config.execution.auto_entry_catalog = catalog
     return config
 
 
@@ -59,6 +60,7 @@ def test_auto_entry_active_truth_table(config, active):
     [
         (_config(), "Auto-entry: paper (on)"),
         (_config(auto="off"), "Auto-entry: off"),
+        (_config(auto="off", catalog=("pead",)), "Auto-entry: off (catalog list inert)"),
         (_config(mode=ExecutionMode.PAPER), "Auto-entry: inactive (not an Alpaca paper account)"),
         (_config(lifetime="off"), "Auto-entry: inactive (not an Alpaca paper account)"),
     ],
@@ -140,6 +142,100 @@ def test_marker_is_a_fresh_copy_and_inactive_config_gives_none():
             _config(auto="off"),
             trigger=ScanTrigger.SUGGESTION_SCAN,
             is_catalog=False,
+            alpha=False,
+            lifetime_marker=LIFETIME,
+            llm_verdict=APPROVED,
+        )
+        is None
+    )
+
+
+# --- catalog sources (PEAD probe, insider watch): marked by source, no LLM approval, no native lifetime ----------
+
+
+def _catalog_marker(config, *, source="pead", trigger=ScanTrigger.SUGGESTION_SCAN, alpha=False, llm_verdict=None):
+    return auto_entry_marker(
+        config,
+        trigger=trigger,
+        is_catalog=True,
+        alpha=alpha,
+        lifetime_marker=None,
+        llm_verdict=llm_verdict,
+        catalog_source=source,
+    )
+
+
+def test_code_default_enables_no_catalog_source():
+    assert AppConfig().execution.auto_entry_catalog == ()
+    assert _catalog_marker(_config()) is None
+
+
+@pytest.mark.parametrize("source", ["pead", "insider_watch"])
+def test_an_enabled_catalog_source_is_marked_without_an_llm_approval_or_native_lifetime(source):
+    config = _config(catalog=("pead", "insider_watch"))
+
+    assert _catalog_marker(config, source=source) == {"mode": "paper"}
+    # Commentary (applied False), an erroring commentary call and a missing verdict never block it.
+    assert _catalog_marker(config, source=source, llm_verdict={**APPROVED, "applied": False}) == {"mode": "paper"}
+    assert _catalog_marker(config, source=source, llm_verdict={**APPROVED, "applied": False, "error": "T"}) == {
+        "mode": "paper"
+    }
+
+
+def test_each_source_is_enabled_on_its_own():
+    assert _catalog_marker(_config(catalog=("pead",)), source="insider_watch") is None
+    assert _catalog_marker(_config(catalog=("insider_watch",)), source="pead") is None
+    assert _catalog_marker(_config(catalog=("insider_watch",)), source="insider_watch") == {"mode": "paper"}
+
+
+def test_a_catalog_source_outside_the_list_or_unnamed_gets_no_marker():
+    config = _config(catalog=("pead",))
+
+    assert _catalog_marker(config, source="exdiv") is None
+    assert _catalog_marker(config, source=None) is None
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        _config(catalog=("pead",), auto="off"),
+        _config(catalog=("pead",), paper=False),
+        _config(catalog=("pead",), mode=ExecutionMode.PAPER),
+        _config(catalog=("pead",), lifetime="off"),
+    ],
+)
+def test_an_inactive_account_never_marks_a_catalog_card(config):
+    assert _catalog_marker(config) is None
+
+
+@pytest.mark.parametrize("trigger", [ScanTrigger.SWING_SCAN, ScanTrigger.OPERATOR_SCAN])
+def test_only_the_scheduled_suggestion_scan_marks_a_catalog_card(trigger):
+    assert _catalog_marker(_config(catalog=("pead",)), trigger=trigger) is None
+
+
+def test_an_alpha_card_is_never_marked_through_a_catalog_source():
+    assert _catalog_marker(_config(catalog=("pead",)), alpha=True) is None
+
+
+def test_a_native_card_still_needs_the_llm_whatever_the_catalog_list_says():
+    config = _config(catalog=("pead", "insider_watch"))
+    native = {"trigger": ScanTrigger.SUGGESTION_SCAN, "is_catalog": False, "alpha": False, "lifetime_marker": LIFETIME}
+
+    assert auto_entry_marker(config, **native, llm_verdict=None) is None
+    assert auto_entry_marker(config, **native, llm_verdict={**APPROVED, "applied": False}) is None
+    assert auto_entry_marker(config, **native, llm_verdict=APPROVED) == {"mode": "paper"}
+    # A native card (no catalog source) with no lifetime marker stays a tap card.
+    assert auto_entry_marker(config, **{**native, "lifetime_marker": None}, llm_verdict=APPROVED) is None
+
+
+def test_a_catalog_card_without_a_source_name_is_the_old_refusal():
+    config = _config(catalog=("pead",))
+
+    assert (
+        auto_entry_marker(
+            config,
+            trigger=ScanTrigger.SUGGESTION_SCAN,
+            is_catalog=True,
             alpha=False,
             lifetime_marker=LIFETIME,
             llm_verdict=APPROVED,
