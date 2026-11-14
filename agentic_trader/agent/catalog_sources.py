@@ -10,7 +10,7 @@ Every decision, sent or not, is journaled as one ``journal_kind`` event on ``sca
 ``TradingCopilot.run_scan`` loops over ``TradingCopilot.catalog_sources``. ``PeadDriftSource``
 (the PEAD catalog paper probe, ``kind="probe"``) is the first implementation; ``InsiderWatchSource``
 (``agent/insider_watch.py``, ``kind="watch"``) is an unvalidated, operator-judged card with no probe
-credit that is never auto-entered.
+credit; it is auto-entered on paper only when ``execution.auto_entry_catalog`` lists it (the PEAD probe likewise).
 """
 
 from __future__ import annotations

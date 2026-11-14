@@ -670,11 +670,45 @@ nothing in `risk/`, `card_policy`, `card_stats` or admission reads it, and a wat
 - **Blocks.** `all`, `sent_events` and `unsent_events`, each with `n`, `mean_r_cost` and `mean_beta_excess_r`:
   `r_cost` minus the past-only trailing beta (the controls above) times SPY's return over the same holding
   window in R units. A row without a beta (`short_history`, a failed daily read) is left out of the excess mean.
-- **Taps and fills.** From `insider_watch_long` signals in the window: `taps` counts signals that left the card
-  (any status but pending, dismissed or expired) and `fills` those with an `executed_at`. `bar_failures`
-  names symbols whose bars could not be read.
+- **Taps, auto entries and fills.** From `insider_watch_long` signals in the window: `taps` counts signals whose
+  entry work item is a tap (a signal with no entry item counts when it left the card, any status but pending,
+  dismissed or expired, with no auto-entry marker),
+  `auto_entries` those whose entry work item carries `entry_trigger: auto`
+  ([catalog auto-entry](paper-auto-entry.md#catalog-sources)), and `fills` those with an `executed_at`.
+  `bar_failures` names symbols whose bars could not be read. With the source auto-entered the tap count falls
+  toward zero, so the sent-versus-unsent comparison below no longer measures discretion; read it as a record of
+  the frozen rule. The PEAD probe's forward record never read the trigger and is unchanged.
 - **Reading it.** The sent-versus-unsent comparison is the only view of whether the discretionary tap helps or
   hurts; both are small, censored samples, so read them as a record, never as a gate or an edge estimate.
+
+## Weekly scorecard
+
+`research/setups/scorecard.py` (`build_scorecard`, model `LaneScorecard`) and `presentation/scorecard.py`
+(`format_scorecard`) produce the weekly lane scorecard that the daemon sends once per ISO week
+([runbook](production.md#weekly-scorecard)) and `copilot cards scorecard [--days 7]` previews without sending.
+It is descriptive and read-only: nothing in `risk/`, admission, `card_policy` or `card_stats` reads it. The
+`cards outcomes` producers (native labelling, the PEAD probe record, the watch block) live in the same module and
+print unchanged. One row per lane (native, PEAD probe, insider watch):
+
+- **Activity (last `activity_days`, 7, New York days).** Cards sent, entries split into auto and tap, fills, closes
+  and the sum of realized R.
+- **Realized record (trailing `record_days`, 90).** Closed trades, mean realized R (`realized_pnl / risk_dollars`,
+  the formula of the probe's forward record; a closed row with unknown pnl or risk is not counted) and open
+  positions.
+- **Counterfactual record (same trailing window).** Matured labels and their mean `r_cost`, plus the beta-matched
+  SPY excess where the lane has one (native and watch; PEAD shows `n/a`).
+- **Account.** Adjusted equity at the window's start and end, from ledger checkpoints, or `n/a`.
+
+Measurement notes:
+
+- The signal filter matches the probe record: only signals of this environment and execution mode, never a
+  quarantined one, so an unknown-execution-mode row is not counted.
+- Closes and realized R count by exit time. Cards sent and entries count by signal time. A trade can therefore
+  be closed this week against a card sent in an earlier one, and the two columns do not reconcile row by row.
+- Counterfactual labels assume study-price fills (the labeller's proxy bracket, not the entry the desk got), and
+  no lane has validated edge: the footer says both. Read the realized and counterfactual records side by side as a
+  record, never as a gate or an edge estimate.
+- A lane whose bars cannot be read shows `n/a` and a type-name note; the message is still sent.
 
 ## LLM gate identity and outages
 

@@ -591,7 +591,8 @@ class InsiderWatchConfig(BaseModel):
     The daemon captures each SEC filing date's Form 4 filings for cohort v3 once per New York date
     (from ``backfill_from`` on a first run); the 10:35 suggestion scan applies the frozen ``insider`` v1
     cluster rule to the merged history (``archive_dir`` quarterly data sets, then the journaled captures)
-    and sends at most ``max_cards_per_session`` tap-only, unvalidated watch cards, none while
+    and sends at most ``max_cards_per_session`` unvalidated watch cards (tap-only unless
+    ``execution.auto_entry_catalog`` lists ``insider_watch``), none while
     ``max_open_positions`` watch positions are open, each capped at ``max_risk_per_trade_usd``.
     """
 

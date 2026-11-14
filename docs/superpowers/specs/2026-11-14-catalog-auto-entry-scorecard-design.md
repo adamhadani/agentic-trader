@@ -77,8 +77,8 @@ paper book, and it gives the operator a weekly view of whether anything is worki
     excess where the lane has it (native, watch). PEAD shows "n/a" for SPY.
   - **Account:** adjusted equity at the window's start and end, from ledger checkpoints.
 - **Delivery.** A daemon job ticks every 15 minutes and publishes once per ISO week.
-  - **When:** due Saturday 09:00 ET. If the daemon was down, it publishes on the next tick before the next
-    week's due time, never twice in a week.
+  - **When:** due Saturday 09:00 ET. If the daemon was down, it publishes on the next tick up to 4 days after
+    the Saturday due, never twice in a week.
   - **How it runs:** in a worker thread, paced like `CardStatsWorker`, skipped while a scan runs.
   - **Output:** one `NotificationKind.MESSAGE` with key `weekly-scorecard/{iso_year}-W{iso_week}` and a journal
     event.

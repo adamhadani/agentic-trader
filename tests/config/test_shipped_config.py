@@ -16,7 +16,10 @@ from agentic_trader.config import AppConfig, ExecutionConfig, LLMGateConfig, loa
 from agentic_trader.constants import DEFAULT_POSTGRES_DB_URL
 from agentic_trader.data.edgar_filings import FilingCategory
 from agentic_trader.execution.auto_entry import auto_entry_active
+from agentic_trader.execution.lifetime_policy import entry_lifetime_of
+from agentic_trader.research.apriori.catalog import load_pead_entry, pead_execution_policy
 from agentic_trader.research.apriori.pead_base_rate import load_pead_base_rate
+from agentic_trader.research.apriori.watch_contract import frozen_watch_contract
 from agentic_trader.research.setups.card_prior import load_prior
 
 
@@ -290,3 +293,44 @@ def test_the_shipped_config_scans_on_delayed_sip_while_quotes_stay_iex():
     # The shipped delay equals the code default; the field being set proves the YAML block was read.
     assert {"scan_bars", "sip_delay_minutes"} <= config.market_data.model_fields_set
     assert (config.market_data.bars_feed, config.alpaca_data_feed) == ("sip", "iex")
+
+
+def test_the_shipped_config_auto_enters_the_catalog_sources_and_caps_non_native_positions():
+    """Operator approval 2026-11-14: PEAD and insider-watch cards auto-enter on paper; O3 ships at 5 of 8 slots."""
+    config = load_config(str(SHIPPED), environ=PRODUCTION)
+
+    assert config.execution.auto_entry_catalog == ("pead", "insider_watch")
+    assert config.portfolio.max_non_native_positions == 5
+    assert config.portfolio.max_non_native_positions < config.portfolio.max_concurrent_positions
+    # The shipped values differ from the code defaults ((), None); the fields set prove the YAML was read.
+    assert "auto_entry_catalog" in config.execution.model_fields_set
+    assert "max_non_native_positions" in config.portfolio.model_fields_set
+
+
+def test_the_shipped_catalog_auto_entry_is_inactive_under_the_simulator():
+    config = load_config(str(SHIPPED), environ={**PRODUCTION, "EXECUTION_MODE": "paper"})
+
+    assert config.execution.auto_entry_catalog == ("pead", "insider_watch")
+    assert auto_entry_active(config) is False
+
+
+def test_the_shipped_scorecard_block_reaches_app_config():
+    config = load_config(str(SHIPPED), environ=PRODUCTION)
+    card = config.scorecard
+
+    assert card.enabled is True
+    assert (card.due_weekday, card.due_time_et, card.activity_days, card.record_days) == (5, "09:00", 7, 90)
+    # The shipped block equals the code defaults; the fields set prove the YAML block was read.
+    assert {"enabled", "due_weekday", "due_time_et", "activity_days", "record_days"} <= card.model_fields_set
+
+
+def test_the_real_catalog_policies_each_resolve_an_entry_lifetime_as_stored_on_the_signal():
+    """An enabled catalog card is auto-entered only if its stored `alpha_policy` resolves a lifetime."""
+    config = load_config(str(SHIPPED), environ=PRODUCTION)
+    pead = pead_execution_policy(load_pead_entry(Path(config.apriori.pead_entry_path)).entry)
+    watch = frozen_watch_contract().policy
+
+    for stored in (pead.to_dict(), watch):
+        lifetime = entry_lifetime_of({"alpha_policy": stored})
+        assert lifetime is not None
+        assert lifetime.resting_seconds > 0

@@ -523,7 +523,7 @@ class TradingCopilot:
                         "decision_time_et": self.earnings_drift.decision_time_et,
                     },
                 )
-        # Insider watch cards (unvalidated, tap-only) at the same 10:35 decision. Construction reads the
+        # Insider watch cards (unvalidated; tap-only unless execution.auto_entry_catalog lists insider_watch) at the same 10:35 decision. Construction reads the
         # frozen entry and protocol files only; the archive and every provider read happen inside a scan.
         self.insider_watch_source: InsiderWatchSource | None = None
         if config.insider_watch.enabled:
@@ -1997,7 +1997,7 @@ class TradingCopilot:
                                 if catalog is not None
                                 else self._dynamic_tag(candidate.contract, dynamic_sources)
                             ),
-                            # A watch card is tap-only: auto-entry (item 1.4) must exclude card_kind "watch".
+                            # A watch card never earns promotion credit; the auto-entry marker decides tap-only vs auto (auto_entry_catalog).
                             **(
                                 {"card_kind": "watch"} if catalog is not None and catalog.source.kind == "watch" else {}
                             ),

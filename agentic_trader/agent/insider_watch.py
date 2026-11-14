@@ -1,9 +1,10 @@
 """Insider watch cards: the frozen ``insider`` v1 cluster rule, applied live at the 10:35 suggestion scan.
 
 Spec: docs/superpowers/specs/2026-10-23-insider-watch-cards-design.md, section 3. The v1 leg failed P1 and
-passed P2, so the rule is shown to the operator as an unvalidated, tap-only card (``kind == "watch"``): no
-registry, probe, shadow or promotion credit, never auto-entered. Item 1.4 (auto-entry) must exclude every
-card whose source ``kind`` is ``watch``; the card's ``decision_provenance["card_kind"]`` says so too.
+passed P2, so the rule is shown to the operator as an unvalidated card (``kind == "watch"``): no registry,
+probe, shadow or promotion credit. It is tap-only unless ``execution.auto_entry_catalog`` lists ``insider_watch``
+(operator approval 2026-11-14), when the paper auto-entry sweep also enters it without LLM approval; the card's
+``decision_provenance["card_kind"]`` says ``watch`` either way, and the card line says which.
 
 One decision per New York session (``CatalogCardSource``):
 
