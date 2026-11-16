@@ -250,6 +250,20 @@ def test_entry_trade_max_age_default_shipped_value_and_bounds():
             ExecutionConfig(entry_trade_max_age_seconds=value)
 
 
+def test_entry_quote_and_clock_max_age_defaults_shipped_values_and_bounds():
+    assert ExecutionConfig().entry_quote_max_age_seconds == 120
+    assert ExecutionConfig().entry_clock_max_age_seconds == 60
+    shipped = load_config(str(SHIPPED), environ=PRODUCTION).execution
+    assert shipped.entry_quote_max_age_seconds == 120.0
+    assert shipped.entry_clock_max_age_seconds == 60.0
+    for value in (0, 301, float("inf"), float("nan")):
+        with pytest.raises(ValueError, match="entry_quote_max_age_seconds"):
+            ExecutionConfig(entry_quote_max_age_seconds=value)
+    for value in (0, 301, float("inf"), float("nan")):
+        with pytest.raises(ValueError, match="entry_clock_max_age_seconds"):
+            ExecutionConfig(entry_clock_max_age_seconds=value)
+
+
 def test_shipped_prior_matches_config():
     policy = load_config(str(SHIPPED), environ=PRODUCTION).card_policy
 

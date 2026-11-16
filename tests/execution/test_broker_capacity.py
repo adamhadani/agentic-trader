@@ -144,7 +144,7 @@ def test_current_quote_exposure_cannot_bypass_notional_ceiling(capacity_case):
 def test_age_covers_entire_acquisition_and_market_observations(capacity_case, clock):
     context = capacity_case[1]
     if clock == "quote":
-        context.quote.timestamp -= timedelta(minutes=5)
+        context.quote.timestamp -= timedelta(minutes=6)
     elif clock == "trade_timestamp":
         context.trade_timestamp -= timedelta(minutes=6)
     else:
@@ -166,10 +166,25 @@ def test_trade_older_than_trade_limit_is_refused(capacity_case):
         assess(capacity_case)
 
 
-def test_quote_limit_is_unchanged_with_a_fresh_trade(capacity_case):
+def test_quote_older_than_a_minute_but_within_quote_limit_is_admitted(capacity_case):
+    # ASND, 2026-11-16: a standing IEX quote 81 s old and a 108 s old trade refused a PEAD auto-entry.
     context = capacity_case[1]
-    context.quote.timestamp -= timedelta(seconds=61)
+    context.quote.timestamp -= timedelta(seconds=81)
+    context.trade_timestamp -= timedelta(seconds=108)
+    assess(capacity_case)
+
+
+def test_quote_older_than_quote_limit_is_refused(capacity_case):
+    # The quote is the liveness evidence: a trade inside its 300 s limit does not rescue a 121 s quote.
+    context = capacity_case[1]
+    context.quote.timestamp -= timedelta(seconds=121)
     context.trade_timestamp -= timedelta(seconds=1)
+    with pytest.raises(ValueError, match="Market quote is stale"):
+        assess(capacity_case)
+
+
+def test_future_quote_beyond_skew_is_refused(capacity_case):
+    capacity_case[1].quote.timestamp += timedelta(seconds=5)
     with pytest.raises(ValueError, match="Market quote is stale"):
         assess(capacity_case)
 

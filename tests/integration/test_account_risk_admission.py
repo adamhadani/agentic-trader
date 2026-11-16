@@ -119,6 +119,41 @@ async def test_entry_with_a_two_minute_old_trade_submits_once(risk_execution_des
 
 
 @pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
+async def test_entry_with_a_ninety_second_old_quote_submits_once(risk_execution_desk):
+    copilot, venue, _state, order = risk_execution_desk
+    entry = copilot.entry_service
+    item, reason = await entry.store.enqueue_entry(order, copilot.config)
+    assert item is not None, reason
+    now = datetime.now(UTC)
+    venue.quote_time = now - timedelta(seconds=90)
+    venue.trade_time = now - timedelta(seconds=110)
+    assert await entry.dispatch_one()
+    assert (await entry.store.get_work(item.id)).status == WorkStatus.ACCEPTED
+    posts = mutations(venue)
+    assert len(posts) == 1 and posts[0][0] == "POST"
+
+
+@pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
+async def test_over_age_quote_is_refused_by_the_submission_recheck(risk_execution_desk):
+    copilot, venue, _state, order = risk_execution_desk
+    store = copilot.db.workflows
+    item, reason = await store.enqueue_entry(order, copilot.config)
+    assert item is not None, reason
+    claim = await store.claim_entry(lease_seconds=60)
+    checked = await copilot.ledger.current_risk()
+    now = datetime.now(UTC)
+    venue.quote_time = now - timedelta(seconds=121)
+    venue.trade_time = now - timedelta(seconds=1)
+    context = await copilot.broker.entry_market_context(order)
+    reason = await store.begin_submission(
+        claim, copilot.config, preflight_risk_fingerprint=checked.fingerprint, broker_context=context
+    )
+    assert "Market quote is stale" in reason
+    assert (await store.get_work(claim.id)).status == WorkStatus.CHECKING
+    assert not mutations(venue)
+
+
+@pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
 async def test_benign_refresh_during_preflight_submits_once(risk_execution_desk, caplog):
     copilot, venue, _state, order = risk_execution_desk
     entry = copilot.entry_service

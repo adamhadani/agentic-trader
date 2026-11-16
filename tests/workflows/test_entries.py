@@ -126,12 +126,15 @@ async def test_outbox_retry_is_delivery_only(store, app_config, mock_notifier):
     assert mock_notifier.send_exit_alert.await_count == 2
 
 
-@pytest.mark.parametrize("minutes,stale", [(6, "market trade"), (2, "market quote")])
-async def test_price_freshness_rechecked_after_slow_macro_admission(service, store, entry, monkeypatch, minutes, stale):
+@pytest.mark.parametrize("minutes,stale,quote_limit", [(6, "market trade", 300), (2, "market quote", 60)])
+async def test_price_freshness_rechecked_after_slow_macro_admission(
+    service, store, entry, monkeypatch, minutes, stale, quote_limit
+):
     clock = MagicMock(wraps=datetime)
     clock.now.return_value = datetime.now(UTC)
     monkeypatch.setattr(entries, "datetime", clock)
     service.config.execution.entry_evidence_max_age_seconds = 600
+    service.config.execution.entry_quote_max_age_seconds = quote_limit
 
     async def slow_macro(*args):
         clock.now.return_value += timedelta(minutes=minutes)
@@ -200,7 +203,7 @@ async def test_admission_deadlines_are_rechecked_before_submission(service, entr
     clock.now.return_value = datetime.now(UTC)
     monkeypatch.setattr(entries, "datetime", clock)
     policy = service.config.execution
-    policy.entry_quote_max_age_seconds = 600
+    policy.entry_quote_max_age_seconds = 300
     policy.entry_evidence_max_age_seconds = 600
     policy.entry_queue_max_age_seconds = 30 if expires == "approval" else 600
     policy.signal_max_age_seconds = 30 if expires == "signal" else 600

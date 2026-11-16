@@ -536,7 +536,7 @@ class AlpacaBroker(BaseBroker):
         clock_age = (datetime.now(UTC) - timestamp).total_seconds()
         if (
             clock_age < -BROKER_CLOCK_SKEW_TOLERANCE_SECONDS
-            or clock_age > self.config.execution.entry_quote_max_age_seconds
+            or clock_age > self.config.execution.entry_clock_max_age_seconds
         ):
             raise ValueError("Broker session clock is stale or clock-skewed")
         if not is_open:
@@ -750,7 +750,7 @@ class AlpacaBroker(BaseBroker):
         is_open = self._field(clock, "is_open")
         if not isinstance(timestamp, datetime) or timestamp.tzinfo is None or type(is_open) is not bool:
             raise ValueError("Broker session clock is incomplete")
-        if abs((datetime.now(UTC) - timestamp).total_seconds()) > self.config.execution.entry_quote_max_age_seconds:
+        if abs((datetime.now(UTC) - timestamp).total_seconds()) > self.config.execution.entry_clock_max_age_seconds:
             raise ValueError("Broker session clock is stale")
         return is_open
 
