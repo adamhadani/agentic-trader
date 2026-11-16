@@ -354,7 +354,7 @@ async def test_sdk_type_field_maps_protective_leg_ids(alpaca_http):
 
 
 @pytest.mark.parametrize(
-    "changed", ["closed-session", "session-ended", "stale-quote", "price-moved", "existing-position"]
+    "changed", ["closed-session", "session-ended", "stale-quote", "stale-clock", "price-moved", "existing-position"]
 )
 async def test_entry_admission_uses_real_sdk_evidence_before_any_mutation(desk, changed):
 
@@ -367,7 +367,23 @@ async def test_entry_admission_uses_real_sdk_evidence_before_any_mutation(desk, 
     elif changed == "session-ended":
         venue.session_closes_at = datetime.now(UTC) - timedelta(seconds=1)
     elif changed == "stale-quote":
-        venue.quote_time -= timedelta(minutes=5)
+        venue.quote_time -= timedelta(minutes=6)
+        venue.trade_time = datetime.now(UTC)
+    elif changed == "stale-clock":
+        # 90 s is inside the quote limit (120 s) but outside the session clock's own 60 s.
+        venue.override = lambda method, path, query, body: (
+            (
+                200,
+                {
+                    "timestamp": (datetime.now(UTC) - timedelta(seconds=90)).isoformat(),
+                    "is_open": True,
+                    "next_open": datetime.now(UTC).isoformat(),
+                    "next_close": venue.session_closes_at.isoformat(),
+                },
+            )
+            if path == "/v2/clock"
+            else None
+        )
     elif changed == "price-moved":
         venue.quote_price = 110
     success = (await copilot.execute_signal_by_id(sid)).ok

@@ -262,8 +262,9 @@ activity ledger to the broker account UUID.
 | `entry_preflight_lease_seconds` | 60 |
 | `entry_queue_max_age_seconds` | 120 |
 | `signal_max_age_seconds` | 14400 |
-| `entry_quote_max_age_seconds` | 60 |
+| `entry_quote_max_age_seconds` | 120 |
 | `entry_trade_max_age_seconds` | 300 |
+| `entry_clock_max_age_seconds` | 60 |
 | `entry_max_price_drift_pct` | 0.01 |
 | `worker_interval_seconds` / `worker_batch_size` | 2 / 20 |
 | `journal_history_days` / `journal_max_pages` | 7 / 20 |
@@ -271,12 +272,20 @@ activity ledger to the broker account UUID.
 | `notification_max_attempts` | 8 |
 | `notification_retry_seconds` / `notification_max_retry_seconds` | 5 / 900 |
 
-The last trade has its own age limit (`entry_trade_max_age_seconds`, 300, at most 900) separate
-from the quote's 60 s. COLB, NSC and GEHC auto-entries were refused on 2026-11-10/11/12 with
-fresh quotes because the sparse IEX last print was over a minute old; a read-only probe found
-30.5% of names with a trade older than 60 s and 4.1% older than 300 s. The preflight drift
-check compares the last trade, and the whole IEX quote, with the approved limit. It refuses only
-when the whole quote lies outside the band, because an IEX quote is not the NBBO.
+The last trade has its own age limit (`entry_trade_max_age_seconds`, 300, at most 900). COLB,
+NSC and GEHC auto-entries were refused on 2026-11-10/11/12 with fresh quotes because the sparse
+IEX last print was over a minute old; a read-only probe found 30.5% of names with a trade older
+than 60 s and 4.1% older than 300 s. The IEX quote is the liveness evidence (the session clock
+only shows the market is open, not that this symbol is trading), so it keeps a tighter limit:
+120 s (`entry_quote_max_age_seconds`, at most 300) since the ASND PEAD auto-entry was refused on
+2026-11-16 with an 81 s old quote and a 108 s old trade, against the earlier 60 s. A standing
+IEX quote on a mid cap can go over a minute without an update and is still that venue's book; a
+symbol halted for more than two minutes still refuses. The broker session clock keeps its own
+60 s limit (`entry_clock_max_age_seconds`, at most 300), at preflight and in the lifecycle
+session check. A quote or trade timestamped more than 1 s in the future still refuses.
+The preflight drift check compares the last trade, and the whole IEX quote, with the approved
+limit. It refuses only when the whole quote lies outside the band, because an IEX quote is not
+the NBBO.
 
 Telemetry defaults: reconciliation 180s, Telegram poll 120s, worker 30s, scan 18000s,
 notification backlog 1800s, health observation interval 10s. All are configured
