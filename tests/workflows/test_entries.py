@@ -203,7 +203,7 @@ async def test_admission_deadlines_are_rechecked_before_submission(service, entr
     clock.now.return_value = datetime.now(UTC)
     monkeypatch.setattr(entries, "datetime", clock)
     policy = service.config.execution
-    policy.entry_quote_max_age_seconds = 600
+    policy.entry_quote_max_age_seconds = 300
     policy.entry_evidence_max_age_seconds = 600
     policy.entry_queue_max_age_seconds = 30 if expires == "approval" else 600
     policy.signal_max_age_seconds = 30 if expires == "signal" else 600
