@@ -232,7 +232,7 @@ async def test_close_proceeds_when_open_list_lags_by_id_cancellation(desk):
     assert len(market_posts) == 1
 
 
-@pytest.mark.parametrize(("position_basis", "closes"), [("121.140323", True), ("121.15", False)])
+@pytest.mark.parametrize(("position_basis", "closes"), [("121.140323", True), ("121.1405", False), ("121.15", False)])
 async def test_close_accepts_broker_rounding_of_a_multi_price_entry_average(desk, position_basis, closes):
     # DIS, 2026-11-17: the order reported 121.140322 and the position 121.140323 for one 121.14032258... average.
     copilot, venue, sid = desk
