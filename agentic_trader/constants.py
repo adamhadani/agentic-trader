@@ -384,6 +384,11 @@ ALPACA_MAX_ORDERS_PER_PAGE = 500
 ALPACA_MAX_REPLACEMENT_CHAIN = 100
 BROKER_QUANTITY_TOLERANCE = 1e-6
 BROKER_PRICE_TOLERANCE = 1e-8
+# Alpaca reports an order's filled_avg_price and a position's avg_entry_price each rounded to six decimals,
+# one truncated and one rounded, so a multi-price fill's average can differ by one unit in the last place
+# (DIS, 2026-11-17: 121.140322 against 121.140323). Cost-basis identity checks allow a hundredth of a cent,
+# far below a tick; quantity identity stays exact.
+BROKER_COST_BASIS_TOLERANCE = 1e-4
 DEFAULT_STREAM_RECONNECT_INITIAL_SECONDS = 2.0
 DEFAULT_STREAM_RECONNECT_MAX_SECONDS = 60.0
 STREAM_RECONNECT_MULTIPLIER = 2.0

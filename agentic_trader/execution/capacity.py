@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from agentic_trader.accounting.ledger import decimal
 from agentic_trader.constants import (
     BROKER_CLOCK_SKEW_TOLERANCE_SECONDS,
-    BROKER_PRICE_TOLERANCE,
+    BROKER_COST_BASIS_TOLERANCE,
     AssetClass,
     Direction,
     OrderClass,
@@ -188,7 +188,7 @@ def _exposure(reservations: list[dict[str, Any]], context: BrokerEntryContext) -
                 not root.average_fill_price
                 or decimal(root.average_fill_price) <= 0
                 or abs(decimal(root.average_fill_price) - decimal(holding.entry_price))
-                > decimal(BROKER_PRICE_TOLERANCE)
+                > decimal(BROKER_COST_BASIS_TOLERANCE)
             ):
                 raise ValueError("Broker inventory basis differs from confirmed entry execution; reconcile ownership")
             covered_holdings.add(symbol)
