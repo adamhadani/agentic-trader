@@ -135,6 +135,8 @@ async def test_price_freshness_rechecked_after_slow_macro_admission(
     monkeypatch.setattr(entries, "datetime", clock)
     service.config.execution.entry_evidence_max_age_seconds = 600
     service.config.execution.entry_quote_max_age_seconds = quote_limit
+    # The slow step must not also cross the queued-authorization limit (120 s): two minutes sat on that boundary.
+    service.config.execution.entry_queue_max_age_seconds = 600
 
     async def slow_macro(*args):
         clock.now.return_value += timedelta(minutes=minutes)

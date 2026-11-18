@@ -85,7 +85,11 @@ These observations are snapshots, not a bound on subsequent price moves.
 An order is a protective exit only through exact parent/replacement identity.
 Symbol and opposite side are insufficient. Pending entries must retain their
 exact approved bracket. Filled entries require matching inventory and confirmed
-entry cost basis, plus one exact stop of the correct side and full quantity in
+entry cost basis (within `BROKER_COST_BASIS_TOLERANCE`, $0.0001: Alpaca rounds an
+order's average fill and a position's average entry independently to six decimals,
+so DIS's four-price fill on 2026-11-17 read 121.140322 against 121.140323 and
+refused every new entry until this tolerance; the close path uses the same
+tolerance), plus one exact stop of the correct side and full quantity in
 status `new` or `held`: Alpaca holds a filled bracket's stop leg of its OCO exit
 pair in `held`, and that is still real, broker-triggered protection, not a
 missing one. Accepted, pending or partially filled exits, or any other status,

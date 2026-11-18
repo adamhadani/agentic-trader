@@ -289,12 +289,24 @@ def test_exact_protected_position_retains_original_risk_and_mark_to_stop_givebac
     assert assess(protected_capacity_case, [reservation()]).aggregate_stop_risk == Decimal(200)
 
 
-@pytest.mark.parametrize("fill_price", [None, "0", "99", "101"])
+@pytest.mark.parametrize("fill_price", [None, "0", "99", "101", "100.001"])
 def test_current_inventory_requires_compatible_confirmed_entry_basis(protected_capacity_case, fill_price):
     context = protected_capacity_case[1]
     context.orders = (context.orders[0].model_copy(update={"average_fill_price": fill_price}), *context.orders[1:])
     with pytest.raises(ValueError, match="basis|ownership"):
         assess(protected_capacity_case, [reservation()])
+
+
+def test_broker_rounding_of_a_multi_price_entry_average_is_the_same_basis(protected_capacity_case):
+    # DIS, 2026-11-17: fills 19 @ 121.15, 6 @ 121.13, 4 @ 121.12 and 2 @ 121.12 average 121.1403225806...;
+    # Alpaca reported the order's filled_avg_price as 121.140322 and the position's avg_entry_price as 121.140323.
+    context = protected_capacity_case[1]
+    context.positions = (context.positions[0].model_copy(update={"entry_price": 121.140323}),)
+    context.orders = (
+        context.orders[0].model_copy(update={"average_fill_price": "121.140322"}),
+        *context.orders[1:],
+    )
+    assess(protected_capacity_case, [reservation()])
 
 
 @pytest.mark.parametrize("change", ["no-bracket", "changed-limit", "missing-stop", "changed-stop"])

@@ -53,6 +53,7 @@ from agentic_trader.constants import (
     ALPACA_MAX_ORDERS_PER_PAGE,
     ALPACA_MAX_REPLACEMENT_CHAIN,
     BROKER_CLOCK_SKEW_TOLERANCE_SECONDS,
+    BROKER_COST_BASIS_TOLERANCE,
     BROKER_PRICE_TOLERANCE,
     BROKER_QUANTITY_TOLERANCE,
     AssetClass,
@@ -993,7 +994,7 @@ class AlpacaBroker(BaseBroker):
                     float(self._field(entry, "filled_avg_price")),
                     float(self._field(position, "avg_entry_price")),
                     rel_tol=0,
-                    abs_tol=BROKER_PRICE_TOLERANCE,
+                    abs_tol=BROKER_COST_BASIS_TOLERANCE,
                 ):
                     raise _CloseRefused("Broker cost basis differs from the tracked entry; reconcile before closing.")
             orders = await self._expand_close_orders(await open_orders(), request)
