@@ -147,6 +147,8 @@ async def build_idday_inputs(
     )
     cube_xu = await asyncio.to_thread(lambda: build_xu.cube.sha256)
     _check_cube("xu", cube_xu, entry)
+    if tuple(build_xu.trading_days) != tuple(build_v3.trading_days):
+        raise ValueError("the v3 and xu builds read different trading calendars")
     merged = await asyncio.to_thread(merge_cubes, build_v3.cube, build_xu.cube)
     merged_sha = await asyncio.to_thread(lambda: merged.sha256)
     days = tuple(build_v3.trading_days)

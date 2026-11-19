@@ -48,11 +48,12 @@ def _frame():
     )
 
 
-def _install(monkeypatch, *, events_sha=EVENTS, acquisition="e" * 64, calls=None):
+def _install(monkeypatch, *, events_sha=EVENTS, acquisition="e" * 64, calls=None, xu_days=DAYS):
     async def fake_build(cohort, spec, **kwargs):
         assert kwargs["require_cached"] is True and kwargs["load_hourly"] is True
         sha = CUBE_V3 if "events" in kwargs else CUBE_XU
-        return SimpleNamespace(cube=SimpleNamespace(sha256=sha), trading_days=DAYS, adjusted={}, hourly={})
+        days = DAYS if "events" in kwargs else xu_days
+        return SimpleNamespace(cube=SimpleNamespace(sha256=sha), trading_days=days, adjusted={}, hourly={})
 
     async def fake_market(timeframe, bars, cache_dir, start, end, pace):
         calls.append(timeframe)
@@ -175,5 +176,51 @@ async def test_runner_refuses_noncontiguous_merged_sessions(monkeypatch, tmp_pat
     monkeypatch.setattr(idday_runner, "merge_cubes", lambda a, b: gapped)
     path, data = _check_file(tmp_path, _document())
     with pytest.raises(ValueError, match="contiguous"):
+        await _build(_entry(data), tmp_path, path)
+    assert calls == []
+
+
+async def test_runner_refuses_xu_actions_digest_mismatch(monkeypatch, tmp_path):
+    calls = []
+    _install(monkeypatch, calls=calls)
+    monkeypatch.setattr(idday_runner, "load_actions", lambda path: ((), "0" * 64))
+    path, data = _check_file(tmp_path, _document())
+    with pytest.raises(ValueError, match="corporate actions"):
+        await _build(_entry(data), tmp_path, path)
+    assert calls == []
+
+
+@pytest.mark.parametrize("part", [0, 1])
+async def test_runner_refuses_part_cube_digest_mismatch(monkeypatch, tmp_path, part):
+    calls = []
+    _install(monkeypatch, calls=calls)
+    path, data = _check_file(tmp_path, _document())
+    raw = _entry(data).model_dump(mode="json")
+    raw["cohorts"][part]["cube_sha256"] = "0" * 64
+    name = ("v3", "xu")[part]
+    with pytest.raises(ValueError, match=f"cached {name} cube"):
+        await _build(IddayEntry.model_validate(raw), tmp_path, path)
+    assert calls == []
+
+
+async def test_runner_refuses_v3_event_source_digest_mismatch(monkeypatch, tmp_path):
+    calls = []
+    _install(monkeypatch, calls=calls)
+
+    def refuse(inputs, sources):
+        raise ValueError("earnings pages digest does not match the protocol's pages_sha256")
+
+    monkeypatch.setattr(idday_runner, "load_event_sources", refuse)
+    path, data = _check_file(tmp_path, _document())
+    with pytest.raises(ValueError, match="pages digest"):
+        await _build(_entry(data), tmp_path, path)
+    assert calls == []
+
+
+async def test_runner_refuses_different_trading_calendars(monkeypatch, tmp_path):
+    calls = []
+    _install(monkeypatch, calls=calls, xu_days=DAYS[:-1])
+    path, data = _check_file(tmp_path, _document())
+    with pytest.raises(ValueError, match="different trading calendars"):
         await _build(_entry(data), tmp_path, path)
     assert calls == []
