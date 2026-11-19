@@ -225,11 +225,12 @@ For each announced event `(symbol, F, E)`:
    - The rule is applied last among the price-free gates, in `D` order, keeping the first.
    - An earlier event that later fails a price gate (steps 5–7) still blocks, because the price-free gates
      cannot know it will fail.
-   - Every price-free gate runs on one calendar: the merged cube's sessions. An event whose `F` falls before the
-     first of them is `outside_window`. The parser-check sample and the study therefore see the identical
-     candidates. The leg trades the issuer's cohort symbol with the
-   higher dollar volume at `D` among those eligible at `D`, ties broken by `tiebreak`. If none is eligible, the
-   event is excluded (`not_eligible`).
+   - Every price-free gate runs on one calendar: the merged cube's sessions. The parser-check sample and the
+     study therefore see the identical candidates. An event is `outside_window` when any session it needs lies
+     outside that calendar: `F`'s session, the start of its 3-session earnings band (so `F` on either of the
+     first two sessions), `D`, or `X` (so `E` after the last session).
+   - The leg trades the issuer's cohort symbol with the higher dollar volume at `D` among those eligible at `D`,
+     ties broken by `tiebreak`. If none is eligible, the event is excluded (`not_eligible`).
 4. **Earnings**, judged on the issuer's archive rows (the union over its cohort symbols, deduplicated by date).
    - An archive report date in `[F + 1, X]` excludes the event (`earnings_in_hold`).
    - The event's class is `with_earnings` when the symbol has an archive report date in the 3-session band
