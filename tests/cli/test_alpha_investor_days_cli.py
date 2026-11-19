@@ -1,9 +1,20 @@
+import dataclasses
+import hashlib
 import json
+from datetime import date, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 from click.testing import CliRunner
 
+from agentic_trader.agent.earnings import CalendarRow, EarningsTiming
 from agentic_trader.cli.commands import alpha_investor_days as cmd
+from agentic_trader.research.apriori.idday_parser import PARSER_VERSION, EventTable, IddayEvent, save_event_table
+from agentic_trader.research.investor_days import InvestorDayStore, IssuerRecord, content_sha256
+from agentic_trader.research.pooled.campaign import load_campaign_protocol
+from agentic_trader.research.pooled.cohort import load_cohort
+from agentic_trader.research.pooled.events import LoadedCalendar
+from agentic_trader.research.pooled.runner import cube_cache_path
 from tests.research.test_investor_days import Router, tickers
 
 
@@ -68,3 +79,112 @@ def test_refuses_without_user_agent(tmp_path, monkeypatch):
         ],
     )
     assert result.exit_code == 1 and "EDGAR_USER_AGENT is required" in result.output
+
+
+# --- sample -----------------------------------------------------------------------------------------
+
+REPO = Path(__file__).resolve().parents[2]
+V3_PROTOCOL = "config/research/pooled/cohort3-events-v1.json"
+ENTRY_FIXTURE = REPO / "tests/research/apriori/fixtures/idday-v1-test.json"
+
+
+def _weekdays(first, last):
+    days, d = [], first
+    while d <= last:
+        if d.weekday() < 5:
+            days.append(d)
+        d += timedelta(days=1)
+    return tuple(days)
+
+
+def _sample_setup(tmp_path, monkeypatch, *, pages_sha256=None):
+    protocol = load_campaign_protocol(REPO / V3_PROTOCOL).protocol
+    cohort = load_cohort(REPO / protocol.cohort)
+    spec = protocol.cube_spec()
+    document = json.loads(ENTRY_FIXTURE.read_text())
+    document["cohorts"][0]["pooled_protocol_sha256"] = hashlib.sha256((REPO / V3_PROTOCOL).read_bytes()).hexdigest()
+    document["parser_check"]["sample_size"] = 2
+    entry = tmp_path / "entry.json"
+    entry.write_text(json.dumps(document))
+
+    days = _weekdays(date(2024, 1, 2), date(2024, 12, 31))
+    pooled = tmp_path / "pooled"
+    pooled.mkdir()
+    cube_cache_path(pooled, cohort, spec).write_bytes(b"")  # load_cube is patched; the file must exist
+    cube = SimpleNamespace(sessions=days, spec_identity=spec.identity, cohort_sha256=cohort.sha256)
+    monkeypatch.setattr(cmd, "load_cube", lambda path: cube)
+
+    report = CalendarRow("BBB", days[100], EarningsTiming.UNSPECIFIED, None, None, None, None, None)
+    digest = protocol.event_inputs.earnings.pages_sha256 if pages_sha256 is None else pages_sha256
+    loaded = LoadedCalendar(rows_by_symbol={"BBB": (report,)}, pages_sha256=digest, pages=1, duplicates=0)
+    monkeypatch.setattr(cmd, "load_calendar_pages", lambda directory, start, end: loaded)
+    (tmp_path / "pages").mkdir()
+
+    store = InvestorDayStore(tmp_path / "cache")
+    names = {1: ("AAA",), 2: ("BBB",), 3: ("CCC",), 4: ("INTU",)}
+    store.write_hits([IssuerRecord(cik, symbols, True, False, ()) for cik, symbols in names.items()], [])
+    events = []
+    for cik, symbols in names.items():
+        filed, held = days[50 + cik], days[65 + cik]
+        events.append(
+            IddayEvent(
+                event_id=f"{cik}:{filed}:{held}",
+                cik=cik,
+                symbols=symbols,
+                status="announced",
+                filed=filed,
+                event_date=held,
+                n_announcing=1,
+                event_day_material=False,
+                keyword="investor day",
+                sentence="Example Corp will host its investor day.",
+                accession=f"0000000000-24-00000{cik}",
+                url="https://example.invalid/doc.htm",
+                item_2_02=False,
+            )
+        )
+    # BBB reports inside its own hold, so only AAA and CCC remain once INTU (excluded) is left out.
+    events[1] = dataclasses.replace(
+        events[1], filed=days[95], event_date=days[110], event_id=f"2:{days[95]}:{days[110]}"
+    )
+    table = EventTable(PARSER_VERSION, content_sha256(store), tuple(events))
+    save_event_table(table, tmp_path / "events.json")
+    args = [
+        "sample",
+        "--cache",
+        str(tmp_path / "cache"),
+        "--events",
+        str(tmp_path / "events.json"),
+        "--repo-root",
+        str(REPO),
+        "--entry",
+        str(entry),
+        "--earnings-pages",
+        str(tmp_path / "pages"),
+        "--pooled-cache",
+        str(pooled),
+        "--output",
+        str(tmp_path / "out" / "parser_sample.json"),
+    ]
+    return table, args
+
+
+def test_sample_writes_the_seeded_parser_sample(tmp_path, monkeypatch):
+    table, args = _sample_setup(tmp_path, monkeypatch)
+    result = CliRunner().invoke(cmd.investor_days_group, args)
+    assert result.exit_code == 0, result.output
+    written = json.loads((tmp_path / "out" / "parser_sample.json").read_text())
+    assert written["events_sha256"] == table.events_sha256
+    assert (written["seed"], written["sample_size"], written["population"]) == (20261119, 2, 2)
+    assert [row["symbols"] for row in written["sample"]] == [["AAA"], ["CCC"]]
+    assert written["candidate_counts"]["reasons"] == {"earnings_in_hold": 1}
+    assert written["sessions"]["source"] == "cube"
+    again = CliRunner().invoke(cmd.investor_days_group, args)
+    assert again.exit_code == 1 and "exists" in again.output
+
+
+def test_sample_refuses_a_pages_digest_mismatch(tmp_path, monkeypatch):
+    _, args = _sample_setup(tmp_path, monkeypatch, pages_sha256="0" * 64)
+    result = CliRunner().invoke(cmd.investor_days_group, args)
+    assert result.exit_code == 1 and "pages_sha256" in result.output
+    assert not (tmp_path / "out" / "parser_sample.json").exists()
