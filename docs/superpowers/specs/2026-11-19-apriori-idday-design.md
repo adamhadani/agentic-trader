@@ -131,13 +131,17 @@ The acquisition reads no prices and spends no window. It runs outside 10:20–10
 The parser is `research/apriori/idday_events.parse_filings(acquisition_dir) -> EventTable`. It is deterministic
 and offline. Its version string is `idday-parser-v1`, and any change to its rules is a new version.
 
-1. **Text.** Script and style blocks are removed. Block-level closing tags and `<br>` become sentence breaks.
-   Remaining tags are stripped, entities unescaped, non-breaking spaces made plain and whitespace collapsed.
+1. **Text.** Script and style blocks are removed. The closing tags of `p`, `div`, `tr`, `td`, `th`, `li`, `h1`–`h6`,
+   `table`, `ul`, `ol` and `blockquote`, and every `<br>`, become hard sentence breaks. A table cell therefore never
+   pairs a keyword with a date in another cell. Remaining tags are stripped, entities unescaped, non-breaking
+   spaces made plain, whitespace collapsed and the result stripped.
 2. **Keyword.**
-   `(investor|analyst)s?( (and|&|/) (investor|analyst)s?)? day | capital markets? day | analyst meeting | investor meeting`,
-   case-insensitive, with word boundaries.
-3. **Sentences.** A boundary is `[.!?]` followed by whitespace and then a capital letter, a quote or `(`. Each
-   keyword occurrence is judged within its own sentence.
+   `(investor|analyst)s?(\s*(and|&|/)\s*(investor|analyst)s?)?\s+day | capital\s+markets?\s+day | analyst\s+meeting | investor\s+meeting`,
+   case-insensitive, with word boundaries. "Investor/Analyst Day" is one keyword.
+3. **Sentences.** A boundary is `[.!?]` followed by whitespace and then a capital letter, a quote or `(`. A bullet
+   character (`•`, `▪`, `●`, `◦`) is also a boundary, because earnings releases list highlights as bullets after a
+   heading such as "Recent Business Highlights". A hard break from step 1 is always a boundary. Sentence-starting
+   quotes are `"` and `“`. Each keyword occurrence is judged within its own sentence.
 4. **Dates.**
    - Month names must be capitalised: the full name or its abbreviation (Jan…Dec, plus Sept), in title case or
      upper case, optionally followed by a dot.
@@ -148,21 +152,29 @@ and offline. Its version string is `idday-parser-v1`, and any change to its rule
    - (a) it contains an announcement phrase: `will|to|plans to|intends to|scheduled to` followed by
      `host|hold|be held|be hosted|be webcast|webcast|present|be presented|make presentations|provide|be provided|discuss`;
      or `save the date`, `join us`, `invite`, `schedule(s)`, `upcoming`, `more to come`, `to be held`,
-     `in the coming`, `will be attending`, `previously disclosed` or `previously announced`;
-   - (b) it contains none of `attended`, `outlined`, `reiterated`, `articulated`, `unveiled`, `recent`,
-     `last year`, `discussed at` or `presented at our`;
-   - (c) it contains a date within 200 characters of the keyword with `filed < date ≤ filed + 400 days`.
+     `in the coming`, `will be attending`, `previously disclosed` or `previously announced`. These match as whole
+     words, except that `invite` also matches `invites`, as `schedule(s)` does;
+   - (b) it contains none of these whole words or phrases: `attended`, `outlined`, `reiterated`, `articulated`,
+     `unveiled`, `recent`, `last year`, `discussed at` or `presented at our`. Whole words means "recently" does
+     not match `recent`;
+   - (c) it contains a date within 200 characters of the keyword with `filed < date ≤ filed + 400 days`. The
+     distance is measured from the keyword's start to the date's start.
 
    The date nearest the keyword is the announced event date.
 6. **Event-day material.** A filing is event-day material when either holds:
-   - a keyword sentence has no future date but contains "is/are hosting", "is/are holding", "hosted/held/hosting/
-     holding … today" or "today's investor/analyst/capital markets", or a date in `[filed − 1, filed]`;
+   - a keyword sentence has no future date in the announcement sense (`filed < date ≤ filed + 400 days`) but
+     contains one of:
+     - "is/are hosting" or "is/are holding";
+     - "hosted/held/hosting/holding" followed within 60 characters, with no period between, by "today";
+     - "today's investor/analyst/capital markets", where the possessive is required;
+     - a date in `[filed − 1, filed]`;
    - the hit's file description names the event and contains "presentation" or "slides".
 7. **Events.** Per issuer (CIK), so a share-class pair yields one event:
    - The candidate dates are the issuer's announced dates plus the filing dates of event-day material. Candidates within
      3 calendar days of the previous kept one are merged into it.
-   - For each event, the announcing filings are those with an announced date within ±3 days of the event that
-     were filed before it.
+   - Each candidate belongs to exactly the one event it was kept as or merged into. An event's announcing filings
+     are the filings whose announced date belongs to it and that were filed before the event's kept date. Event
+     ids are unique, and the parser asserts this.
    - `F` is the earliest announcing filing date, and `E` is the date that filing announced. That is the first
      announcement, point-in-time; a later reschedule is not used.
    - Events with no announcing filing are `event_only` and are counted but never become legs.
