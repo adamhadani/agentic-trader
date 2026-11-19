@@ -3,7 +3,7 @@
 It owns the EDGAR access constants (the hosts, the ticker map URL and the fair-access pacing) for every caller,
 the daemon captures and the research acquisitions alike, so ``data/`` never imports ``research/`` for them.
 
-One GET is allowed only on ``https://www.sec.gov`` or ``https://data.sec.gov``, follows no redirect (the
+One GET is allowed only on ``https://www.sec.gov``, ``https://data.sec.gov`` or ``https://efts.sec.gov``, follows no redirect (the
 callers' clients set ``follow_redirects=False``), has a total deadline (``REQUEST_DEADLINE_SECONDS``) and a body
 budget (``MAX_DOCUMENT_BYTES``), and treats any response but a 200 (or a 404 the caller allows) as a failure.
 ``retrying`` paces every attempt and applies one ``RetryPolicy``: the insider capture's default retries a
@@ -33,6 +33,7 @@ __all__ = [
     "REQUEST_DEADLINE_SECONDS",
     "SEC_DATA_HOST",
     "SEC_HOST",
+    "SEC_SEARCH_HOST",
     "TICKERS_URL",
     "TIMEOUT_SECONDS",
     "TRANSIENT_RETRY",
@@ -49,7 +50,8 @@ __all__ = [
 
 SEC_HOST = "www.sec.gov"
 SEC_DATA_HOST = "data.sec.gov"
-EDGAR_HOSTS = frozenset({SEC_HOST, SEC_DATA_HOST})
+SEC_SEARCH_HOST = "efts.sec.gov"
+EDGAR_HOSTS = frozenset({SEC_HOST, SEC_DATA_HOST, SEC_SEARCH_HOST})
 # The SEC ticker-to-CIK map, read by the filings capture and the research acquisitions.
 TICKERS_URL = f"https://{SEC_HOST}/files/company_tickers.json"
 # The SEC fair-access pacing every EDGAR caller uses.

@@ -41,8 +41,8 @@ class Recorder:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handler))
 
 
-def test_the_allow_list_is_exactly_the_two_sec_hosts():
-    assert frozenset({"www.sec.gov", "data.sec.gov"}) == EDGAR_HOSTS
+def test_the_allow_list_is_exactly_the_three_sec_hosts():
+    assert frozenset({"www.sec.gov", "data.sec.gov", "efts.sec.gov"}) == EDGAR_HOSTS
 
 
 @pytest.mark.parametrize(
@@ -64,7 +64,7 @@ async def test_fetch_and_get_accept_both_sec_hosts(url):
         "http://data.sec.gov/submissions/CIK0000320193.json",
         "https://sec.gov/files/company_tickers.json",
         "https://data.sec.gov.example.com/submissions/CIK0000320193.json",
-        "https://efts.sec.gov/LATEST/search-index",
+        "https://efts.example.com/LATEST/search-index",
     ],
 )
 async def test_fetch_and_get_reject_any_other_host_before_a_request(url):
