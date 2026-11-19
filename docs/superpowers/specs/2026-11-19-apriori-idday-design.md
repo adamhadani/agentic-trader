@@ -112,8 +112,10 @@ that a contact was declared.
    `www.sec.gov/Archives` and cached gzip-compressed, keyed by accession and file name.
    - A 404 is counted and skipped.
    - A 403 stops the acquisition.
-   - Other failures are retried up to three times as GETs with backoff, then counted.
-   - Requests are paced to at most 8 per second.
+   - Other failures go through the shared EDGAR helpers (`data/edgar_http.edgar_fetch`, one transport retry),
+     then are counted.
+   - Requests are paced by `edgar_pacer()` at the repo's fair-access rate (`REQUESTS_PER_SECOND`, 2 per second).
+     `efts.sec.gov` joins `EDGAR_HOSTS`.
 5. **Output.** Output goes to `~/agentic-trader-research/investor-day-filings-<date>/`:
    - `hits.json`: per issuer, its CIK, its symbols, `visible`, whether the search was capped, and each hit's
      accession, file, filing date, items, file type and description;
@@ -209,7 +211,7 @@ For each announced event `(symbol, F, E)`:
    an earlier leg's `D` is excluded (`overlapping_event`). The leg trades the issuer's cohort symbol with the
    higher dollar volume at `D` among those eligible at `D`, ties broken by `tiebreak`. If none is eligible, the
    event is excluded (`not_eligible`).
-4. **Earnings** (per the traded symbol's archive rows).
+4. **Earnings**, judged on the issuer's archive rows (the union over its cohort symbols, deduplicated by date).
    - An archive report date in `[F + 1, X]` excludes the event (`earnings_in_hold`).
    - The event's class is `with_earnings` when the symbol has an archive report date in the 3-session band
      ending at `F`'s session (the last session ≤ `F`), and `standalone` otherwise.
@@ -250,7 +252,7 @@ or an exit after the close of `X` for a leg, or after the close of the `H`-th se
   sessions, and of any parsed event date in that span;
 - clear of earnings according to the leg's class:
   - `standalone`: no archive report date in `[D − 30, X]`, and archive coverage of at least one report in the
-    130 sessions before `D`;
+    130 sessions before `D` (the control issuer's archive rows, as in section 7);
   - `with_earnings`: an archive report date in the same 3-session band ending at `F`'s session (a reporting
     peer), and none in `[F + 1, X]`.
 
