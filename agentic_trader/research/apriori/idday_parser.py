@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from agentic_trader.research.investor_days import ARCHIVE_URL, InvestorDayStore, SearchHit, content_sha256
+from agentic_trader.research.short_volume import write_private
 
 
 __all__ = [
@@ -60,21 +61,24 @@ DATE = re.compile(
     + "|".join(sorted(MONTH_OF, key=len, reverse=True))
     + r")\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(\d{4})\b)?"
 )
+# A non-whitespace private-use sentinel: block-level closing tags, <br> and bullet characters are hard boundaries.
+HARD_BREAK = "\ue000"
+_BLOCK_CLOSE = re.compile(r"(?i)<br\s*/?>|</(?:p|div|tr|td|th|li|h[1-6]|table|ul|ol|blockquote)\s*>|[•▪●◦]")
 NUMERIC_DATE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b")
 ANNOUNCEMENT = re.compile(
     r"\b(?:(?:will|to|plans to|intends to|scheduled to)\s+"
     r"(?:host|hold|be held|be hosted|be webcast|webcast|present|be presented|make presentations|provide|be provided|discuss)"
-    r"|save the date|join us|invite|schedules?|upcoming|more to come|to be held|in the coming"
+    r"|save the date|join us|invites?|schedules?|upcoming|more to come|to be held|in the coming"
     r"|will be attending|previously disclosed|previously announced)\b",
     re.IGNORECASE,
 )
 PAST_MARKER = re.compile(
-    r"\b(?:attended|outlined|reiterated|articulated|unveiled|recent|last year|discussed at|presented at our)",
+    r"\b(?:attended|outlined|reiterated|articulated|unveiled|recent|last year|discussed at|presented at our)\b",
     re.IGNORECASE,
 )
 TODAY = re.compile(
     r"\b(?:(?:is|are)\s+(?:hosting|holding)|(?:hosted|held|hosting|holding)\b[^.]{0,60}\btoday"
-    r"|today(?:'s|’s)?\s+(?:investor|analyst|capital\s+markets?))\b",
+    r"|today(?:'s|’s)\s+(?:investor|analyst|capital\s+markets?))\b",
     re.IGNORECASE,
 )
 PRESENTATION = re.compile(r"presentation|slides", re.IGNORECASE)
@@ -86,24 +90,33 @@ MERGE_DAYS = 3
 def text_of(raw: bytes) -> str:
     s = raw.decode("utf-8", "replace")
     s = re.sub(r"(?is)<(script|style).*?</\1>", " ", s)
-    s = re.sub(r"(?i)<br\s*/?>|</(?:p|div|tr|li|h\d)>", ". ", s)
+    s = _BLOCK_CLOSE.sub(HARD_BREAK, s)
     s = re.sub(r"(?s)<[^>]+>", " ", s)
     s = html.unescape(s).replace("\xa0", " ")
-    return re.sub(r"\s+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def sentences_of(text: str) -> list[str]:
+    """Sentences of ``text``: a hard break always splits, then ``SENTENCE_END``; each is stripped."""
+    out: list[str] = []
+    for block in text.split(HARD_BREAK):
+        out.extend(part.strip() for part in SENTENCE_END.split(block))
+    return [sentence for sentence in out if sentence]
 
 
 def dates_in(text: str, filed: date) -> list[tuple[int, date]]:
     """(position, date) per calendar date; a year-less date is its next occurrence on or after filed - 7 days."""
+    base = filed - timedelta(days=7)
     found = []
     for m in DATE.finditer(text):
         month, day = MONTH_OF[m.group(1)], int(m.group(2))
-        years = [int(m.group(3))] if m.group(3) else [filed.year, filed.year + 1]
+        years = [int(m.group(3))] if m.group(3) else [base.year, base.year + 1]
         for year in years:
             try:
                 d = date(year, month, day)
             except ValueError:
                 continue
-            if m.group(3) or d >= filed - timedelta(days=7):
+            if m.group(3) or d >= base:
                 found.append((m.start(), d))
                 break
     for m in NUMERIC_DATE.finditer(text):
@@ -129,25 +142,24 @@ def _in_future(d: date, filed: date) -> bool:
 def parse_document(hit: SearchHit, raw: bytes) -> FilingParse:
     text = text_of(raw)
     filed = hit.filed
-    bounds = [0] + [m.end() for m in SENTENCE_END.finditer(text)] + [len(text)]
     announced: dict[date, tuple[int, str, str]] = {}
     day_sentence = ""
-    for m in KEYWORD.finditer(text):
-        i = max(k for k in range(len(bounds) - 1) if bounds[k] <= m.start())
-        sentence = text[bounds[i] : bounds[i + 1]].strip()
-        offset = m.start() - bounds[i]
+    for sentence in sentences_of(text):
         dated = dates_in(sentence, filed)
-        near = [
-            (abs(pos - offset), d) for pos, d in dated if abs(pos - offset) <= KEYWORD_DISTANCE and _in_future(d, filed)
-        ]
-        if near and ANNOUNCEMENT.search(sentence) and not PAST_MARKER.search(sentence):
-            distance, d = min(near)
-            if d not in announced or distance < announced[d][0]:
-                announced[d] = (distance, sentence, m.group(0))
         no_future = not any(_in_future(d, filed) for _, d in dated)
         today = TODAY.search(sentence) or any(filed - timedelta(days=1) <= d <= filed for _, d in dated)
-        if not day_sentence and no_future and today:
+        if not day_sentence and no_future and today and KEYWORD.search(sentence):
             day_sentence = sentence
+        for m in KEYWORD.finditer(sentence):
+            near = [
+                (abs(pos - m.start()), d)
+                for pos, d in dated
+                if abs(pos - m.start()) <= KEYWORD_DISTANCE and _in_future(d, filed)
+            ]
+            if near and ANNOUNCEMENT.search(sentence) and not PAST_MARKER.search(sentence):
+                distance, d = min(near)
+                if d not in announced or distance < announced[d][0]:
+                    announced[d] = (distance, sentence, m.group(0))
     if not day_sentence and KEYWORD.search(hit.description) and PRESENTATION.search(hit.description):
         day_sentence = hit.description
     return FilingParse(
@@ -238,34 +250,35 @@ def _keyword_of(sentence: str) -> str:
 def _issuer_events(cik: int, symbols: tuple[str, ...], parsed: list[tuple[SearchHit, FilingParse]]) -> list[IddayEvent]:
     candidates = sorted({d for _, p in parsed for d, _, _ in p.announced} | {h.filed for h, p in parsed if p.event_day})
     kept: list[date] = []
+    owner: dict[date, date] = {}
     for d in candidates:
         if not kept or (d - kept[-1]).days > MERGE_DAYS:
             kept.append(d)
-    window = timedelta(days=MERGE_DAYS)
+        owner[d] = kept[-1]
+
+    def order(item: tuple[SearchHit, Any]) -> tuple[date, str, str]:
+        return (item[0].filed, item[0].accession, item[0].file)
+
     events = []
     for k in kept:
         announcing = sorted(
             (
-                (h, min((a for a in p.announced if abs(a[0] - k) <= window), key=lambda a: (abs(a[0] - k), a[0])))
+                (h, min((a for a in p.announced if owner[a[0]] == k), key=lambda a: (abs(a[0] - k), a[0])))
                 for h, p in parsed
-                if h.filed < k and any(abs(a[0] - k) <= window for a in p.announced)
+                if h.filed < k and any(owner[a[0]] == k for a in p.announced)
             ),
-            key=lambda item: (item[0].filed, item[0].accession, item[0].file),
+            key=order,
         )
+        day = sorted(((h, p) for h, p in parsed if p.event_day and owner[h.filed] == k), key=order)
         if announcing:
             first, (event_date, sentence, keyword) = announcing[0]
             status: Literal["announced", "event_only"] = "announced"
             filed: date | None = first.filed
             n_announcing = len({h.accession for h, _ in announcing})
         else:
+            first, day_parse = day[0]
             event_date, status, filed, n_announcing = k, "event_only", None, 0
-        day = sorted(
-            ((h, p) for h, p in parsed if p.event_day and abs(h.filed - event_date) <= window),
-            key=lambda item: (item[0].filed, item[0].accession, item[0].file),
-        )
-        if not announcing:
-            first, p = day[0]
-            sentence = p.day_sentence
+            sentence = day_parse.day_sentence
             keyword = _keyword_of(sentence)
         events.append(
             IddayEvent(
@@ -297,6 +310,9 @@ def parse_filings(store: InvestorDayStore) -> EventTable:
                 parsed.append((hit, parse_document(hit, raw)))
         events.extend(_issuer_events(record.cik, record.symbols, parsed))
     events.sort(key=lambda e: (e.cik, e.event_date))
+    ids = [e.event_id for e in events]
+    if len(set(ids)) != len(ids):
+        raise ValueError("duplicate event_id in the event table")
     return EventTable(PARSER_VERSION, content_sha256(store), tuple(events))
 
 
@@ -307,7 +323,7 @@ def save_event_table(table: EventTable, path: Path) -> None:
         "events_sha256": table.events_sha256,
         "events": [_row(event) for event in table.events],
     }
-    path.write_text(json.dumps(body, indent=2, sort_keys=True))
+    write_private(path, json.dumps(body, indent=2, sort_keys=True).encode())
 
 
 def load_event_table(path: Path) -> EventTable:

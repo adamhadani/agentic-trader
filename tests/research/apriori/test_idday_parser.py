@@ -216,3 +216,71 @@ def test_events_cli(tmp_path):
     assert result.exit_code == 0, result.output
     assert "events_sha256" in result.output and "announced 1 event_only 0" in result.output
     assert CliRunner().invoke(investor_days_group, args).exit_code != 0
+
+
+def test_yearless_resolution_uses_filed_minus_seven():
+    assert [d for _, d in dates_in("December 30", date(2024, 1, 3))] == [date(2023, 12, 30)]
+    assert announced_dates("Acme will host its Investor Day on December 30.", date(2024, 1, 3)) == []
+
+
+@pytest.mark.parametrize(
+    "html_text",
+    [
+        "<p>Acme will host its Investor Day</p><p>on March 5, 2024</p>",
+        "<p>Upcoming Investor Day<br>3/5/2024</p>",
+        "<table><tr><td>Investor Day</td><td>will host March 5, 2024</td></tr></table>",
+    ],
+)
+def test_hard_breaks(html_text):
+    assert parse_document(hit(date(2024, 2, 1)), html_text.encode()).announced == ()
+
+
+def test_bullets_are_boundaries():
+    text = (
+        "Recent Business Highlights . • Added 406 new customers . • Announced our upcoming investor day "
+        "on May 21, 2026, where we will discuss strategy ."
+    )
+    assert announced_dates(text, date(2026, 4, 29)) == [date(2026, 5, 21)]
+
+
+def test_past_markers_whole_words():
+    text = "Acme recently announced changes, with more to come at its long-planned Investor Day on September 26."
+    assert announced_dates(text, date(2024, 9, 10)) == [date(2024, 9, 26)]
+    assert announced_dates("We will host our recent Investor Day on March 5", date(2024, 2, 1)) == []
+
+
+def test_invites_accepted():
+    assert announced_dates("Acme invites you to its Investor Day on March 5, 2024.", date(2024, 2, 1)) == [
+        date(2024, 3, 5)
+    ]
+
+
+def test_today_requires_possessive():
+    assert not parse("Acme said today investor day materials are available.", date(2024, 3, 5)).event_day
+    assert parse("Acme presented today's investor day deck.", date(2024, 3, 5)).event_day
+
+
+def test_no_duplicate_events(tmp_path):
+    store = issuer_store(
+        tmp_path,
+        [
+            (hit(date(2024, 2, 1), accession="0001-24-000001"), "Acme will host its Investor Day on March 4, 2024."),
+            (hit(date(2024, 3, 1), accession="0001-24-000002"), "On March 1, 2024, Acme is hosting an Investor Day."),
+            (hit(date(2024, 3, 5), accession="0001-24-000003"), "On March 5, 2024, Acme is hosting an Investor Day."),
+        ],
+    )
+    events = parse_filings(store).events
+    assert [e.status for e in events] == ["announced", "event_only"]
+    assert len({e.event_id for e in events}) == len(events)
+
+
+def test_window_same_in_first_and_later_sentence():
+    gap = " " * 0 + "x" * 170
+    tail = f"Acme will host its Investor Day {gap} on March 5, 2024."
+    first = announced_dates(tail, date(2024, 2, 1))
+    later = announced_dates(f"Intro sentence here. {tail}", date(2024, 2, 1))
+    assert first == later == [date(2024, 3, 5)]
+    far = f"Acme will host its Investor Day {'x' * 230} on March 5, 2024."
+    assert (
+        announced_dates(far, date(2024, 2, 1)) == announced_dates(f"Intro sentence here. {far}", date(2024, 2, 1)) == []
+    )
