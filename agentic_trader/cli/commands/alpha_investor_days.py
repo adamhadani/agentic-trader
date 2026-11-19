@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import sys
+from collections import Counter
 from datetime import date
 from pathlib import Path
 
@@ -15,6 +16,7 @@ import httpx
 from agentic_trader.cli.commands.alpha import research_environment
 from agentic_trader.cli.utils import coro
 from agentic_trader.data.edgar_http import TIMEOUT_SECONDS, edgar_pacer
+from agentic_trader.research.apriori.idday_parser import parse_filings, save_event_table
 from agentic_trader.research.investor_days import InvestorDayStore, acquire_investor_days
 from agentic_trader.research.pooled.cohort import load_cohort
 from agentic_trader.research.short_volume import write_private
@@ -70,3 +72,18 @@ async def fetch_cmd(cohorts: tuple[Path, ...], cache: Path, output: Path, start,
     output.mkdir(mode=0o700, parents=True)
     write_private(output / "manifest.json", json.dumps(manifest, indent=2, sort_keys=True, default=str).encode())
     click.echo(f"{manifest['issuers']} issuers, {manifest['hits']} hits; {output / 'manifest.json'}")
+
+
+@investor_days_group.command("events")
+@click.option("--cache", required=True, type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--output", required=True, type=click.Path(dir_okay=False, path_type=Path))
+def events_cmd(cache: Path, output: Path):
+    """Parse cached filings into the frozen idday-parser-v1 event table (offline)."""
+    if output.exists():
+        raise click.ClickException(f"Output file exists: {output}")
+    table = parse_filings(InvestorDayStore(cache))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    save_event_table(table, output)
+    counts = Counter(event.status for event in table.events)
+    click.echo(f"events_sha256 {table.events_sha256}")
+    click.echo(f"announced {counts['announced']} event_only {counts['event_only']}")
