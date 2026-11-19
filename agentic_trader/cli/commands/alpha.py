@@ -86,12 +86,15 @@ from agentic_trader.research.alpha.volume_study import VolumeStudyPlan, compute_
 from agentic_trader.research.apriori.catalog import (
     catalog_entry_id,
     load_exdiv_entry,
+    load_idday_entry,
     load_insider_entry,
     load_pead_entry,
     load_runup_entry,
 )
 from agentic_trader.research.apriori.exdiv_runner import build_exdiv_inputs
 from agentic_trader.research.apriori.exdiv_study import execute_exdiv_study
+from agentic_trader.research.apriori.idday_runner import build_idday_inputs
+from agentic_trader.research.apriori.idday_study import execute_idday_study
 from agentic_trader.research.apriori.insider_runner import build_insider_leg_inputs
 from agentic_trader.research.apriori.insider_study import execute_insider_study
 from agentic_trader.research.apriori.pead_runner import build_pead_inputs
@@ -1621,11 +1624,39 @@ def _apriori_clients() -> _AprioriClients:
     "--earnings-pages",
     type=click.Path(path_type=Path),
     default=None,
-    help="Nasdaq earnings-calendar page archive directory (runup entry only)",
+    help="Nasdaq earnings-calendar page archive directory (runup and idday entries)",
+)
+@click.option(
+    "--corporate-actions-xu",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Cohort xu corporate-actions acquisition actions.json (idday entry only)",
+)
+@click.option(
+    "--investor-days",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Investor-day filings acquisition directory (idday entry only)",
+)
+@click.option(
+    "--parser-check",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Labelled parser-check file, parser_check.json (idday entry only)",
 )
 @coro
-async def alpha_apriori_study_cmd(protocol_path, output, cache, insider_filings, corporate_actions, earnings_pages):
-    """Run a frozen a priori catalog study (`pead`, `exdiv`, `insider` or `runup` by the entry's id; research only; grants no credit)."""
+async def alpha_apriori_study_cmd(
+    protocol_path,
+    output,
+    cache,
+    insider_filings,
+    corporate_actions,
+    earnings_pages,
+    corporate_actions_xu,
+    investor_days,
+    parser_check,
+):
+    """Run a frozen a priori catalog study (`pead`, `exdiv`, `insider`, `runup` or `idday` by the entry's id; research only; grants no credit)."""
     if output.exists():
         raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
     entry_id = await asyncio.to_thread(catalog_entry_id, protocol_path)
@@ -1641,11 +1672,30 @@ async def alpha_apriori_study_cmd(protocol_path, output, cache, insider_filings,
             raise click.ClickException("--cache is required for the runup entry: the pooled cache holding its cube")
         if insider_filings is not None:
             raise click.ClickException("--insider-filings applies only to the insider entry")
-    if entry_id != "runup" and earnings_pages is not None:
-        raise click.ClickException("--earnings-pages applies only to the runup entry")
-    if entry_id not in ("insider", "runup") and (insider_filings is not None or corporate_actions is not None):
+    elif entry_id == "idday":
+        required = {
+            "--cache": cache,
+            "--earnings-pages": earnings_pages,
+            "--corporate-actions": corporate_actions,
+            "--corporate-actions-xu": corporate_actions_xu,
+            "--investor-days": investor_days,
+            "--parser-check": parser_check,
+        }
+        missing = [flag for flag, value in required.items() if value is None]
+        if missing:
+            raise click.ClickException(f"{', '.join(missing)} required for the idday entry")
+        if insider_filings is not None:
+            raise click.ClickException("--insider-filings applies only to the insider entry")
+    if entry_id not in ("runup", "idday") and earnings_pages is not None:
+        raise click.ClickException("--earnings-pages applies only to the runup and idday entries")
+    if entry_id not in ("insider", "runup", "idday") and (insider_filings is not None or corporate_actions is not None):
         raise click.ClickException(
-            "--insider-filings applies only to the insider entry and --corporate-actions to the insider and runup entries"
+            "--insider-filings applies only to the insider entry and --corporate-actions to the insider, runup "
+            "and idday entries"
+        )
+    if entry_id != "idday" and any(value is not None for value in (corporate_actions_xu, investor_days, parser_check)):
+        raise click.ClickException(
+            "--corporate-actions-xu, --investor-days and --parser-check apply only to the idday entry"
         )
     cache_dir = cache if cache is not None else output / "raw"
     environment = await asyncio.to_thread(research_environment)
@@ -1725,6 +1775,29 @@ async def alpha_apriori_study_cmd(protocol_path, output, cache, insider_filings,
                 )
 
             result = await execute_runup_study(loaded_runup, output, build=build_runup, environment=environment)
+    elif entry_id == "idday":
+        loaded_idday = await asyncio.to_thread(load_idday_entry, protocol_path)
+        with _apriori_clients() as clients:
+
+            async def build_idday():
+                return await build_idday_inputs(
+                    loaded_idday.entry,
+                    repo_root=REPO_ROOT,
+                    bars=clients.bars,
+                    calendar=clients.calendar,
+                    cache_dir=cache_dir,
+                    earnings_pages=earnings_pages,
+                    actions_v3=corporate_actions,
+                    actions_xu=corporate_actions_xu,
+                    investor_days_dir=investor_days,
+                    parser_check=parser_check,
+                    market_cache_dir=output / "market",
+                    static_symbols=clients.static_symbols,
+                    pace=clients.pace,
+                    progress=lambda message: click.echo(message, err=True),
+                )
+
+            result = await execute_idday_study(loaded_idday, output, build=build_idday, environment=environment)
     else:
         raise click.ClickException(f"Unknown catalog entry id: {entry_id}")
     summary = ("status", "decision", "decisions", "error")  # exdiv has one leg (`decision`); pead has two
