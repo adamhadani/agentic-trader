@@ -1010,7 +1010,14 @@ Research verdict on event-driven work that costs nothing to build.
   `cards outcomes` `filing_veto` and `release_exit` blocks keep measuring, and covering dynamic-universe names
   is the open gap ([production](production.md#release-exit)). Lock-up expiry and PDUFA dates stay out
   of v1.
-- **Later: analyst and investor days,** after an EDGAR count of announcements.
+- **Then: the analyst/investor-day run-up: failed 2026-11-19, closed on this source.** The feasibility count found
+  Alpaca's Benzinga history now starts 2026-04-29, so SEC 8-K full text was the only free point-in-time source.
+  The rule bought the second session after a company's first 8-K announcing an investor, analyst or capital
+  markets day and sold at the close before the event. Its development read on cohorts v3 ∪ xu (2016–2026, 318
+  legs, ledger L45) returned −0.022R net of a beta-matched SPY and +0.018R against matched controls. The planted
+  half-published effect was detected (MDE 0.21R), so the published +3.7% would have shown
+  ([result](apriori-idday-2026-11-19.md)). There will be no live 8-K capture and no prospective read; the
+  standalone and large-cap cells (n ≤ 106) are hypotheses only.
 - **Dropped:** the unconditional announcement premium; hold-through surprise bets (scheduling, seasonality,
   streaks, shorting, insider selling and news tone, which are vetoes at most); LLM backtests on historical
   text; index-inclusion bets; buyback, SEO, split and pre-FOMC drifts; Google Trends, Reddit and StockTwits.

@@ -10,7 +10,7 @@ The ledger does not change any gate, and a row here grants no promotion, shadow 
 It holds reads L01–L45; L40–L42 (the [IC lane](alpha-ic-lane.md)) were added before their first read and
 have results (2026-10-31); L43 (the pre-earnings run-up development read) was declared before its read and
 failed (2026-11-06); L44 (the insider breadth replication) failed (2026-11-14); L45 (the investor-day run-up
-development read) was declared before its read on 2026-11-19.
+development read) was declared before its read and failed (2026-11-19).
 
 ## Rules
 
@@ -215,7 +215,7 @@ c1c6bd48…) and the parser check (`sha256` d186f3f5…). The design is in the
 
 | Id | Date | Lane / study | Cohort | What will be read | Result doc | Verdict |
 | --- | --- | --- | --- | --- | --- | --- |
-| L45 | 2026-11-19 | `idday` v1, investor-day run-up development read | Cohorts v3 ∪ xu (2,156 names; `cohort3-events-v1`, `cohort-xu-insider-v1`) | Outcomes, decisions 2016-08-01 → 2026-06-30 with exits by 2026-07-31; development only, cannot pass | Pending | Pending |
+| L45 | 2026-11-19 | `idday` v1, investor-day run-up development read | Cohorts v3 ∪ xu (2,156 names; `cohort3-events-v1`, `cohort-xu-insider-v1`) | Outcomes, decisions 2016-08-01 → 2026-06-30 with exits by 2026-07-31; development only, cannot pass | [results](apriori-idday-2026-11-19.md) | **Fail, closed on this source:** P1 −0.022R net of beta-matched SPY (ci90 [−0.105, +0.061], 318 legs); P2 +0.018R vs matched controls (ci90 [−0.058, +0.095]); P3, P5 fail; P4 holds (131 since 2023); planted detected, MDE 0.21R. No α claim |
 
 ### Prospective from 2026-08-01
 

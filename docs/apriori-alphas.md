@@ -24,6 +24,7 @@ Run: `copilot alpha apriori-study config/research/apriori/<entry>.json --output 
 | `exdiv` | 1 | Regular quarterly payers run up in the five sessions before the ex-date (Hartzmark & Solomon 2013); long from E−5 at 10:35 to the last cum-dividend close; same-name mid-quarter placebo | failed (+0.069R, ci90 [+0.035, +0.102]; but the same-name placebo earns +0.046R and the paired difference +0.025R has ci90 [−0.026, +0.072], so P2 fails) | — | failed on P2, 2026-10-12 ([result](apriori-exdiv-2026-10-12.md), [spec](superpowers/specs/2026-10-12-exdiv-leg-design.md)) |
 | `insider` | 1 | Opportunistic insider cluster purchases (two or more officers or directors within 21 sessions) drift up (Cohen, Malloy and Pomorski 2012; Alldredge and Blank 2019); long on the cohort-v3 cube cell after the filing; matched-control cell, same session and liquidity tercile | failed (+0.087R, ci90 [−0.008, +0.189], so P1 fails; but +0.070R over same-session matched controls, ci90 [+0.009, +0.134], so P2 holds) | — | failed on P1, 2026-10-23 ([result](apriori-insider-2026-10-23.md), [spec](superpowers/specs/2026-10-23-apriori-insider-leg-design.md)) |
 | `insider` | 2 | Breadth replication: v1's frozen rule, unchanged, on cohort xu (1,156 names disjoint from cohort v3, ranks 1–400 and 1,401–2,156), same window; P2 primary, P4 required, P1 and P3 descriptive | not replicated (+0.011R over matched controls, ci90 [−0.049, +0.074], so P2 fails; P4 holds with 1,048 events) | — | failed on P2, 2026-11-14; insider lane closed ([result](apriori-insider-breadth-2026-11-14.md), [spec](superpowers/specs/2026-11-14-insider-breadth-replication-design.md)) |
+| `idday` | 1 | Investor-day run-up (Cabrera, Kolokolova and Zhang 2025): long from the second session after the first 8-K announcing an investor, analyst or capital markets day to the close before it; cohorts v3 ∪ xu; earnings-matched controls, same-firm placebo, issuer-cluster bootstrap; development only | failed (−0.022R net, ci90 [−0.105, +0.061]; +0.018R vs matched controls, ci90 [−0.058, +0.095]; planted half effect detected) | — | failed, 2026-11-19; closed on this source ([result](apriori-idday-2026-11-19.md), [spec](superpowers/specs/2026-11-19-apriori-idday-design.md)) |
 
 ## Entry 2: pre-ex-dividend run-up
 
@@ -365,3 +366,48 @@ and Zhang) on cohort v3. It is a development read: the window is spent, so it ca
   controls (ci90 [−0.026, +0.014]). P3 and P5 fail too, and P4 holds. The planted check was detected (MDE
   0.039R), so this is a powered null. The pseudo-events' P2 did not hold. The control-band sensitivity shows
   no leak. The lane is closed: no prospective read, no probe.
+
+## Entry 5: investor-day run-up
+
+`idday` version 1 (`config/research/apriori/idday-v1.json`,
+[spec](superpowers/specs/2026-11-19-apriori-idday-design.md)) is a research-only, long-only development read of
+the run-up from an analyst or investor day's announcement to the eve of the event (Cabrera, Kolokolova and Zhang
+2025) on cohorts v3 ∪ xu (2,156 names). The window is spent and the parser was checked by hand, so it can fail
+but cannot pass.
+
+- **Source.** Alpaca's Benzinga history now starts 2026-04-29, so events come from SEC 8-K full text:
+  `copilot alpha investor-days fetch` (EDGAR full-text search per issuer plus the matching documents, digest-pinned,
+  `EDGAR_USER_AGENT` required), `events` (the frozen `idday-parser-v1`: sentence-level announcement rules, an
+  event date within 400 days of the filing) and `sample` (the seeded 60-leg parser-check sample from issuers
+  outside the feasibility names).
+- **Rule in plain words.** F is the first 8-K announcing the registrant's own investor, analyst or capital markets
+  day or investor/analyst meeting on a future date E. Buy at 10:35 New York on the second session after F and sell
+  at the close of the last session before E, with a hold of 1–63 sessions. Exclusions:
+  - an earnings report inside the hold;
+  - a second event of the issuer within 63 sessions;
+  - an identity break or a structural action nearby;
+  - a name that is not cube-eligible.
+
+  The class is `with_earnings` when the issuer reported in the 3 sessions up to F, otherwise `standalone`. Stop
+  2 x ATR14, no target, 15 bp per side decides. Decisions run 2016-08-01..2026-06-30, with exits by 2026-07-31.
+- **Pass rule.**
+  - **P1:** the mean `net_excess_r_v1` > 0, with ci90 lower bound > 0.
+  - **P2:** legs minus 5 same-session controls > 0, with ci90 lower bound > 0. Controls are drawn from clean,
+    visible issuers with no search hit in `[D − 63, X + 10]`, earnings-matched by class, in the same
+    dollar-volume tercile and nearest in 20-session return.
+  - **P3:** the trimmed mean > 0, the mean from 2023 > 0, and an issuer-cluster bootstrap of P2.
+  - **P4:** at least 250 legs, 60 from 2023.
+  - **P5:** the legs beat their controls by more than the same-firm pseudo-events beat theirs. Each pseudo-event
+    is the firm's ordinary earnings release, or a quiet session, with no investor day.
+  - **Planted check:** 1.85% of the price, half the published effect.
+- **Run.** `copilot alpha apriori-study config/research/apriori/idday-v1.json --output <new-dir> --cache
+  <pooled-cache> --earnings-pages <archive> --corporate-actions <v3 actions.json> --corporate-actions-xu
+  <xu actions.json> --investor-days <acquisition cache> --parser-check <parser_check.json>`. Ledger row L45.
+- **Result: `failed` (2026-11-19, [result](apriori-idday-2026-11-19.md)).**
+  - The parser check had 2 errors in 60.
+  - The 318 legs return −0.022R net (ci90 [−0.105, +0.061]) and +0.018R against matched controls (ci90 [−0.058,
+    +0.095]).
+  - P3 and P5 fail, and P4 holds (131 legs since 2023).
+  - The planted check was detected (MDE 0.21R), so a published-size run-up would have shown.
+  - The standalone (+0.06R, n 71) and large-cap cells are descriptive only.
+  - Closed on this source: no live 8-K capture, no prospective read, no probe.
