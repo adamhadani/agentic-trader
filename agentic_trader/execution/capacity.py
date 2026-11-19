@@ -307,8 +307,10 @@ def assess_entry_capacity(
     # Priced at the limit and the last trade, never the IEX ask: an IEX quote is a venue observation, not the NBBO,
     # and its ask can sit percent above the market on a thin book (DHR 2026-11-19: 229.56/239.17 against a 229.59
     # trade refused a card sized near the per-trade cap). The last trade still counts when the market has moved past
-    # the limit; it carries its own age limit.
+    # the limit; it carries its own age limit. A sell limit fills at the bid, so a short also counts the bid.
     exposure_price = max(decimal(request.entry_price), context.price)
+    if request.direction == Direction.SHORT:
+        exposure_price = max(exposure_price, context.quote.bid_price)
     if reason := reservation_rejection(
         request,
         exposure,

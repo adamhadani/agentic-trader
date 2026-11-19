@@ -81,8 +81,10 @@ the approved limit and the last trade as the current price, so proposed notional
 that larger price and an older approved price cannot understate observed exposure. The
 IEX ask is not a price for exposure: it is a venue quote, not the NBBO, and on a thin
 book it can sit percent above the market (DHR on 2026-11-19 quoted 229.56/239.17 against
-a 229.59 trade, which priced a card sized at 98% of the per-trade cap above it). Funding
-above still uses the ask, where overstating costs nothing at the desk's size.
+a 229.59 trade, which priced a card sized at 98% of the per-trade cap above it). A short
+also counts the bid, because a sell limit fills there. Funding above still uses the ask;
+at the account's current buying-power headroom that overstatement refuses nothing, but the
+code does not guarantee it.
 Existing holdings retain the larger recorded/broker-mark exposure.
 These observations are snapshots, not a bound on subsequent price moves.
 
