@@ -220,6 +220,28 @@ class LabelCube:
         )
 
 
+def merge_cubes(first: LabelCube, second: LabelCube) -> LabelCube:
+    """Concatenate two cubes of one spec and session grid over disjoint symbols (first, then second)."""
+    if first.spec_identity != second.spec_identity:
+        raise ValueError("cannot merge cubes with different spec identities")
+    if first.sessions != second.sessions:
+        raise ValueError("cannot merge cubes with different sessions")
+    shared = set(first.symbols) & set(second.symbols)
+    if shared:
+        raise ValueError(f"cannot merge cubes sharing symbols: {sorted(shared)[:5]}")
+    views = [cube.window(cube.sessions[0], cube.sessions[-1]) for cube in (first, second)]
+    arrays = {name: np.concatenate([getattr(view, name) for view in views], axis=1) for name in _ARRAYS}
+    cohort = hashlib.sha256(f"{first.cohort_sha256}|{second.cohort_sha256}".encode()).hexdigest()
+    return LabelCube(
+        spec_identity=first.spec_identity,
+        cohort_sha256=cohort,
+        sessions=first.sessions,
+        symbols=first.symbols + second.symbols,
+        arrays=arrays,
+        coverage={"merged": [first.coverage, second.coverage]},
+    )
+
+
 class _Hourly:
     def __init__(self, frame: pd.DataFrame):
         index = pd.DatetimeIndex(frame.index)

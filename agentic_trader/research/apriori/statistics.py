@@ -14,12 +14,12 @@ import math
 import numpy as np
 import pandas as pd
 
-from agentic_trader.research.apriori.catalog import BootstrapSpec
+from agentic_trader.research.apriori.catalog import BootstrapSpec, ClusterBootstrapSpec
 from agentic_trader.research.setups.baserates import _ci90, _p_one_sided_positive, _weighted
 from agentic_trader.research.setups.study import _stationary_index_draws
 
 
-__all__ = ["difference_in_paired_test", "mean_test", "paired_test", "trimmed_mean"]
+__all__ = ["cluster_paired_test", "difference_in_paired_test", "mean_test", "paired_test", "trimmed_mean"]
 
 
 def _sums(frame: pd.DataFrame, sessions: pd.Index) -> tuple[np.ndarray, np.ndarray]:
@@ -145,3 +145,45 @@ def trimmed_mean(values: np.ndarray, fraction: float) -> float:
     cut = math.floor(fraction * len(ordered))
     kept = ordered[cut : len(ordered) - cut]
     return float(kept.mean()) if kept.size else float("nan")
+
+
+def cluster_paired_test(
+    leg: pd.DataFrame, control: pd.DataFrame, clusters: pd.Series, spec: ClusterBootstrapSpec
+) -> dict:
+    """Paired mean ``r_cost`` difference with a bootstrap that resamples whole clusters (e.g. issuers).
+
+    ``leg``, ``control`` and ``clusters`` are row-aligned; rows with a non-finite value are dropped first.
+    """
+    if not len(leg) == len(control) == len(clusters):
+        raise ValueError("leg, control and clusters must have the same length")
+    leg_r = np.asarray(leg["r_cost"], dtype=float)
+    ctl_r = np.asarray(control["r_cost"], dtype=float)
+    keep = np.isfinite(leg_r) & np.isfinite(ctl_r)
+    labels, _ = pd.factorize(pd.Series(np.asarray(clusters)[keep]))
+    diff = (leg_r - ctl_r)[keep]
+    n_clusters = int(labels.max()) + 1 if labels.size else 0
+    nan = float("nan")
+    if n_clusters == 0:
+        return {
+            "n": 0,
+            "n_clusters": 0,
+            "mean_difference": nan,
+            "ci90": [nan, nan],
+            "finite_draws": 0,
+            "holds": False,
+        }
+    sums = np.bincount(labels, weights=diff, minlength=n_clusters)
+    counts = np.bincount(labels, minlength=n_clusters).astype(float)
+    rng = np.random.default_rng(spec.seed)
+    draws = rng.integers(0, n_clusters, size=(spec.draws, n_clusters))
+    boot = sums[draws].sum(axis=1) / counts[draws].sum(axis=1)
+    ci90 = _ci90(boot)
+    mean_difference = float(diff.mean())
+    return {
+        "n": int(diff.size),
+        "n_clusters": n_clusters,
+        "mean_difference": mean_difference,
+        "ci90": ci90,
+        "finite_draws": int(np.isfinite(boot).sum()),
+        "holds": bool(mean_difference > 0.0 and np.isfinite(ci90[0]) and ci90[0] > 0.0),
+    }

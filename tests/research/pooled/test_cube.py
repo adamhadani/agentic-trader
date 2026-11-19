@@ -1,4 +1,5 @@
 # tests/research/pooled/test_cube.py
+import hashlib
 from datetime import UTC, date, datetime, time, timedelta
 
 import numpy as np
@@ -15,6 +16,7 @@ from agentic_trader.research.pooled.cube import (
     build_cube,
     check_coverage,
     load_cube,
+    merge_cubes,
     save_cube,
     tiebreak_key,
 )
@@ -229,3 +231,52 @@ def test_a_labelled_cube_passes_the_coverage_check():
     days = weekdays(date(2021, 3, 1), 10)
     bars = {"AAA": hourly(days, [100.0, 100.0, 100.0, 106.0])}
     check_coverage(build_cube(eligibility(days[:1], ["AAA"], [[True]]), bars, SPEC, cohort_sha256="c" * 64), COVERAGE)
+
+
+def _tiny_cube(days, symbols, *, spec_identity="s", seed=0.0, cohort="c"):
+    shape = (len(days), len(symbols))
+    arrays = {
+        "eligible": np.ones(shape, dtype=bool),
+        "labelled": np.ones(shape, dtype=bool),
+        "r_gross": np.full(shape, seed),
+        "r_cost": np.arange(shape[0] * shape[1], dtype=float).reshape(shape) + seed,
+        "holding": np.ones(shape, dtype=np.int16),
+        "hit": np.zeros(shape, dtype=np.int8),
+        "tiebreak": np.arange(shape[0] * shape[1], dtype=np.uint64).reshape(shape),
+        "dollar_volume": np.full(shape, 1.0 + seed),
+    }
+    return LabelCube(
+        spec_identity=spec_identity,
+        cohort_sha256=cohort * 64,
+        sessions=tuple(days),
+        symbols=tuple(symbols),
+        arrays=arrays,
+        coverage={"who": cohort},
+    )
+
+
+def test_merge_cubes_concatenates_and_hashes():
+    days = weekdays(date(2021, 3, 1), 4)
+    first = _tiny_cube(days, ("AAA", "BBB"), seed=0.0, cohort="a")
+    second = _tiny_cube(days, ("CCC",), seed=10.0, cohort="b")
+    merged = merge_cubes(first, second)
+    assert merged.symbols == ("AAA", "BBB", "CCC")
+    assert merged.sessions == first.sessions
+    assert merged.spec_identity == "s"
+    a, b, m = (c.window(days[0], days[-1]) for c in (first, second, merged))
+    for name in ("eligible", "labelled", "r_gross", "r_cost", "holding", "hit", "tiebreak", "dollar_volume"):
+        np.testing.assert_array_equal(getattr(m, name), np.hstack([getattr(a, name), getattr(b, name)]))
+    assert merged.sha256 not in {first.sha256, second.sha256}
+    assert merged.cohort_sha256 == hashlib.sha256(f"{first.cohort_sha256}|{second.cohort_sha256}".encode()).hexdigest()
+    assert merged.coverage == {"merged": [first.coverage, second.coverage]}
+
+
+def test_merge_cubes_refuses_overlap_or_mismatch():
+    days = weekdays(date(2021, 3, 1), 4)
+    first = _tiny_cube(days, ("AAA", "BBB"))
+    with pytest.raises(ValueError, match="symbols"):
+        merge_cubes(first, _tiny_cube(days, ("BBB", "CCC")))
+    with pytest.raises(ValueError, match="sessions"):
+        merge_cubes(first, _tiny_cube(days[:3], ("CCC",)))
+    with pytest.raises(ValueError, match="spec"):
+        merge_cubes(first, _tiny_cube(days, ("CCC",), spec_identity="other"))

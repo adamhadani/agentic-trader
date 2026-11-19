@@ -431,6 +431,132 @@ def load_runup_entry(path: Path) -> LoadedRunupEntry:
     )
 
 
+class IddayCohort(BaseModel, frozen=True, extra="forbid"):
+    name: Literal["v3", "xu"]
+    pooled_protocol: str = Field(min_length=1)
+    pooled_protocol_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cube_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class IddayWindow(PeadWindow, frozen=True, extra="forbid"):
+    # The last session a leg may exit on; the filings acquisition must reach it.
+    last_exit: date
+
+
+class IddaySources(BaseModel, frozen=True, extra="forbid"):
+    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    events_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    parser_version: Literal["idday-parser-v1"]
+    filings_from: date
+    filings_through: date
+
+
+class IddayParserCheck(BaseModel, frozen=True, extra="forbid"):
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    seed: int
+    sample_size: int = Field(default=60, ge=1)
+    max_errors: int = Field(default=9, ge=0)
+    # Symbols hand-audited in the feasibility check, kept out of the check sample.
+    excluded_symbols: tuple[str, ...]
+
+
+class IddayEventRules(BaseModel, frozen=True, extra="forbid"):
+    entry_offset_sessions: int = Field(default=2, ge=1)
+    min_hold_sessions: int = Field(default=1, ge=1)
+    max_hold_sessions: int = Field(default=63, ge=1)
+    overlap_sessions: int = Field(default=63, ge=0)
+    earnings_band_sessions: int = Field(default=3, ge=0)
+    identity_lookback_sessions: int = Field(default=60, ge=1)
+    structural_exclusion_days: int = Field(default=5, ge=0)
+
+    @model_validator(mode="after")
+    def _hold_ordered(self) -> IddayEventRules:
+        if self.min_hold_sessions > self.max_hold_sessions:
+            raise ValueError("min_hold_sessions cannot exceed max_hold_sessions")
+        return self
+
+
+class IddayControl(BaseModel, frozen=True, extra="forbid"):
+    matched_controls: int = Field(default=5, ge=1)
+    match_return_sessions: int = Field(default=20, ge=1)
+    liquidity_buckets: int = Field(default=3, ge=2)
+    coverage_sessions: int = Field(default=130, ge=1)
+    quiet_before_sessions: int = Field(default=30, ge=0)
+    event_free_before_sessions: int = Field(default=63, ge=0)
+    event_free_after_sessions: int = Field(default=10, ge=0)
+
+
+class IddayPlacebo(BaseModel, frozen=True, extra="forbid"):
+    earnings_span_sessions: int = Field(default=252, ge=1)
+    standalone_span_sessions: int = Field(default=126, ge=1)
+    report_event_free_before_sessions: int = Field(default=5, ge=0)
+    seed: int = 20261122
+    planted_return: float = Field(default=0.0185, gt=0)  # fraction of the decision price
+
+
+class ClusterBootstrapSpec(BaseModel, frozen=True, extra="forbid"):
+    draws: int = Field(ge=100)
+    seed: int
+
+
+class IddayEntry(BaseModel, frozen=True, extra="forbid"):
+    """The frozen investor-day run-up development protocol (catalog entry ``idday``)."""
+
+    id: Literal["idday"]
+    version: int = Field(ge=1)
+    title: str
+    references: tuple[str, ...]
+    hypotheses: str
+    decision_rule: str
+    window: IddayWindow
+    cohorts: tuple[IddayCohort, IddayCohort]
+    investor_days: IddaySources
+    parser_check: IddayParserCheck
+    event: IddayEventRules
+    trade: RunupTrade
+    costs_bps_per_side: tuple[float, ...] = Field(min_length=1)
+    decision_cost_bps: float = Field(ge=0)
+    control: IddayControl
+    placebo: IddayPlacebo
+    bootstrap: BootstrapSpec
+    cluster_bootstrap: ClusterBootstrapSpec
+    pass_rule: PassRule
+
+    @model_validator(mode="after")
+    def _consistent(self) -> IddayEntry:
+        if self.decision_cost_bps not in self.costs_bps_per_side:
+            raise ValueError("decision_cost_bps must be one of costs_bps_per_side")
+        if tuple(c.name for c in self.cohorts) != ("v3", "xu"):
+            raise ValueError("cohorts must be v3 then xu")
+        if self.window.last_exit < self.window.decisions[1]:
+            raise ValueError("window.last_exit must not precede the last decision")
+        if self.investor_days.filings_through < self.window.last_exit:
+            raise ValueError("investor_days.filings_through must reach window.last_exit")
+        return self
+
+    def check_against(self, spec: CubeSpec) -> None:
+        """Refuse a cube whose decisions do not cover the window or whose ATR window differs."""
+        start, end = self.window.decisions
+        if start < spec.decisions[0] or end > spec.decisions[1]:
+            raise ValueError("window.decisions must lie inside the cube spec's decisions")
+        if self.trade.atr_window != spec.bracket.atr_window:
+            raise ValueError("trade.atr_window must equal the cube bracket's atr_window")
+
+
+@dataclass(frozen=True)
+class LoadedIddayEntry:
+    entry: IddayEntry
+    sha256: str
+    path: Path
+
+
+def load_idday_entry(path: Path) -> LoadedIddayEntry:
+    raw = path.read_bytes()
+    return LoadedIddayEntry(
+        entry=IddayEntry.model_validate_json(raw), sha256=hashlib.sha256(raw).hexdigest(), path=path
+    )
+
+
 def catalog_entry_id(path: Path) -> str:
     """The ``id`` of a catalog entry file, read before choosing which model validates it."""
     document = json.loads(path.read_bytes())
