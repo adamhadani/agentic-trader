@@ -1,10 +1,12 @@
 import dataclasses
 import hashlib
 import json
+import re
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from click.testing import CliRunner
 
 from agentic_trader.agent.earnings import CalendarRow, EarningsTiming
@@ -81,10 +83,36 @@ def test_refuses_without_user_agent(tmp_path, monkeypatch):
     assert result.exit_code == 1 and "EDGAR_USER_AGENT is required" in result.output
 
 
+def test_fetch_prints_progress_to_stderr_without_the_user_agent(tmp_path, monkeypatch):
+    pairs = [(f"S{n:03d}", n) for n in range(1, 61)]
+    router = Router(tickers(*pairs), dict.fromkeys(range(1, 61), 0))
+    _patch(monkeypatch, router, {"a.json": [symbol for symbol, _ in pairs]})
+    monkeypatch.setenv("EDGAR_USER_AGENT", UA)
+    _cohort(tmp_path / "a.json")
+    args = [
+        "fetch",
+        "--cohort",
+        str(tmp_path / "a.json"),
+        "--cache",
+        str(tmp_path / "c"),
+        "--output",
+        str(tmp_path / "o"),
+    ]
+    result = CliRunner().invoke(cmd.investor_days_group, args)
+    assert result.exit_code == 0, result.output
+    lines = result.stderr.splitlines()
+    assert [line.split(" issuers")[0] for line in lines] == ["investor days: 50/60", "investor days: 60/60"]
+    assert "investor days:" not in result.stdout
+    assert "test@example.com" not in result.stderr and "Test Co" not in result.stderr
+
+
 # --- sample -----------------------------------------------------------------------------------------
 
 REPO = Path(__file__).resolve().parents[2]
 V3_PROTOCOL = "config/research/pooled/cohort3-events-v1.json"
+XU_PROTOCOL = "config/research/pooled/cohort-xu-insider-v1.json"
+COHORT_SYMBOLS = {"cohort-v3.json": ("AAA", "BBB", "CCC"), "cohort-xu.json": ("INTU",)}
+CUBE_V3 = "b" * 64
 ENTRY_FIXTURE = REPO / "tests/research/apriori/fixtures/idday-v1-test.json"
 
 
@@ -97,12 +125,24 @@ def _weekdays(first, last):
     return tuple(days)
 
 
-def _sample_setup(tmp_path, monkeypatch, *, pages_sha256=None):
+def _small_cohorts(monkeypatch, symbols):
+    """The real cohort files and digests, with their symbols replaced by ``symbols[file name]``."""
+    real = cmd.load_cohort
+
+    def load(path):
+        return dataclasses.replace(real(path), cohort=SimpleNamespace(symbols=symbols[path.name]))
+
+    monkeypatch.setattr(cmd, "load_cohort", load)
+
+
+def _sample_setup(tmp_path, monkeypatch, *, pages_sha256=None, unmapped=(), cohort_symbols=None):
     protocol = load_campaign_protocol(REPO / V3_PROTOCOL).protocol
     cohort = load_cohort(REPO / protocol.cohort)
     spec = protocol.cube_spec()
+    _small_cohorts(monkeypatch, cohort_symbols or COHORT_SYMBOLS)
     document = json.loads(ENTRY_FIXTURE.read_text())
     document["cohorts"][0]["pooled_protocol_sha256"] = hashlib.sha256((REPO / V3_PROTOCOL).read_bytes()).hexdigest()
+    document["cohorts"][1]["pooled_protocol_sha256"] = hashlib.sha256((REPO / XU_PROTOCOL).read_bytes()).hexdigest()
     document["parser_check"]["sample_size"] = 2
     entry = tmp_path / "entry.json"
     entry.write_text(json.dumps(document))
@@ -111,7 +151,7 @@ def _sample_setup(tmp_path, monkeypatch, *, pages_sha256=None):
     pooled = tmp_path / "pooled"
     pooled.mkdir()
     cube_cache_path(pooled, cohort, spec).write_bytes(b"")  # load_cube is patched; the file must exist
-    cube = SimpleNamespace(sessions=days, spec_identity=spec.identity, cohort_sha256=cohort.sha256)
+    cube = SimpleNamespace(sessions=days, spec_identity=spec.identity, cohort_sha256=cohort.sha256, sha256=CUBE_V3)
     monkeypatch.setattr(cmd, "load_cube", lambda path: cube)
 
     report = CalendarRow("BBB", days[100], EarningsTiming.UNSPECIFIED, None, None, None, None, None)
@@ -122,7 +162,7 @@ def _sample_setup(tmp_path, monkeypatch, *, pages_sha256=None):
 
     store = InvestorDayStore(tmp_path / "cache")
     names = {1: ("AAA",), 2: ("BBB",), 3: ("CCC",), 4: ("INTU",)}
-    store.write_hits([IssuerRecord(cik, symbols, True, False, ()) for cik, symbols in names.items()], [])
+    store.write_hits([IssuerRecord(cik, symbols, True, False, ()) for cik, symbols in names.items()], list(unmapped))
     events = []
     for cik, symbols in names.items():
         filed, held = days[50 + cik], days[65 + cik]
@@ -179,6 +219,7 @@ def test_sample_writes_the_seeded_parser_sample(tmp_path, monkeypatch):
     assert [row["symbols"] for row in written["sample"]] == [["AAA"], ["CCC"]]
     assert written["candidate_counts"]["reasons"] == {"earnings_in_hold": 1}
     assert written["sessions"]["source"] == "cube"
+    assert written["cube_sha256_v3"] == CUBE_V3
     again = CliRunner().invoke(cmd.investor_days_group, args)
     assert again.exit_code == 1 and "exists" in again.output
 
@@ -187,4 +228,21 @@ def test_sample_refuses_a_pages_digest_mismatch(tmp_path, monkeypatch):
     _, args = _sample_setup(tmp_path, monkeypatch, pages_sha256="0" * 64)
     result = CliRunner().invoke(cmd.investor_days_group, args)
     assert result.exit_code == 1 and "pages_sha256" in result.output
+    assert not (tmp_path / "out" / "parser_sample.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("unmapped", "cohort_symbols", "message"),
+    [
+        (("ZZZ",), None, r"1 extra \['ZZZ'\]"),
+        ((), {**COHORT_SYMBOLS, "cohort-xu.json": ("INTU", "KMI")}, r"1 missing \['KMI'\]"),
+    ],
+)
+def test_sample_refuses_a_store_whose_coverage_differs_from_both_cohorts(
+    tmp_path, monkeypatch, unmapped, cohort_symbols, message
+):
+    _, args = _sample_setup(tmp_path, monkeypatch, unmapped=unmapped, cohort_symbols=cohort_symbols)
+    result = CliRunner().invoke(cmd.investor_days_group, args)
+    assert result.exit_code == 1 and "does not cover exactly" in result.output
+    assert re.search(message, result.output)
     assert not (tmp_path / "out" / "parser_sample.json").exists()

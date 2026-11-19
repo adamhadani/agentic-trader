@@ -3,8 +3,11 @@
 Called only from inside ``execute_idday_study``'s ``build`` callable, after the manifest exists. Every pinned
 digest is checked on the bytes before use: both pooled protocols, both cohorts, both cached cubes, the Nasdaq
 pages and each cohort's corporate actions, the investor-day acquisition, the parsed event table and the parser
-check file. The parser check is re-validated against a sample rebuilt from these inputs. Every refusal raises
-``ValueError`` before any SPY bar read; the only provider access ahead of that is the calendar read
+check file. The entry's ``last_exit`` must not pass the pinned earnings archive's end. The cheap digests (the
+acquisition, the event table and the parser check file) and the hits' filing range are checked before any price
+bar is loaded; the acquisition must then cover exactly the merged cube's symbols, and the parser check is
+re-validated against a sample rebuilt from these inputs. Every refusal raises ``ValueError`` (a wrong protocol
+kind ``TypeError``) before any SPY bar read; the only provider access ahead of that is the calendar read
 ``build_cube_inputs`` makes. SPY bars are then read as in ``runup_runner`` (daily from the pooled cache when
 present, hourly into ``market_cache_dir``).
 """
@@ -32,7 +35,12 @@ from agentic_trader.research.apriori.idday_events import (
 )
 from agentic_trader.research.apriori.idday_parser import parse_filings
 from agentic_trader.research.apriori.runup_runner import MARKET_SYMBOL, _file_sha256, _market_frame, _npz_files
-from agentic_trader.research.investor_days import InvestorDayStore, content_sha256
+from agentic_trader.research.investor_days import (
+    InvestorDayStore,
+    check_coverage,
+    check_filing_range,
+    content_sha256,
+)
 from agentic_trader.research.pooled.campaign import (
     EventsCampaignProtocol,
     InsiderCampaignProtocol,
@@ -101,6 +109,12 @@ async def build_idday_inputs(
         raise TypeError(f"the v3 protocol is a {protocol_v3.id} protocol, not an events protocol")
     if not isinstance(protocol_xu, InsiderCampaignProtocol):
         raise TypeError(f"the xu protocol is a {protocol_xu.id} protocol, not an insider protocol")
+    archive_end = protocol_v3.event_inputs.earnings.calendar_through
+    if entry.window.last_exit > archive_end:
+        raise ValueError(
+            f"window.last_exit {entry.window.last_exit.isoformat()} is after the earnings archive end "
+            f"{archive_end.isoformat()} (the v3 protocol's event_inputs.earnings.calendar_through)"
+        )
     spec_v3, spec_xu = protocol_v3.cube_spec(), protocol_xu.cube_spec()
     if spec_v3.identity != spec_xu.identity:
         raise ValueError(f"the cohorts' cube specs differ ({spec_v3.identity} vs {spec_xu.identity})")
@@ -117,7 +131,33 @@ async def build_idday_inputs(
     if xu_digest != pinned_xu:
         raise ValueError(f"the cohort xu corporate actions have digest {xu_digest}, but the protocol pins {pinned_xu}")
 
-    # 3. Cubes.
+    # 3. The cheap digests, before any price bar: the investor-day acquisition (and its hits' filing range), its
+    # event table and the parser check file.
+    store = InvestorDayStore(investor_days_dir)
+    acquisition = await asyncio.to_thread(content_sha256, store)
+    if acquisition != entry.investor_days.content_sha256:
+        raise ValueError(
+            f"the investor-day acquisition has content_sha256 {acquisition}, but the entry pins "
+            f"{entry.investor_days.content_sha256}"
+        )
+    records = await asyncio.to_thread(store.issuers)
+    unmapped = await asyncio.to_thread(store.unmapped)
+    check_filing_range(records, entry.investor_days.filings_from, entry.investor_days.filings_through)
+    table = await asyncio.to_thread(parse_filings, store)
+    if table.events_sha256 != entry.investor_days.events_sha256:
+        raise ValueError(
+            f"the parsed event table has events_sha256 {table.events_sha256}, but the entry pins "
+            f"{entry.investor_days.events_sha256}"
+        )
+    check_bytes = await asyncio.to_thread(parser_check.read_bytes)
+    check_digest = hashlib.sha256(check_bytes).hexdigest()
+    if check_digest != entry.parser_check.sha256:
+        raise ValueError(
+            f"the parser check file has SHA-256 {check_digest}, but the entry pins parser_check.sha256 "
+            f"{entry.parser_check.sha256}"
+        )
+
+    # 4. Cubes.
     build_v3 = await build_cube_inputs(
         cohort_v3,
         spec_v3,
@@ -160,25 +200,10 @@ async def build_idday_inputs(
     symbols = tuple(merged.symbols)
     actions = (*v3_actions, *xu_actions)
 
-    # 4. The investor-day acquisition and its event table.
-    store = InvestorDayStore(investor_days_dir)
-    acquisition = await asyncio.to_thread(content_sha256, store)
-    if acquisition != entry.investor_days.content_sha256:
-        raise ValueError(
-            f"the investor-day acquisition has content_sha256 {acquisition}, but the entry pins "
-            f"{entry.investor_days.content_sha256}"
-        )
-    table = await asyncio.to_thread(parse_filings, store)
-    if table.events_sha256 != entry.investor_days.events_sha256:
-        raise ValueError(
-            f"the parsed event table has events_sha256 {table.events_sha256}, but the entry pins "
-            f"{entry.investor_days.events_sha256}"
-        )
-    records = await asyncio.to_thread(store.issuers)
-    unmapped = await asyncio.to_thread(store.unmapped)
-    wanted = set(symbols)
+    # 5. The acquisition covers exactly the merged cube's symbols: every issuer's symbols plus the unmapped ones.
+    check_coverage(records, unmapped, symbols, what="the merged cube's symbols")
     issuers = {record.cik: record for record in records}
-    issuer_of = {symbol: record.cik for record in records for symbol in record.symbols if symbol in wanted}
+    issuer_of = {symbol: record.cik for record in records for symbol in record.symbols}
     reports = {symbol: pages.rows_by_symbol.get(symbol, ()) for symbol in symbols}
     inputs = IddayInputs(
         cube=merged,
@@ -198,19 +223,12 @@ async def build_idday_inputs(
         band_of=cohort_bands(cohort_v3.cohort, cohort_xu.cohort),
     )
 
-    # 5. The parser check: the file's digest, then its labels against a sample rebuilt from these inputs.
-    check_bytes = await asyncio.to_thread(parser_check.read_bytes)
-    check_digest = hashlib.sha256(check_bytes).hexdigest()
-    if check_digest != entry.parser_check.sha256:
-        raise ValueError(
-            f"the parser check file has SHA-256 {check_digest}, but the entry pins parser_check.sha256 "
-            f"{entry.parser_check.sha256}"
-        )
+    # 6. The parser check's labels against a sample rebuilt from these inputs (its file digest is checked above).
     candidates, _ = await asyncio.to_thread(idday_candidates, inputs, entry)
     sample = await asyncio.to_thread(sample_parser_check, candidates, table, entry)
     check_result = validate_parser_check(json.loads(check_bytes), sample, entry)
 
-    # 6. SPY bars: the first provider bar read, only after every check above.
+    # 7. SPY bars: the first provider bar read, only after every check above.
     start = datetime.combine(spec_v3.bars_from, time.min, tzinfo=UTC)
     end = datetime.combine(entry.window.bars_through, time.max, tzinfo=UTC)
     if progress is not None:

@@ -14,8 +14,9 @@ once per ``(symbol, D, H)``: a name that controls two legs with different holds 
 
 Exclusions are counted by reason, decision year and role, as in ``runup``: ``no_hourly_bars``,
 ``missing_session_bars`` (a session of ``[D, D + H - 1]`` without a regular bar), ``no_atr`` (controls only),
-``no_decision_price``, ``degenerate_levels``, ``immature`` and ``hold_outside_window`` (the fill is not on ``D`` or
-the exit is after the close of the ``H``-th session, which is ``X`` for a leg or placebo, validated on entry).
+``no_decision_price``, ``degenerate_levels``, ``immature`` and ``hold_outside_window`` (the fill is not on ``D``,
+the exit is after the close of the ``H``-th session, which is ``X`` for a leg or placebo, validated on entry, or a
+time exit falls on any other day than that session).
 Controls are labelled with their row's hold; the control row is the mean of its ``matched_controls`` cells, and any
 failing cell leaves the row unpaired under the first failing cell's reason (``no_candidates`` when
 ``match_controls`` found too few names), counted by role, year and class. Every labelled cell gets
@@ -282,7 +283,10 @@ class _Labeller:
             return "immature"
         r, fill = outcome.r, outcome.entry_price
         assert r is not None and fill is not None  # a resolved outcome has both
-        if _ny_date(outcome.exit_time) > self._days[last]:
+        # An exit after the close of X is outside the window, and so is a time exit on any day but X: the walk
+        # counts sessions by bar dates, so a stray bar on a non-trading date would end the hold early.
+        exit_day = _ny_date(outcome.exit_time)
+        if exit_day > self._days[last] or (outcome.hit == BracketHit.TIMEOUT and exit_day != self._days[last]):
             return "hold_outside_window"
         risk_unit = abs(levels.entry - levels.stop)
         return {

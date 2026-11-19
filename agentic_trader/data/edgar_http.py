@@ -7,7 +7,8 @@ One GET is allowed only on ``https://www.sec.gov``, ``https://data.sec.gov`` or 
 callers' clients set ``follow_redirects=False``), has a total deadline (``REQUEST_DEADLINE_SECONDS``) and a body
 budget (``MAX_DOCUMENT_BYTES``), and treats any response but a 200 (or a 404 the caller allows) as a failure.
 ``retrying`` paces every attempt and applies one ``RetryPolicy``: the insider capture's default retries a
-transport error once at once; the filings capture's also retries an HTTP 429 or 5xx, after 5 seconds.
+transport error once at once; the filings capture's (and the investor-day acquisition's, through ``edgar_fetch``'s
+``retry``) also retries an HTTP 429 or 5xx, after 5 seconds.
 
 The ``EDGAR_USER_AGENT`` contact goes in the request's ``User-Agent`` header only. Nothing here logs it, and
 callers record failures by exception type name or HTTP status, never by exception text.
@@ -170,7 +171,13 @@ async def edgar_fetch(
     pace: Callable[[], Awaitable[None]],
     *,
     missing_ok: bool = False,
+    retry: RetryPolicy = TRANSPORT_RETRY,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> bytes | None:
-    """One paced GET on an EDGAR host (a transport error is retried once); a 404 is ``None`` when ``missing_ok``."""
+    """One paced GET on an EDGAR host, retried once as ``retry`` allows; a 404 is ``None`` when ``missing_ok``.
+
+    The default (``TRANSPORT_RETRY``, a transport error retried at once) is the insider capture's.
+    """
     check_edgar_url(url)
-    return await retrying(partial(_attempt, client, url, user_agent, missing_ok=missing_ok), pace)
+    attempt = partial(_attempt, client, url, user_agent, missing_ok=missing_ok)
+    return await retrying(attempt, pace, retry=retry, sleep=sleep)

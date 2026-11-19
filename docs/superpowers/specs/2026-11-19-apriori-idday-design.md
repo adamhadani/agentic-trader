@@ -112,8 +112,11 @@ that a contact was declared.
    `www.sec.gov/Archives` and cached gzip-compressed, keyed by accession and file name.
    - A 404 is counted and skipped.
    - A 403 stops the acquisition.
-   - Other failures go through the shared EDGAR helpers (`data/edgar_http.edgar_fetch`, one transport retry),
-     then are counted.
+   - Other failures go through the shared EDGAR helpers (`data/edgar_http.edgar_fetch` with `TRANSIENT_RETRY`:
+     one paced retry on a transport error, a 429 or a 5xx).
+   - A failure that persists is counted in the issuer's `doc_failures`, which makes the issuer unclean, and the run
+     continues. Malformed search or submissions payloads are handled the same way.
+   - A progress line goes to stderr every 50 issuers. It never contains the user agent.
    - Requests are paced by `edgar_pacer()` at the repo's fair-access rate (`REQUESTS_PER_SECOND`, 2 per second).
      `efts.sec.gov` joins `EDGAR_HOSTS`.
 5. **Output.** Output goes to `~/agentic-trader-research/investor-day-filings-<date>/`:
@@ -355,7 +358,11 @@ is a new version.
   the executor.
 - `research/apriori/idday_runner.py`: input assembly. It checks both protocols, both cohorts, both cubes, pages,
   both action sets, the acquisition, events and parser-check digests; the merged cube is built with
-  `research/pooled/cube.merge_cubes`.
+  `research/pooled/cube.merge_cubes`. It also checks two things:
+  - the acquisition covers exactly the merged cube's symbols (every issuer's symbols plus the unmapped ones);
+  - every hit's filing date lies in the entry's filing range.
+  It runs the cheap digest checks before loading any price bars, and it refuses a `last_exit` after the archive
+  end.
 - `research/apriori/statistics.cluster_paired_test`.
 - `research/apriori/catalog.py`: `IddayEntry` (`id: "idday"`), `load_idday_entry`, and validation (decision window
   inside the cube spec's decisions; `X` bound ≤ the archive end).

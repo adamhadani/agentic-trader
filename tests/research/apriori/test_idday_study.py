@@ -284,6 +284,26 @@ def test_a_fill_that_slips_past_the_decision_session_is_outside_the_hold_window(
     assert labels.empty and counts["reasons"] == {"hold_outside_window": 1}
 
 
+def test_a_time_exit_that_is_not_on_x_is_outside_the_hold_window(monkeypatch):
+    # A stray regular-hours bar on a Saturday inside the hold counts as a session in the walk, so the time exit
+    # lands one trading day before X.
+    saturday = next(DAYS[D] + timedelta(days=k) for k in range(1, 8) if (DAYS[D] + timedelta(days=k)).weekday() == 5)
+    assert DAYS[D] < saturday < DAYS[D + 9] and saturday not in DAYS
+    stamp = datetime.combine(saturday, time(12), tzinfo=ET_TZ).astimezone(UTC)
+    stray = pd.DataFrame([(100.0, 100.0, 100.0, 100.0, 1000.0)], columns=FLAT.columns, index=pd.DatetimeIndex([stamp]))
+    seen: list[Any] = []
+
+    def spy(levels, when, hourly, **kwargs):
+        seen.append(label_bracket(levels, when, hourly, **kwargs))
+        return seen[-1]
+
+    monkeypatch.setattr(idday_study, "label_bracket", spy)
+    labels, _, _, counts = _label(_events(_event("AAA")), {"AAA": pd.concat([FLAT, stray]).sort_index()})
+    [outcome] = seen
+    assert outcome.hit == "timeout" and _ny_date(outcome.exit_time) == DAYS[D + 8]
+    assert labels.empty and counts["reasons"] == {"hold_outside_window": 1}
+
+
 def test_a_stop_touch_exits_at_the_stop_and_costs_come_from_one_walk():
     frame = _hourly(100.0, bars={(D + 3, 12): (99.5, 99.5, 97.5, 98.5)})
     row = _label(_events(_event("AAA", hold=30)), {"AAA": frame})[0].iloc[0]

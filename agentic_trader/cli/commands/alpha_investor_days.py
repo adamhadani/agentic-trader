@@ -18,12 +18,21 @@ import httpx
 from agentic_trader.cli.commands.alpha import research_environment
 from agentic_trader.cli.utils import coro
 from agentic_trader.data.edgar_http import TIMEOUT_SECONDS, edgar_pacer
-from agentic_trader.research.apriori.catalog import load_idday_entry
+from agentic_trader.research.apriori.catalog import IddayCohort, load_idday_entry
 from agentic_trader.research.apriori.idday_events import candidate_legs, issuer_reports, sample_parser_check
 from agentic_trader.research.apriori.idday_parser import load_event_table, parse_filings, save_event_table
-from agentic_trader.research.investor_days import InvestorDayStore, acquire_investor_days, content_sha256
-from agentic_trader.research.pooled.campaign import EventsCampaignProtocol, load_campaign_protocol
-from agentic_trader.research.pooled.cohort import load_cohort
+from agentic_trader.research.investor_days import (
+    InvestorDayStore,
+    acquire_investor_days,
+    check_coverage,
+    content_sha256,
+)
+from agentic_trader.research.pooled.campaign import (
+    EventsCampaignProtocol,
+    InsiderCampaignProtocol,
+    load_campaign_protocol,
+)
+from agentic_trader.research.pooled.cohort import LoadedCohort, load_cohort
 from agentic_trader.research.pooled.cube import load_cube
 from agentic_trader.research.pooled.events import load_calendar_pages
 from agentic_trader.research.pooled.runner import cube_cache_path
@@ -35,6 +44,10 @@ DEFAULT_ENTRY = Path("config/research/apriori/idday-v1.json")
 
 def _client(user_agent: str) -> httpx.AsyncClient:
     return httpx.AsyncClient(headers={"User-Agent": user_agent}, follow_redirects=False, timeout=TIMEOUT_SECONDS)
+
+
+def _progress(line: str) -> None:
+    click.echo(line, err=True)
 
 
 @click.group("investor-days")
@@ -73,9 +86,10 @@ async def fetch_cmd(cohorts: tuple[Path, ...], cache: Path, output: Path, start,
                 filings_from=date(start.year, start.month, start.day),
                 filings_through=date(end.year, end.month, end.day),
                 pace=edgar_pacer(),
+                progress=_progress,
             )
-    except (ValueError, httpx.HTTPError) as exc:
-        raise click.ClickException(str(exc)) from exc
+    except (ValueError, httpx.HTTPError, TimeoutError) as exc:
+        raise click.ClickException(str(exc) or type(exc).__name__) from exc
     manifest["user_agent_set"] = True
     manifest["command"] = list(sys.argv)
     manifest["cohorts"] = [str(path) for path in cohorts]
@@ -100,6 +114,24 @@ def events_cmd(cache: Path, output: Path):
     click.echo(f"announced {counts['announced']} event_only {counts['event_only']}")
 
 
+def _pinned_cohort(repo_root: Path, pinned: IddayCohort) -> tuple[Any, LoadedCohort]:
+    """The entry's pooled protocol for one cohort and that protocol's cohort file, both digest-checked."""
+    protocol_path = repo_root / pinned.pooled_protocol
+    digest = hashlib.sha256(protocol_path.read_bytes()).hexdigest()
+    if digest != pinned.pooled_protocol_sha256:
+        raise ValueError(
+            f"{pinned.pooled_protocol} has SHA-256 {digest}, but the entry pins {pinned.pooled_protocol_sha256}"
+        )
+    protocol = load_campaign_protocol(protocol_path).protocol
+    expected = EventsCampaignProtocol if pinned.name == "v3" else InsiderCampaignProtocol
+    if not isinstance(protocol, expected):
+        raise ValueError(f"{pinned.pooled_protocol} is a {protocol.id} protocol, not the {pinned.name} one")  # noqa: TRY004 -- a CLI refusal
+    cohort = load_cohort(repo_root / protocol.cohort)
+    if cohort.sha256 != protocol.cohort_sha256:
+        raise ValueError(f"the cohort file has SHA-256 {cohort.sha256}, but the protocol pins {protocol.cohort_sha256}")
+    return protocol, cohort
+
+
 def _parser_sample(
     cache: Path, events_file: Path, repo_root: Path, entry_file: Path, earnings_pages: Path, pooled_cache: Path
 ) -> dict[str, Any]:
@@ -109,19 +141,15 @@ def _parser_sample(
     table = load_event_table(events_file)
     if table.content_sha256 != content_sha256(store):
         raise ValueError("the event table was parsed from another acquisition (content_sha256 differs from --cache)")
-    pinned = entry.cohorts[0]
-    protocol_path = repo_root / pinned.pooled_protocol
-    digest = hashlib.sha256(protocol_path.read_bytes()).hexdigest()
-    if digest != pinned.pooled_protocol_sha256:
-        raise ValueError(
-            f"{pinned.pooled_protocol} has SHA-256 {digest}, but the entry pins {pinned.pooled_protocol_sha256}"
-        )
-    protocol = load_campaign_protocol(protocol_path).protocol
-    if not isinstance(protocol, EventsCampaignProtocol):
-        raise ValueError(f"{pinned.pooled_protocol} is a {protocol.id} protocol, not an events protocol")  # noqa: TRY004 -- a CLI refusal
-    cohort = load_cohort(repo_root / protocol.cohort)
-    if cohort.sha256 != protocol.cohort_sha256:
-        raise ValueError(f"the cohort file has SHA-256 {cohort.sha256}, but the protocol pins {protocol.cohort_sha256}")
+    protocol, cohort = _pinned_cohort(repo_root, entry.cohorts[0])
+    _, cohort_xu = _pinned_cohort(repo_root, entry.cohorts[1])
+    # The merged cube's symbols are the two cohorts' symbols: a wrong cache is refused before any sampling.
+    check_coverage(
+        store.issuers(),
+        store.unmapped(),
+        (*cohort.cohort.symbols, *cohort_xu.cohort.symbols),
+        what="cohorts v3 and xu",
+    )
     spec = protocol.cube_spec()
     cube_path = cube_cache_path(pooled_cache, cohort, spec)
     if not cube_path.exists():
@@ -142,6 +170,7 @@ def _parser_sample(
         **sample,
         "parser_version": table.parser_version,
         "content_sha256": table.content_sha256,
+        "cube_sha256_v3": cube.sha256,
         "candidate_counts": counts,
         "sessions": {
             "source": "cube",

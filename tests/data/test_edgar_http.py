@@ -5,6 +5,9 @@ Fake HTTP only (``httpx.MockTransport``). The user agent is a fake contact.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
+
 import httpx
 import pytest
 
@@ -94,6 +97,31 @@ async def test_the_insider_default_retries_a_transport_error_once_and_never_an_h
         with pytest.raises(httpx.HTTPStatusError):
             await edgar_fetch(client, url, UA, _no_pace)
     assert len(throttled.requests) == 1
+
+
+def test_edgar_fetch_defaults_to_the_insider_transport_retry():
+    parameters = inspect.signature(edgar_fetch).parameters
+    assert parameters["retry"].default is TRANSPORT_RETRY
+    assert parameters["sleep"].default is asyncio.sleep
+
+
+async def test_edgar_fetch_passes_a_transient_retry_through_with_its_delay():
+    url = "https://efts.sec.gov/LATEST/search-index?q=x"
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    throttled = Recorder(httpx.Response(503), httpx.Response(200, content=b"ok"))
+    async with throttled.client() as client:
+        assert await edgar_fetch(client, url, UA, _no_pace, retry=TRANSIENT_RETRY, sleep=sleep) == b"ok"
+    assert len(throttled.requests) == 2 and slept == [5.0]
+
+    forbidden = Recorder(httpx.Response(403), httpx.Response(200, content=b"ok"))
+    async with forbidden.client() as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            await edgar_fetch(client, url, UA, _no_pace, retry=TRANSIENT_RETRY, sleep=sleep)
+    assert len(forbidden.requests) == 1
 
 
 async def test_a_redirect_is_not_followed():
