@@ -134,9 +134,23 @@ def test_nonmarginable_long_uses_its_own_capacity(capacity_case):
         assess(capacity_case)
 
 
-def test_current_quote_exposure_cannot_bypass_notional_ceiling(capacity_case):
+def test_current_trade_exposure_cannot_bypass_notional_ceiling(capacity_case):
+    capacity_case[1].price = Decimal(101)
     capacity_case[2].portfolio.max_notional_exposure = 1005
     with pytest.raises(ValueError, match="notional"):
+        assess(capacity_case)
+
+
+def test_wide_iex_ask_does_not_price_notional(capacity_case):
+    # DHR 2026-11-19: IEX quoted 229.56/239.17 with the last trade at 229.59; pricing the notional at the ask
+    # refused a card sized to 98% of the per-trade cap. The limit and the last trade price it.
+    context, config = capacity_case[1], capacity_case[2]
+    context.quote.ask_price = Decimal(110)
+    config.sizing.max_trade_notional_cap = 1005
+    result = assess(capacity_case)
+    assert result.aggregate_notional == Decimal(1000)
+    context.price = Decimal(101)
+    with pytest.raises(ValueError, match="per-trade notional cap"):
         assess(capacity_case)
 
 
