@@ -77,9 +77,15 @@ stop-loss budget, not a guaranteed maximum loss, hard volatility constraint or
 portfolio CVaR limit. The other shared rules (`same_symbol`, `asset_class_notional`,
 `portfolio_notional`, `concurrent_positions`, `correlation_group` and the per-trade
 rules) judge the same book through `admission_gates`. Capacity passes the larger of
-the approved limit, observed ask and last trade as the current price, so proposed
-notional uses that larger price and an older approved price cannot understate
-observed exposure. Existing holdings retain the larger recorded/broker-mark exposure.
+the approved limit and the last trade as the current price, so proposed notional uses
+that larger price and an older approved price cannot understate observed exposure. The
+IEX ask is not a price for exposure: it is a venue quote, not the NBBO, and on a thin
+book it can sit percent above the market (DHR on 2026-11-19 quoted 229.56/239.17 against
+a 229.59 trade, which priced a card sized at 98% of the per-trade cap above it). A short
+also counts the bid, because a sell limit fills there. Funding above still uses the ask;
+at the account's current buying-power headroom that overstatement refuses nothing, but the
+code does not guarantee it.
+Existing holdings retain the larger recorded/broker-mark exposure.
 These observations are snapshots, not a bound on subsequent price moves.
 
 An order is a protective exit only through exact parent/replacement identity.
