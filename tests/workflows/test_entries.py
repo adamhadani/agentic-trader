@@ -130,8 +130,11 @@ async def test_outbox_retry_is_delivery_only(store, app_config, mock_notifier):
 async def test_price_freshness_rechecked_after_slow_macro_admission(
     service, store, entry, monkeypatch, minutes, stale, quote_limit
 ):
+    # Real time plus the simulated delay. A clock frozen at the start fell behind the work item's real created_at
+    # whenever setup took longer than the 1 s skew tolerance (a GC pause on CI), which reads as an expired approval.
+    shift = timedelta()
     clock = MagicMock(wraps=datetime)
-    clock.now.return_value = datetime.now(UTC)
+    clock.now.side_effect = lambda tz=None: datetime.now(tz) + shift
     monkeypatch.setattr(entries, "datetime", clock)
     service.config.execution.entry_evidence_max_age_seconds = 600
     service.config.execution.entry_quote_max_age_seconds = quote_limit
@@ -139,7 +142,8 @@ async def test_price_freshness_rechecked_after_slow_macro_admission(
     service.config.execution.entry_queue_max_age_seconds = 600
 
     async def slow_macro(*args):
-        clock.now.return_value += timedelta(minutes=minutes)
+        nonlocal shift
+        shift += timedelta(minutes=minutes)
 
     service.macro_check.side_effect = slow_macro
     item, _ = await service.authorize(await entry())
