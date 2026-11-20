@@ -3,11 +3,12 @@
 It owns the EDGAR access constants (the hosts, the ticker map URL and the fair-access pacing) for every caller,
 the daemon captures and the research acquisitions alike, so ``data/`` never imports ``research/`` for them.
 
-One GET is allowed only on ``https://www.sec.gov`` or ``https://data.sec.gov``, follows no redirect (the
+One GET is allowed only on ``https://www.sec.gov``, ``https://data.sec.gov`` or ``https://efts.sec.gov``, follows no redirect (the
 callers' clients set ``follow_redirects=False``), has a total deadline (``REQUEST_DEADLINE_SECONDS``) and a body
 budget (``MAX_DOCUMENT_BYTES``), and treats any response but a 200 (or a 404 the caller allows) as a failure.
 ``retrying`` paces every attempt and applies one ``RetryPolicy``: the insider capture's default retries a
-transport error once at once; the filings capture's also retries an HTTP 429 or 5xx, after 5 seconds.
+transport error once at once; the filings capture's (and the investor-day acquisition's, through ``edgar_fetch``'s
+``retry``) also retries an HTTP 429 or 5xx, after 5 seconds.
 
 The ``EDGAR_USER_AGENT`` contact goes in the request's ``User-Agent`` header only. Nothing here logs it, and
 callers record failures by exception type name or HTTP status, never by exception text.
@@ -33,6 +34,7 @@ __all__ = [
     "REQUEST_DEADLINE_SECONDS",
     "SEC_DATA_HOST",
     "SEC_HOST",
+    "SEC_SEARCH_HOST",
     "TICKERS_URL",
     "TIMEOUT_SECONDS",
     "TRANSIENT_RETRY",
@@ -49,7 +51,8 @@ __all__ = [
 
 SEC_HOST = "www.sec.gov"
 SEC_DATA_HOST = "data.sec.gov"
-EDGAR_HOSTS = frozenset({SEC_HOST, SEC_DATA_HOST})
+SEC_SEARCH_HOST = "efts.sec.gov"
+EDGAR_HOSTS = frozenset({SEC_HOST, SEC_DATA_HOST, SEC_SEARCH_HOST})
 # The SEC ticker-to-CIK map, read by the filings capture and the research acquisitions.
 TICKERS_URL = f"https://{SEC_HOST}/files/company_tickers.json"
 # The SEC fair-access pacing every EDGAR caller uses.
@@ -168,7 +171,13 @@ async def edgar_fetch(
     pace: Callable[[], Awaitable[None]],
     *,
     missing_ok: bool = False,
+    retry: RetryPolicy = TRANSPORT_RETRY,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> bytes | None:
-    """One paced GET on an EDGAR host (a transport error is retried once); a 404 is ``None`` when ``missing_ok``."""
+    """One paced GET on an EDGAR host, retried once as ``retry`` allows; a 404 is ``None`` when ``missing_ok``.
+
+    The default (``TRANSPORT_RETRY``, a transport error retried at once) is the insider capture's.
+    """
     check_edgar_url(url)
-    return await retrying(partial(_attempt, client, url, user_agent, missing_ok=missing_ok), pace)
+    attempt = partial(_attempt, client, url, user_agent, missing_ok=missing_ok)
+    return await retrying(attempt, pace, retry=retry, sleep=sleep)

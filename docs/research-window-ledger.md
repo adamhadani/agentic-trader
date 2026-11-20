@@ -7,9 +7,10 @@ Every row below was taken from the result doc it links, read for its exact windo
 state something, the row says "not stated in the doc". Nothing is inferred from memory or from the review.
 
 The ledger does not change any gate, and a row here grants no promotion, shadow or probe credit.
-It holds reads L01–L43; L40–L42 (the [IC lane](alpha-ic-lane.md)) were added before their first read and
+It holds reads L01–L45; L40–L42 (the [IC lane](alpha-ic-lane.md)) were added before their first read and
 have results (2026-10-31); L43 (the pre-earnings run-up development read) was declared before its read and
-failed (2026-11-06).
+failed (2026-11-06); L44 (the insider breadth replication) failed (2026-11-14); L45 (the investor-day run-up
+development read) was declared before its read and failed (2026-11-19).
 
 ## Rules
 
@@ -36,6 +37,7 @@ catch the rest.
 | Price lane, Sharadar era | `composite-ic-v1` | 0.05 one-sided | The same manifest | Not declared yet; no read has happened |
 | IC lane, development window 2016-08-01 → 2023-12-29 | `composite-ic-v1` gate on cohort v3 (v2 reported); checks A-IC and C-IC; the 64-pair re-score | 0.05 one-sided | The frozen `composite-ic-v1.json`, `rescore-v1.json`, `sectors-v1.json` and `ff12-sic-v1.json`, committed with rows L40–L42 | No α: development only; `t ≥ 2` at h = 20 behaves as about 5% one-sided (calibration in [the contract](alpha-ic-lane.md#6-the-ic-statistic)) |
 | Pre-earnings run-up, development read | `runup` v1 | No α: development only | `runup-v1.json`, committed with L43 | Development read; a prospective read declares its α in its own row |
+| Investor-day run-up, development read | `idday` v1 | No α: development only | `idday-v1.json`, committed with L45 | Development read; a prospective step declares its α in its own row |
 | Prospective insider read from 2026-08-01 | The frozen `insider` v1 rule | To be declared with the 2027-08 read | Its own row | Not declared yet |
 | Any new lane | Per its spec | 0.05 one-sided, Holm within the lane | Its row, before the read | — |
 
@@ -57,14 +59,14 @@ Statuses follow the review's §2.5. The "Reads" column lists ledger ids from the
 
 | # | Window | Status | Use in this program | Reads |
 | --- | --- | --- | --- | --- |
-| W1 | Pooled cube, discovery 2016-08-01 → 2021-12-31 and selection 2022-01-03 → 2023-12-29 | development only | Development and rehearsal | L01–L11 (discovery; L11 also read selection); L12–L17 read the whole decision window, including these dates; L40–L42 (IC lane) read the whole window 2016-08-01 → 2023-12-29, selection included; L43 (run-up) reads W1's dates as part of its decisions 2016-08-01 → 2026-07-17 |
-| W2 | Pooled confirmation 2024-01-02 → 2026-07-31 | reserve (decay check only) | Held in reserve; unused for pooled formulas | Unused by the pooled campaigns; read by L12–L20, L39 and L43 for other lanes (see the note below the table) |
+| W1 | Pooled cube, discovery 2016-08-01 → 2021-12-31 and selection 2022-01-03 → 2023-12-29 | development only | Development and rehearsal | L01–L11 (discovery; L11 also read selection); L12–L17 read the whole decision window, including these dates; L40–L42 (IC lane) read the whole window 2016-08-01 → 2023-12-29, selection included; L43 (run-up) reads W1's dates as part of its decisions 2016-08-01 → 2026-07-17; L45 (investor-day run-up) reads them as part of its decisions 2016-08-01 → 2026-06-30 |
+| W2 | Pooled confirmation 2024-01-02 → 2026-07-31 | reserve (decay check only) | Held in reserve; unused for pooled formulas | Unused by the pooled campaigns; read by L12–L20, L39, L43 and L45 for other lanes (see the note below the table) |
 | W3 | Native setups 2017-01-03 → 2021-04-30 | spent (third read) | Not used | L21–L24 |
 | W4 | Native setups 2021-06-01 → 2026-01-29 | development only | Descriptive | L25–L30 |
 | W5 | Native setups holdout 2026-03-02 → 2026-08-14 | spent | None | L25 |
-| W6 | Event decisions 2016-08-01 → 2026-07-31 (PEAD, exdiv, insider) | spent for these three hypotheses | Rehearsal only | L12–L14, L17; L43 (run-up) reads decisions to 2026-07-17 |
+| W6 | Event decisions 2016-08-01 → 2026-07-31 (PEAD, exdiv, insider) | spent for these three hypotheses | Rehearsal only | L12–L14, L17; L43 (run-up) reads decisions to 2026-07-17; L45 (investor-day run-up) reads decisions to 2026-06-30, exits to 2026-07-31 |
 | W7 | Spread lane discovery 2018-01-02 → 2023-12-29 | spent for pairs v1 and v2 on cohort v1 | None | L31–L32 |
-| W8 | Spread lane confirmation 2024-01-02 → 2026-07-31 | reserve (decay check only) | None; the spread lane is closed | The `spread/confirmation` journal key is unconsumed and no spread study read these dates; other lanes read the same dates (L12–L20, L39, L43; see W2) |
+| W8 | Spread lane confirmation 2024-01-02 → 2026-07-31 | reserve (decay check only) | None; the spread lane is closed | The `spread/confirmation` journal key is unconsumed and no spread study read these dates; other lanes read the same dates (L12–L20, L39, L43, L45; see W2) |
 | W9 | ETF, sector-panel and screened-equity windows (2020–2025) | development only | None | L33–L39, L18–L20 |
 | W10 | Sharadar era 2007-01 → 2016-07 (Form 4 from 2006) | fresh | One frozen manifest, two declared lanes | None |
 | W11 | Prospective from 2026-08-15 (2026-08-01 → 08-14 overlaps the native holdout, L25) | fresh | Probe monitors; a fixed 2027-08 insider read | Monitors only (see below) |
@@ -197,6 +199,23 @@ and the market path is shared, which is why P1 is descriptive.
 | Id | Date | Lane / study | Cohort | What will be read | Result doc | Verdict |
 | --- | --- | --- | --- | --- | --- | --- |
 | L44 | 2026-11-14 | `insider` v2, breadth replication of v1's frozen event rule | Cohort xu (ranks 1–400 and 1,401–2,156 of the cohort-v3 ranking; 1,156 names, disjoint from v3) | Outcomes, decisions 2016-08-01 → 2026-07-31; P2 primary with P4 required, P1 and P3 descriptive | [results](apriori-insider-breadth-2026-11-14.md) | **Fail, not replicated; insider lane closed:** P2 +0.011R vs matched controls (ci90 [−0.049, +0.074]); P4 held (1,048 events, 430 since 2023); P1 +0.030R, descriptive. No α claim |
+
+### Investor-day run-up (cohorts v3 ∪ xu, development window W1/W2/W6)
+
+Declared before the read on 2026-11-19 (operator "go ahead" on the frozen design). Frozen file
+`config/research/apriori/idday-v1.json`, pinning `cohort3-events-v1.json`, `cohort-xu-insider-v1.json`, both cached
+cubes, the SEC 8-K acquisition (`content_sha256` 4e1da43c…), the `idday-parser-v1` event table (`events_sha256`
+c1c6bd48…) and the parser check (`sha256` d186f3f5…). The design is in the
+[spec](superpowers/specs/2026-11-19-apriori-idday-design.md). The steps before the read used no prices:
+- **Events:** 628 announced events and 832 event-only ones.
+- **Candidate legs:** 368 legs pass the price-free gates (timing, window, earnings, overlap), 143 of them from
+  2023.
+- **Parser check:** the seeded 60-leg sample from issuers outside the feasibility names had 2 errors (precision
+  96.7%, limit 9).
+
+| Id | Date | Lane / study | Cohort | What will be read | Result doc | Verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| L45 | 2026-11-19 | `idday` v1, investor-day run-up development read | Cohorts v3 ∪ xu (2,156 names; `cohort3-events-v1`, `cohort-xu-insider-v1`) | Outcomes, decisions 2016-08-01 → 2026-06-30 with exits by 2026-07-31; development only, cannot pass | [results](apriori-idday-2026-11-19.md) | **Fail, closed on this source:** P1 −0.022R net of beta-matched SPY (ci90 [−0.105, +0.061], 318 legs); P2 +0.018R vs matched controls (ci90 [−0.058, +0.095]); P3, P5 fail; P4 holds (131 since 2023); planted detected, MDE 0.21R. No α claim |
 
 ### Prospective from 2026-08-01
 

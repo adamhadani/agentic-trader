@@ -4,8 +4,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from agentic_trader.research.apriori.catalog import BootstrapSpec
+from agentic_trader.research.apriori.catalog import BootstrapSpec, ClusterBootstrapSpec
 from agentic_trader.research.apriori.statistics import (
+    cluster_paired_test,
     difference_in_paired_test,
     mean_test,
     paired_test,
@@ -122,3 +123,30 @@ def test_trimmed_mean_drops_each_tail():
     values = np.array([-100.0, *([1.0] * 98), 100.0])
     assert trimmed_mean(values, 0.01) == 1.0
     assert np.isnan(trimmed_mean(np.array([np.nan]), 0.01))
+
+
+def test_cluster_paired_test_one_cluster_dominates():
+    spec = ClusterBootstrapSpec(draws=500, seed=7)
+    leg = pd.DataFrame({"r_cost": [1.0] * 10 + [-0.1] * 10})
+    control = pd.DataFrame({"r_cost": [0.0] * 20})
+    clusters = pd.Series(["BIG"] * 10 + [f"s{i}" for i in range(10)])
+    result = cluster_paired_test(leg, control, clusters, spec)
+    assert leg["r_cost"].mean() > 0
+    assert result["n"] == 20 and result["n_clusters"] == 11
+    assert result["mean_difference"] > 0
+    assert result["holds"] is False
+
+    uniform = pd.DataFrame({"r_cost": [0.5] * 30})
+    zero = pd.DataFrame({"r_cost": [0.0] * 30})
+    holds = cluster_paired_test(uniform, zero, pd.Series([f"c{i}" for i in range(30)]), spec)
+    assert holds["holds"] is True
+    assert holds["finite_draws"] == 500
+    assert holds["ci90"][0] > 0
+
+
+def test_cluster_paired_test_drops_non_finite_rows():
+    spec = ClusterBootstrapSpec(draws=200, seed=1)
+    leg = pd.DataFrame({"r_cost": [0.5, float("nan"), 0.5, 0.5]})
+    control = pd.DataFrame({"r_cost": [0.0, 0.0, float("nan"), 0.0]})
+    result = cluster_paired_test(leg, control, pd.Series(["a", "b", "c", "d"]), spec)
+    assert result["n"] == 2 and result["n_clusters"] == 2

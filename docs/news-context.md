@@ -154,8 +154,12 @@ No exception text reaches a card, provenance or the journal; only type names.
 - Measured 2026-10-13 (read-only probe, desk data keys): one source (`benzinga`); 1,003 items over 7
   days for the 159 universe names (134 to 222 per weekday); 131 of 159 names covered; 185 items tag
   more than five symbols (market-wide lists); headline median 84 characters; summaries empty for 48%;
-  history reaches 2015-01-02; the 7-day universe pull took 3.3 s, so a 48 h window sits well inside the
+  history reached 2015-01-02 then; the 7-day universe pull took 3.3 s, so a 48 h window sits well inside the
   15 s bound.
+- **Correction, 2026-11-19:** the investor-day feasibility check found that Alpaca now returns no headlines
+  before 2026-04-29, so the archive is about seven months deep, not eleven years. Scan-time context, which
+  reads a 48 h window, is unaffected. A historical news study is no longer possible from this source; the
+  [investor-day read](apriori-idday-2026-11-19.md) used SEC 8-K text instead.
 
 ## Research acquisition
 
@@ -184,8 +188,8 @@ own catalog spec.
 
 ## Design decisions
 
-1. **Alpaca news (Benzinga).** Same keys and bounded transport; the probe above shows usable coverage
-   and a long history.
+1. **Alpaca news (Benzinga).** Same keys and bounded transport; the probe above shows usable coverage.
+   The long history it showed in 2026-10 is gone: headlines start 2026-04-29 as of 2026-11-19.
 2. **Fetch at scan time, no worker.** News is only useful fresh and a 48 h window needs no staleness
    contract; a worker would need a readiness component and journal retention for a feed that changes on
    every poll. The only failure mode is `unavailable`.

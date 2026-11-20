@@ -1,0 +1,147 @@
+{
+  "id": "idday",
+  "version": 1,
+  "title": "Investor-day run-up: long from the second session after the first 8-K announcing an analyst or investor day to the close of the session before it",
+  "references": [
+    "Cabrera, Kolokolova and Zhang (2025) (about 3,061 analyst and investor days, 2011-2022: +3.70% buy-and-hold abnormal return from the announcement to the eve of the event)"
+  ],
+  "hypotheses": "LONG only, over decisions 2016-08-01..2026-06-30 with every exit by 2026-07-31, on cohort v3 union cohort xu (2,156 names; config/research/pooled/cohort3-events-v1.json and config/research/pooled/cohort-xu-insider-v1.json, both pinned by SHA-256, with both cached label cubes pinned by content hash and merged with merge_cubes) with the 10:35 New York decision clock, ATR14 and eligibility of the merged cube, the events protocol's pinned Nasdaq calendar archive (market-wide) and both cohorts' pinned corporate-actions acquisitions. Events: the frozen idday-parser-v1 over the pinned SEC 8-K full-text acquisition (content_sha256) gives the pinned event table (events_sha256); F is the first filing that announces the registrant's own investor, analyst or capital markets day or investor/analyst meeting on a future date E (filed < E <= filed + 400 days); event_only events never become legs. Legs: D is the second session strictly after F, X the last session before E, H = sessions from D to X inclusive in [1, 63]; any session it needs outside the merged cube's calendar excludes the event (outside_window); an archive report date in [F + 1, X] excludes it (earnings_in_hold); the class is with_earnings when the issuer has an archive report in the 3-session band ending at F's session, else standalone; one leg per issuer per 63 sessions, applied last among the price-free gates in D order; an identity break on or after D - 60 sessions or a structural corporate action within 5 calendar days of [D, E] excludes it; the cube's eligibility at D must hold; the leg trades the issuer's cohort symbol with the higher dollar volume at D. Trade: decision at 10:35 on D, stop 2.0 x ATR(14) below the decision price, no target and no trail, time exit at the close of X; costs 5, 15 and 25 bp per side, 15 bp decides; a fill not on D or an exit after the close of X is hold_outside_window. Controls: 5 cube cells on D, eligible, in the leg's dollar-volume tercile, not legs on D and not of the leg's issuer, of a visible, uncapped issuer with no fetch failure, with no raw search hit or parsed event in [D - 63, X + 10] sessions, clear of earnings by the leg's class (standalone: no report in [D - 30, X] and at least one report in the 130 sessions before D; with_earnings: a report in the same 3-session band and none in [F + 1, X]), nearest in 20-session return to D - 1; fewer than 5 leaves the leg unpaired. P1: mean net_excess_r_v1 > 0 with the bootstrap ci90 lower bound > 0. P2: mean r_cost(leg) - mean r_cost(controls) over paired legs > 0 with the paired ci90 lower bound > 0, pairs keyed by D. P3: the 1%-trimmed mean of net_excess_r_v1 > 0, its mean over decisions from 2023-01-01 > 0, and P2's statistic has a ci90 lower bound > 0 under an issuer-cluster bootstrap (2000 draws, seed 20261121). P4: at least 250 legs with a finite net_excess_r_v1, at least 60 from 2023-01-01. P5: the legs' paired difference minus the placebos' paired difference > 0 with the ci90 lower bound > 0 from one joint session-block bootstrap. Negative control: one same-symbol pseudo-event per leg with the same H and class, seed 20261122 (with_earnings: another archive report r' within 252 sessions of F, issuer search-hit and event free in [r' - 5, X' + 10], no report in [r' + 1, X']; standalone: a D' within 126 sessions of D, no report in [D' - 30, X'], hit and event free in [D' - 63, X' + 10]); duplicates dropped; its P2 must not hold and P5 must hold. Planted effect: every paired placebo leg gets 0.0185 of the decision price in R in r_cost and net_excess_r_v1, and P1 and P2 on that frame must both hold. Parser check: 60 candidate legs (seed 20261119) of issuers outside the 50-name feasibility sample, labelled by hand, at most 9 errors, pinned by sha256 before any price read. Stationary session-block bootstrap over decision sessions, block mean 10, 2000 draws, seed 20261120; ci90 = [5th, 95th] percentiles. See docs/superpowers/specs/2026-11-19-apriori-idday-design.md.",
+  "decision_rule": "This is a development read on today's survivors with a hand-checked parser: it can only return survives_development, failed or inconclusive_underpowered, and none of them authorizes a probe, a card, promotion, shadow or registry credit. inconclusive_underpowered if the planted check fails; else failed if any of P1-P5 fails or the placebo's P2 holds; else survives_development, which only makes a separately specified prospective step eligible (a live 8-K capture feeding unvalidated paper cards, or a prospective read; the operator chooses). No parser rule, threshold, lead, stop, cost, window or control parameter is revisited after the run; any change is a new version. The class, year, cohort-band, keyword, hold and liquidity splits and every other diagnostic are descriptive and decide nothing.",
+  "window": {
+    "decisions": [
+      "2016-08-01",
+      "2026-06-30"
+    ],
+    "bars_through": "2026-09-01",
+    "recent_from": "2023-01-01",
+    "last_exit": "2026-07-31"
+  },
+  "cohorts": [
+    {
+      "name": "v3",
+      "pooled_protocol": "config/research/pooled/cohort3-events-v1.json",
+      "pooled_protocol_sha256": "b692d7f9a1ec1d797542f710a69aa2f7556e72873e29f571f4bf946a37243843",
+      "cube_sha256": "75dbb80a710f64ddf0d7ef34c70eceef4afa5fe1bd291a324543b8514906bdb6"
+    },
+    {
+      "name": "xu",
+      "pooled_protocol": "config/research/pooled/cohort-xu-insider-v1.json",
+      "pooled_protocol_sha256": "33445bdaebaf5c95c9d7eba323a29eb1f4b1fd41f7b22af6ad4ed9b0631dc84f",
+      "cube_sha256": "f9c4c5eabe3854aca6a35c7d7d1deb43e9827e6536f8ad87d8ae351d78a01b09"
+    }
+  ],
+  "investor_days": {
+    "content_sha256": "4e1da43c17872ec408de5dd4ee6371878c3606898a13e045e27830fda9e4e78f",
+    "events_sha256": "c1c6bd48f71223fbc124d4d6dff1ce35be009243f4a8ee65d5c5de54d86f6672",
+    "parser_version": "idday-parser-v1",
+    "filings_from": "2016-01-01",
+    "filings_through": "2026-07-31"
+  },
+  "parser_check": {
+    "sha256": "d186f3f5f19fbed4123009942d4e29235aa571a319c12048d0aeaeaab3964734",
+    "seed": 20261119,
+    "sample_size": 60,
+    "max_errors": 9,
+    "excluded_symbols": [
+      "ADM",
+      "AFG",
+      "AMT",
+      "ARES",
+      "B",
+      "BCC",
+      "BRX",
+      "BRZE",
+      "CF",
+      "CG",
+      "COR",
+      "CPAY",
+      "D",
+      "DINO",
+      "DUK",
+      "ENSG",
+      "ETR",
+      "FLG",
+      "FSLR",
+      "GDDY",
+      "HAS",
+      "HCA",
+      "IBKR",
+      "INTU",
+      "JBHT",
+      "KMI",
+      "LITE",
+      "LUV",
+      "MET",
+      "MMS",
+      "MTD",
+      "NOG",
+      "NWSA",
+      "ONON",
+      "PEG",
+      "PLNT",
+      "PSX",
+      "RGA",
+      "RUN",
+      "SDGR",
+      "SNPS",
+      "SPT",
+      "TDS",
+      "TENB",
+      "TWLO",
+      "TXN",
+      "VNT",
+      "VSTS",
+      "WWD",
+      "XOM"
+    ]
+  },
+  "event": {
+    "entry_offset_sessions": 2,
+    "min_hold_sessions": 1,
+    "max_hold_sessions": 63,
+    "overlap_sessions": 63,
+    "earnings_band_sessions": 3,
+    "identity_lookback_sessions": 60,
+    "structural_exclusion_days": 5
+  },
+  "trade": {
+    "stop_atr_multiple": 2.0,
+    "atr_window": 14
+  },
+  "costs_bps_per_side": [
+    5,
+    15,
+    25
+  ],
+  "decision_cost_bps": 15,
+  "control": {
+    "matched_controls": 5,
+    "match_return_sessions": 20,
+    "liquidity_buckets": 3,
+    "coverage_sessions": 130,
+    "quiet_before_sessions": 30,
+    "event_free_before_sessions": 63,
+    "event_free_after_sessions": 10
+  },
+  "placebo": {
+    "earnings_span_sessions": 252,
+    "standalone_span_sessions": 126,
+    "report_event_free_before_sessions": 5,
+    "seed": 20261122,
+    "planted_return": 0.0185
+  },
+  "bootstrap": {
+    "block_mean": 10,
+    "draws": 2000,
+    "seed": 20261120
+  },
+  "cluster_bootstrap": {
+    "draws": 2000,
+    "seed": 20261121
+  },
+  "pass_rule": {
+    "min_events": 250,
+    "min_recent_events": 60,
+    "trim_fraction": 0.01
+  }
+}
