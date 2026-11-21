@@ -181,20 +181,48 @@ def test_a_catalog_partial_never_rests_past_its_own_resting_deadline():
 
 
 @pytest.mark.parametrize(
-    ("submitted", "sessions"),
+    ("submitted", "sessions", "reason"),
     [
-        (datetime(2026, 10, 21, 10, 40, tzinfo=NY), None),
-        (datetime(2026, 10, 21, 10, 40, tzinfo=NY), []),
-        (datetime(2026, 10, 24, 11, 0, tzinfo=NY), [REGULAR]),
-        (datetime(2026, 10, 21, 16, 6, tzinfo=NY), [REGULAR]),
+        (datetime(2026, 10, 21, 10, 40, tzinfo=NY), None, "session_calendar_unavailable"),
+        (datetime(2026, 10, 21, 10, 40, tzinfo=NY), [], "submission_outside_regular_session"),
+        (datetime(2026, 10, 24, 11, 0, tzinfo=NY), [REGULAR], "submission_outside_regular_session"),
+        (datetime(2026, 10, 21, 16, 6, tzinfo=NY), [REGULAR], "submission_outside_regular_session"),
     ],
     ids=["no_calendar", "empty_calendar", "non_trading_day", "after_close_buffer"],
 )
-def test_a_catalog_partial_without_its_submission_session_is_reviewed_at_once(submitted, sessions):
+def test_a_catalog_partial_without_its_submission_session_is_reviewed_at_once(submitted, sessions, reason):
     """Only a known session close bounds the unprotected shares; without one nothing rests."""
     partial = _order(submitted, status="partially_filled", filled_quantity="2", filled_at=submitted)
     decision = assess_lifetime(CATALOG, IDENTITY, partial, submitted + timedelta(seconds=30), sessions)
+    assert (decision.action, decision.reason) == (LifetimeAction.REVIEW, reason)
+
+
+@pytest.mark.parametrize("offset", [None, timedelta(minutes=1)], ids=["missing", "future"])
+def test_a_catalog_partial_without_a_usable_submission_time_is_reviewed_at_once(offset):
+    now = datetime(2026, 10, 21, 10, 45, tzinfo=NY)
+    partial = _order(now, status="partially_filled", filled_quantity="2", filled_at=now)
+    partial = partial.model_copy(update={"submitted_at": None if offset is None else now + offset})
+    decision = assess_lifetime(CATALOG, IDENTITY, partial, now, [REGULAR])
+    assert (decision.action, decision.reason) == (LifetimeAction.REVIEW, "missing_or_future_submission_time")
+
+
+def test_a_catalog_partial_filled_the_day_after_submission_is_reviewed():
+    """The bound is the submission session's close, so a next-morning partial is already past it."""
+    submitted = datetime(2026, 10, 21, 15, 59, tzinfo=NY)
+    filled = datetime(2026, 10, 22, 9, 31, tzinfo=NY)
+    partial = _order(submitted, status="partially_filled", filled_quantity="2", filled_at=filled)
+    decision = assess_lifetime(CATALOG, IDENTITY, partial, filled + timedelta(minutes=1), [REGULAR])
     assert (decision.action, decision.reason) == (LifetimeAction.REVIEW, "partial_entry_requires_protection_review")
+
+
+def test_a_native_partial_without_a_calendar_still_rests_to_its_outer_bound():
+    submitted = datetime(2026, 10, 21, 10, 40, tzinfo=NY)
+    outer = submitted.astimezone(UTC) + timedelta(seconds=DAILY_ENTRY_LIFETIME_SECONDS)
+    partial = _order(submitted, status="partially_filled", filled_quantity="2", filled_at=submitted)
+    before = assess_lifetime(NATIVE, IDENTITY, partial, outer - timedelta(seconds=1), None)
+    at = assess_lifetime(NATIVE, IDENTITY, partial, outer, None)
+    assert (before.action, before.reason, before.deadline) == (LifetimeAction.NONE, "within_resting_lifetime", outer)
+    assert (at.action, at.reason) == (LifetimeAction.REVIEW, "partial_entry_requires_protection_review")
 
 
 @pytest.mark.parametrize("status", ["canceled", "expired", "done_for_day"])
@@ -289,11 +317,16 @@ async def test_the_service_reads_the_submission_date_for_a_working_catalog_parti
     assert calendar.requests == [(REGULAR.date, REGULAR.date)]
 
 
-async def test_a_calendar_failure_gives_a_catalog_partial_no_sessions():
-    sessions = await _service(_Calendar(RuntimeError("down")))._sessions(
-        CATALOG, _catalog_partial(datetime(2026, 10, 21, 10, 40, tzinfo=NY))
-    )
-    assert sessions is None  # assess_lifetime then reviews at once, as before
+async def test_a_calendar_read_failure_for_a_catalog_partial_raises_for_the_retrying_sweep():
+    with pytest.raises(RuntimeError):
+        await _service(_Calendar(RuntimeError("down")))._sessions(
+            CATALOG, _catalog_partial(datetime(2026, 10, 21, 10, 40, tzinfo=NY))
+        )
+
+
+async def test_no_calendar_gives_a_catalog_partial_no_sessions():
+    sessions = await _service(None)._sessions(CATALOG, _catalog_partial(datetime(2026, 10, 21, 10, 40, tzinfo=NY)))
+    assert sessions is None  # assess_lifetime then reviews it as session_calendar_unavailable
 
 
 async def test_a_filled_catalog_entry_still_reads_its_holding_span():
@@ -309,18 +342,33 @@ async def test_a_filled_catalog_entry_still_reads_its_holding_span():
     assert start == REGULAR.date and end > start
 
 
-def _catalog_desk(parent: OrderObservation, now: datetime):
+class _WeekdayCalendar:
+    """Every weekday is a regular 09:30-16:00 session, so a 20-session holding span resolves."""
+
+    def __init__(self, error: Exception | None = None):
+        self.error = error
+
+    async def get_calendar_range(self, start, end):
+        if self.error:
+            raise self.error
+        days = (start + timedelta(days=n) for n in range((end - start).days + 1))
+        return [MarketCalendarDay(d, True, False, time(9, 30), time(16, 0)) for d in days if d.weekday() < 5]
+
+
+def _catalog_desk(parent: OrderObservation, now: datetime, calendar=None):
     signal = {
         "id": 95,
         "contract": "SPY",
         "status": "EXECUTED",
-        "executed_at": None,
+        "executed_at": None if parent.status != "filled" else parent.filled_at.isoformat(),
         "broker_order_id": "entry",
         "alpha_policy": {"lifetime": asdict(CATALOG)},
         "decision_provenance": None,
     }
-    db = SimpleNamespace(get_active_positions=AsyncMock(return_value=[signal]), get_close_request=AsyncMock())
-    store = SimpleNamespace(db=db, list_work=AsyncMock(return_value=[]), observe_orders=AsyncMock())
+    db = SimpleNamespace(
+        get_active_positions=AsyncMock(return_value=[signal]), get_close_request=AsyncMock(return_value=None)
+    )
+    store = SimpleNamespace(scope="test", db=db, list_work=AsyncMock(return_value=[]), observe_orders=AsyncMock())
     entry = SimpleNamespace(
         result={"order_id": "entry"},
         payload={"client_order_id": "client", "symbol": "SPY", "side": "BUY", "quantity": 10},
@@ -328,7 +376,13 @@ def _catalog_desk(parent: OrderObservation, now: datetime):
     repository = SimpleNamespace(store=store, review=AsyncMock(), entry=AsyncMock(return_value=entry))
     broker = SimpleNamespace(read_entry_group=AsyncMock(return_value=[parent]))
     service = TradeLifetimeService(
-        repository, broker, None, config=SimpleNamespace(), calendar=_Calendar(), clock=lambda: now
+        repository,
+        broker,
+        None,
+        config=SimpleNamespace(lifetime_evidence_review_after_failures=5),
+        calendar=calendar or _WeekdayCalendar(),
+        clock=lambda: now,
+        market_closed=lambda _now: False,
     )
     return service, repository
 
@@ -345,6 +399,31 @@ async def test_reconcile_lets_a_working_catalog_partial_rest_and_reviews_it_at_t
     await late.reconcile()
     repository.review.assert_awaited_once()
     assert repository.review.await_args.args[:2] == (95, "partial_entry_requires_protection_review")
+
+
+async def test_a_fully_filled_catalog_entry_neither_reviews_nor_blocks_resume():
+    """The control for the part-filled case above: the same desk with the remainder filled is clear."""
+    submitted = datetime(2026, 10, 21, 10, 40, tzinfo=NY)
+    filled = _order(
+        submitted, status="filled", filled_quantity="10", filled_at=submitted + timedelta(minutes=5, seconds=39)
+    )
+    service, repository = _catalog_desk(filled, submitted + timedelta(minutes=6))
+    assert await service.reconcile() == ()
+    repository.review.assert_not_awaited()
+    assert await service.resume_blockers() == []
+
+
+async def test_a_calendar_outage_during_a_catalog_partial_is_retried_before_any_review():
+    submitted = datetime(2026, 10, 21, 10, 40, tzinfo=NY)
+    service, repository = _catalog_desk(
+        _catalog_partial(submitted), submitted + timedelta(minutes=6), _WeekdayCalendar(ConnectionError("blip"))
+    )
+    for _ in range(4):
+        assert await service.reconcile() == ("ConnectionError",)
+    repository.review.assert_not_awaited()
+    await service.reconcile()
+    repository.review.assert_awaited_once()
+    assert repository.review.await_args.args[:2] == (95, "lifecycle_evidence_unavailable:ConnectionError")
 
 
 def _filled_signal(policy_document: dict, *, alpha: bool = False) -> dict:

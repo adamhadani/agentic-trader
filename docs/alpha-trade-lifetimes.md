@@ -194,12 +194,20 @@ to review and halts.
 Since 2026-11-21 a catalog or probe entry (`session_count_v1`: the PEAD probe and the
 insider-watch cards) rests a working partial fill the same way.
 - **Bound:** the earlier of its own resting deadline and its submission session's close
-  + 5 minutes. Its unfilled remainder keeps the elapsed deadline. A partial is bounded by
-  the session because Alpaca activates the exits only once the whole entry fills, so the
-  filled shares are unprotected while the remainder works. That window ends in the session
-  it began, inside the hours the host is kept awake.
-- **No calendar:** without the submission session's calendar the partial is reviewed at
-  once, as before.
+  + 5 minutes. A wholly unfilled catalog entry keeps its elapsed deadline. A partial is
+  bounded by the session because Alpaca activates the exits only once the whole entry
+  fills, so the filled shares are unprotected while the remainder works.
+- **At the bound:** a partial that is still working goes to review and halts, inside the
+  hours the host is kept awake, so it cannot sit unnoticed overnight. The service never
+  cancels a partial's remainder, so the exposure lasts until the remainder fills or the
+  operator acts.
+- **Missing evidence:** without a configured calendar the partial is reviewed at once
+  (`session_calendar_unavailable`). A submission outside a regular session is reviewed at
+  once too (`submission_outside_regular_session`, `missing_or_future_submission_time`).
+  A failed calendar read is retried like any failed evidence read and reviewed only after
+  `lifetime_evidence_review_after_failures` consecutive failed passes.
+- **`/resume`:** refused while any entry is part-filled, so an unrelated halt cannot be
+  cleared during a resting partial. The refusal says an unconfirmed broker entry remains.
 - **Why it changed:** catalog auto-entry made partial fills routine. On 2026-11-20 WWD
   filled 1 of 2 shares at 10:44:15 and the second 39 s later. The immediate review halted
   the desk for the rest of the day.
