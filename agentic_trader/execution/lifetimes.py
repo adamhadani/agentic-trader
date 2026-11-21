@@ -26,6 +26,7 @@ from agentic_trader.execution.lifetime_policy import (
     aware_utc,
     entry_lifetime_of,
     has_holding_deadline,
+    submission_session_close,
 )
 from agentic_trader.market.session import regular_session_certainly_closed
 
@@ -142,6 +143,31 @@ def _resting_deadline(
     return policy.entry_deadline(order.submitted_at)
 
 
+def _partial_resting_deadline(
+    policy: LifetimePolicy, order: OrderObservation, now: datetime, sessions: Sequence[MarketCalendarDay] | None
+) -> datetime | None:
+    """How long a working partial fill may rest, or ``None`` when it goes to review at once.
+
+    Alpaca activates a bracket's exits only once the whole entry fills, so the filled shares are unprotected
+    while the remainder works. A native entry rests its partial until its own deadline. A catalog or probe
+    entry (``SessionLifetimePolicy``) rests it until the earlier of its resting deadline and its submission
+    session's close + 5 minutes, and only when ``sessions`` (its submission date) establishes that close.
+    An alpha (elapsed-time) partial never rests.
+    """
+    if isinstance(policy, NativeEntryLifetimePolicy):
+        resting = _resting_deadline(policy, order, now, sessions)
+        return resting if isinstance(resting, datetime) else None
+    if not isinstance(policy, SessionLifetimePolicy) or sessions is None:
+        return None
+    if order.submitted_at is None or aware_utc(order.submitted_at) > now:
+        return None
+    try:
+        close = submission_session_close(order.submitted_at, sessions)
+    except SessionEvidenceError:
+        return None
+    return min(policy.entry_deadline(order.submitted_at), close)
+
+
 def assess_lifetime(
     policy: LifetimePolicy,
     identity: EntryIdentity,
@@ -150,7 +176,8 @@ def assess_lifetime(
     sessions: Sequence[MarketCalendarDay] | None = None,
 ) -> LifetimeDecision:
     """``sessions``: from the fill date for a session-counted holding exit, or the submission date for
-    a native entry's session-close bound (``None`` leaves a native entry its elapsed outer bound)."""
+    a native entry's session-close bound and a catalog/probe working partial's (``None`` leaves a native
+    entry its elapsed outer bound and sends a catalog/probe partial to review)."""
     now = aware_utc(now)
     quantity, filled = Decimal(order.quantity), Decimal(order.filled_quantity)
     if (
@@ -180,12 +207,13 @@ def assess_lifetime(
             LifetimeAction.CLOSE_POSITION if now >= deadline else LifetimeAction.NONE, "holding_lifetime", deadline
         )
     if filled:
-        # A native entry's working partial fill rests like the unfilled remainder until its deadline;
-        # alpha, catalog and probe partials, and any terminal partial, go to review at once.
-        if isinstance(policy, NativeEntryLifetimePolicy) and order.status == "partially_filled":
-            resting = _resting_deadline(policy, order, now, sessions)
-            if isinstance(resting, datetime) and now < resting:
-                return LifetimeDecision(LifetimeAction.NONE, "within_resting_lifetime", resting)
+        # A native or catalog/probe entry's working partial fill rests like its unfilled remainder until its
+        # submission session closes (_partial_resting_deadline); an alpha partial, a terminal partial and one
+        # past that bound go to review at once.
+        if order.status == "partially_filled":
+            rests_until = _partial_resting_deadline(policy, order, now, sessions)
+            if rests_until is not None and now < rests_until:
+                return LifetimeDecision(LifetimeAction.NONE, "within_resting_lifetime", rests_until)
         return LifetimeDecision(LifetimeAction.REVIEW, "partial_entry_requires_protection_review")
     if order.status in UNFILLED_TERMINAL:
         return LifetimeDecision(LifetimeAction.NONE, "unfilled_terminal")
@@ -295,9 +323,13 @@ class TradeLifetimeService:
 
         A session-counted holding exit reads from the fill date and fails loudly without a calendar.
         A native entry reads its submission date only; without a calendar, or when the read fails, its
-        elapsed outer bound alone applies, so a calendar outage never halts or cancels early.
+        elapsed outer bound alone applies, so a calendar outage never halts or cancels early. A catalog or
+        probe entry's working partial fill also reads its submission date; without it, the partial is
+        reviewed at once, as before.
         """
-        if isinstance(lifetime, NativeEntryLifetimePolicy):
+        if isinstance(lifetime, NativeEntryLifetimePolicy) or (
+            isinstance(lifetime, SessionLifetimePolicy) and parent.status == "partially_filled"
+        ):
             if self.calendar is None or parent.submitted_at is None:
                 return None
             submitted = aware_utc(parent.submitted_at).astimezone(NEW_YORK).date()
@@ -307,7 +339,9 @@ class TradeLifetimeService:
                 ]
             except Exception as exc:
                 logger.warning(
-                    "Native entry session calendar unavailable (%s); using the outer bound", type(exc).__name__
+                    "Submission session calendar unavailable (%s); a native entry keeps its outer bound and a "
+                    "catalog partial is reviewed",
+                    type(exc).__name__,
                 )
                 return None
         if not isinstance(lifetime, SessionLifetimePolicy) or parent.filled_at is None:

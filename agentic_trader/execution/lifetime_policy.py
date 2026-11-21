@@ -154,6 +154,26 @@ NATIVE_ENTRY_LIFETIME_VERSION = "session_close_v1"
 NATIVE_ENTRY_CLOSE_BUFFER_SECONDS = 300
 
 
+def submission_session_close(
+    submitted_at: datetime,
+    sessions: Sequence[MarketCalendarDay],
+    close_buffer_seconds: int = NATIVE_ENTRY_CLOSE_BUFFER_SECONDS,
+) -> datetime:
+    """The submission session's regular close + ``close_buffer_seconds``, in UTC.
+
+    ``sessions`` is the broker calendar for the submission date. A submission on a non-trading day, or
+    after that close plus buffer, raises ``SessionEvidenceError("submission_outside_regular_session")``.
+    """
+    submitted = aware_utc(submitted_at).astimezone(_NEW_YORK)
+    day = next((d for d in sessions if d.date == submitted.date() and d.is_trading_day), None)
+    if day is None or day.close_time is None:
+        raise SessionEvidenceError("submission_outside_regular_session")
+    close = datetime.combine(day.date, day.close_time, tzinfo=_NEW_YORK) + timedelta(seconds=close_buffer_seconds)
+    if submitted > close:
+        raise SessionEvidenceError("submission_outside_regular_session")
+    return close.astimezone(UTC)
+
+
 @dataclass(frozen=True)
 class NativeEntryLifetimePolicy:
     """A native card's resting bound: the earlier of its submission session's close + buffer and
@@ -180,16 +200,7 @@ class NativeEntryLifetimePolicy:
         outer = aware_utc(submitted_at) + timedelta(seconds=self.resting_seconds)
         if sessions is None:
             return outer
-        submitted = aware_utc(submitted_at).astimezone(_NEW_YORK)
-        day = next((d for d in sessions if d.date == submitted.date() and d.is_trading_day), None)
-        if day is None or day.close_time is None:
-            raise SessionEvidenceError("submission_outside_regular_session")
-        close = datetime.combine(day.date, day.close_time, tzinfo=_NEW_YORK) + timedelta(
-            seconds=self.close_buffer_seconds
-        )
-        if submitted > close:
-            raise SessionEvidenceError("submission_outside_regular_session")
-        return min(outer, close.astimezone(UTC))
+        return min(outer, submission_session_close(submitted_at, sessions, self.close_buffer_seconds))
 
     def holding_deadline(self, filled_at: datetime) -> None:
         return None
