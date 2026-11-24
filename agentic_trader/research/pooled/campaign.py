@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agentic_trader.research.alpha.operators import OPERATOR_SPECS
 from agentic_trader.research.alpha.search import MUTATION_OPERATORS, WINDOWS, canonical_expression
+from agentic_trader.research.insider_filings import parse_quarter
 from agentic_trader.research.pooled.cohort import UniverseSpec
 from agentic_trader.research.pooled.cube import BracketSpec, CoverageSpec, CubeSpec, CubeView, LabelCube
 from agentic_trader.research.pooled.formula import (
@@ -55,6 +56,9 @@ __all__ = [
     "EventsCampaignProtocol",
     "Family",
     "InMemoryLedger",
+    "InsiderCampaignProtocol",
+    "InsiderFilingInputs",
+    "InsiderInputs",
     "IntradayCampaignProtocol",
     "Ledger",
     "LoadedProtocol",
@@ -62,6 +66,9 @@ __all__ = [
     "ScoreRead",
     "ScoredFormula",
     "Selection",
+    "ShortInputs",
+    "ShortVolumeCampaignProtocol",
+    "ShortVolumeInputs",
     "finish_discovery",
     "later_stages",
     "load_campaign_protocol",
@@ -458,6 +465,125 @@ class EventsCampaignProtocol(CampaignProtocol, frozen=True, extra="forbid"):
         return self
 
 
+class ShortVolumeInputs(BaseModel, frozen=True, extra="forbid"):
+    """The FINRA Reg SHO daily short-sale files a short-volume protocol reads, pinned by a digest over every file."""
+
+    source: Literal["finra-regsho-cnms"]
+    files_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    files_from: date
+    files_through: date
+    z_window: int = Field(ge=2)
+    min_total_volume: float = Field(ge=0)
+    max_offex_share: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _window(self) -> ShortVolumeInputs:
+        if self.files_from > self.files_through:
+            raise ValueError("files_from must not follow files_through")
+        return self
+
+
+class ShortInputs(BaseModel, frozen=True, extra="forbid"):
+    """The pinned inputs of a short-volume protocol: the fields version, the FINRA files and the actions."""
+
+    fields_version: Literal["short_fields_v1"]
+    short_volume: ShortVolumeInputs
+    corporate_actions: CorporateActionInputs
+
+
+class ShortVolumeCampaignProtocol(CampaignProtocol, frozen=True, extra="forbid"):
+    """A pooled protocol whose formulas read daily bars at D-1 plus the short-sale fields of
+    ``short_fields_v1`` (spec 2026-10-20, short volume): everything else is inherited."""
+
+    id: Literal["pooled-short-volume-campaign"]  # type: ignore[assignment]
+    score_inputs: Literal["daily"] = Field(default="daily", exclude=False)
+    short_inputs: ShortInputs
+
+    @model_validator(mode="after")
+    def _short_volume(self) -> ShortVolumeCampaignProtocol:
+        if self.search_mode != "fixed_set":
+            raise ValueError(
+                "a short-volume protocol is fixed_set in v1: a genetic search on short-volume fields needs check B and its own spec"
+            )
+        return self
+
+
+# The relationships a Form 4 reporting owner may list (``RPTOWNER_RELATIONSHIP``).
+OwnerRole = Literal["Officer", "Director", "TenPercentOwner", "Other"]
+
+
+def _quarter_span(text: str) -> tuple[date, date]:
+    """The first and last calendar day of a ``YYYYqN`` quarter."""
+    quarter = parse_quarter(text)
+    last_month = 3 * quarter.index
+    return (
+        date(quarter.year, last_month - 2, 1),
+        date(quarter.year, last_month, calendar.monthrange(quarter.year, last_month)[1]),
+    )
+
+
+class InsiderFilingInputs(BaseModel, frozen=True, extra="forbid"):
+    """The SEC Form 3/4/5 insider-transaction datasets an insider protocol reads, pinned by a digest over every archive."""
+
+    source: Literal["sec-form345-datasets"]
+    files_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    quarters_from: str = Field(pattern=r"^\d{4}q[1-4]$")
+    quarters_through: str = Field(pattern=r"^\d{4}q[1-4]$")
+    buy_window: int = Field(ge=1)
+    net_window: int = Field(ge=1)
+    owner_roles: tuple[OwnerRole, ...] = Field(min_length=1)
+    exclude_10b5_1: bool
+    # A trade above this multiple of its filing session's 20-session median raw dollar volume is
+    # dropped as implausible (a share-count or price entry error); kept when that DV is missing.
+    max_trade_rel: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _window(self) -> InsiderFilingInputs:
+        if parse_quarter(self.quarters_from) > parse_quarter(self.quarters_through):
+            raise ValueError("quarters_from must not follow quarters_through")
+        return self
+
+
+class InsiderInputs(BaseModel, frozen=True, extra="forbid"):
+    """The pinned inputs of an insider protocol: the fields version, the filing archives and the actions."""
+
+    fields_version: Literal["insider_fields_v1"]
+    insider_filings: InsiderFilingInputs
+    corporate_actions: CorporateActionInputs
+
+
+class InsiderCampaignProtocol(CampaignProtocol, frozen=True, extra="forbid"):
+    """A pooled protocol whose formulas read daily bars at D-1 plus the insider-filing fields of
+    ``insider_fields_v1`` (spec 2026-10-20, insider): everything else is inherited."""
+
+    id: Literal["pooled-insider-campaign"]  # type: ignore[assignment]
+    score_inputs: Literal["daily"] = Field(default="daily", exclude=False)
+    insider_inputs: InsiderInputs
+
+    @model_validator(mode="after")
+    def _insider(self) -> InsiderCampaignProtocol:
+        if self.search_mode != "fixed_set":
+            raise ValueError(
+                "an insider protocol is fixed_set in v1: a genetic search on insider fields needs check B and its own spec"
+            )
+        # The loader takes no calendar: an unloaded month would read as a real zero, not as missing.
+        filings = self.insider_inputs.insider_filings
+        starts = _quarter_span(filings.quarters_from)[0]
+        if starts > self.bars_from:
+            raise ValueError(
+                f"insider_inputs.insider_filings.quarters_from {filings.quarters_from} starts {starts}, "
+                f"after bars_from {self.bars_from}: the filings must cover the bar window"
+            )
+        ends = _quarter_span(filings.quarters_through)[1]
+        if ends < self.windows.confirmation[1]:
+            raise ValueError(
+                f"insider_inputs.insider_filings.quarters_through {filings.quarters_through} ends {ends}, "
+                f"before the confirmation window's end {self.windows.confirmation[1]}: "
+                "the filings must cover the bar window"
+            )
+        return self
+
+
 @dataclass(frozen=True)
 class LoadedProtocol:
     protocol: CampaignProtocol
@@ -469,6 +595,8 @@ _PROTOCOL_CLASSES: dict[str, type[CampaignProtocol]] = {
     "pooled-campaign": CampaignProtocol,
     "pooled-intraday-campaign": IntradayCampaignProtocol,
     "pooled-events-campaign": EventsCampaignProtocol,
+    "pooled-short-volume-campaign": ShortVolumeCampaignProtocol,
+    "pooled-insider-campaign": InsiderCampaignProtocol,
 }
 
 

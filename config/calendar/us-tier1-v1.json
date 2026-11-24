@@ -1,0 +1,365 @@
+{
+  "schema_version": 1,
+  "calendar_id": "us-tier1-v1",
+  "timezone": "America/New_York",
+  "valid_from": "2026-10-21",
+  "valid_through": "2027-12-03",
+  "retrieved_on": "2026-10-21",
+  "series_last_listed": {
+    "fomc_statement": "2027-12-08",
+    "fomc_press_conference": "2027-12-08",
+    "cpi": "2027-12-10",
+    "ppi": "2027-12-15",
+    "employment_situation": "2027-12-03"
+  },
+  "events": [
+    {
+      "kind": "fomc_statement",
+      "at": "2026-10-28T14:00:00-04:00",
+      "source_url": "https://www.federalreserve.gov/newsevents/2026-october.htm",
+      "tentative": false
+    },
+    {
+      "kind": "fomc_press_conference",
+      "at": "2026-10-28T14:30:00-04:00",
+      "source_url": "https://www.federalreserve.gov/newsevents/2026-october.htm",
+      "tentative": false
+    },
+    {
+      "kind": "employment_situation",
+      "at": "2026-11-06T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/empsit.htm",
+      "tentative": false
+    },
+    {
+      "kind": "cpi",
+      "at": "2026-11-10T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/cpi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "ppi",
+      "at": "2026-11-13T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/ppi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "employment_situation",
+      "at": "2026-12-04T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/empsit.htm",
+      "tentative": false
+    },
+    {
+      "kind": "fomc_statement",
+      "at": "2026-12-09T14:00:00-05:00",
+      "source_url": "https://www.federalreserve.gov/newsevents/2026-december.htm",
+      "tentative": false
+    },
+    {
+      "kind": "fomc_press_conference",
+      "at": "2026-12-09T14:30:00-05:00",
+      "source_url": "https://www.federalreserve.gov/newsevents/2026-december.htm",
+      "tentative": false
+    },
+    {
+      "kind": "cpi",
+      "at": "2026-12-10T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/cpi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "ppi",
+      "at": "2026-12-15T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/ppi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "employment_situation",
+      "at": "2027-01-08T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/empsit.htm",
+      "tentative": false
+    },
+    {
+      "kind": "cpi",
+      "at": "2027-01-13T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/cpi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "ppi",
+      "at": "2027-01-14T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/ppi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "fomc_statement",
+      "at": "2027-01-27T14:00:00-05:00",
+      "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+      "tentative": true
+    },
+    {
+      "kind": "fomc_press_conference",
+      "at": "2027-01-27T14:30:00-05:00",
+      "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+      "tentative": true
+    },
+    {
+      "kind": "employment_situation",
+      "at": "2027-02-05T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/empsit.htm",
+      "tentative": false
+    },
+    {
+      "kind": "cpi",
+      "at": "2027-02-11T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/cpi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "ppi",
+      "at": "2027-02-12T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/ppi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "employment_situation",
+      "at": "2027-03-05T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/empsit.htm",
+      "tentative": false
+    },
+    {
+      "kind": "cpi",
+      "at": "2027-03-10T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/cpi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "ppi",
+      "at": "2027-03-12T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/ppi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "fomc_statement",
+      "at": "2027-03-17T14:00:00-04:00",
+      "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+      "tentative": true
+    },
+    {
+      "kind": "fomc_press_conference",
+      "at": "2027-03-17T14:30:00-04:00",
+      "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+      "tentative": true
+    },
+    {
+      "kind": "employment_situation",
+      "at": "2027-04-02T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/empsit.htm",
+      "tentative": false
+    },
+    {
+      "kind": "cpi",
+      "at": "2027-04-13T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/cpi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "ppi",
+      "at": "2027-04-14T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/ppi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "fomc_statement",
+      "at": "2027-04-28T14:00:00-04:00",
+      "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+      "tentative": true
+    },
+    {
+      "kind": "fomc_press_conference",
+      "at": "2027-04-28T14:30:00-04:00",
+      "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+      "tentative": true
+    },
+    {
+      "kind": "employment_situation",
+      "at": "2027-05-07T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/empsit.htm",
+      "tentative": false
+    },
+    {
+      "kind": "cpi",
+      "at": "2027-05-12T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/cpi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "ppi",
+      "at": "2027-05-13T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/ppi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "employment_situation",
+      "at": "2027-06-04T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/empsit.htm",
+      "tentative": false
+    },
+    {
+      "kind": "fomc_statement",
+      "at": "2027-06-09T14:00:00-04:00",
+      "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+      "tentative": true
+    },
+    {
+      "kind": "fomc_press_conference",
+      "at": "2027-06-09T14:30:00-04:00",
+      "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+      "tentative": true
+    },
+    {
+      "kind": "cpi",
+      "at": "2027-06-10T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/cpi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "ppi",
+      "at": "2027-06-11T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/ppi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "employment_situation",
+      "at": "2027-07-02T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/empsit.htm",
+      "tentative": false
+    },
+    {
+      "kind": "cpi",
+      "at": "2027-07-14T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/cpi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "ppi",
+      "at": "2027-07-15T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/ppi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "fomc_statement",
+      "at": "2027-07-28T14:00:00-04:00",
+      "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+      "tentative": true
+    },
+    {
+      "kind": "fomc_press_conference",
+      "at": "2027-07-28T14:30:00-04:00",
+      "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+      "tentative": true
+    },
+    {
+      "kind": "employment_situation",
+      "at": "2027-08-06T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/empsit.htm",
+      "tentative": false
+    },
+    {
+      "kind": "ppi",
+      "at": "2027-08-10T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/ppi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "cpi",
+      "at": "2027-08-11T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/cpi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "employment_situation",
+      "at": "2027-09-03T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/empsit.htm",
+      "tentative": false
+    },
+    {
+      "kind": "ppi",
+      "at": "2027-09-10T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/ppi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "cpi",
+      "at": "2027-09-14T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/cpi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "fomc_statement",
+      "at": "2027-09-15T14:00:00-04:00",
+      "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+      "tentative": true
+    },
+    {
+      "kind": "fomc_press_conference",
+      "at": "2027-09-15T14:30:00-04:00",
+      "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+      "tentative": true
+    },
+    {
+      "kind": "employment_situation",
+      "at": "2027-10-08T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/empsit.htm",
+      "tentative": false
+    },
+    {
+      "kind": "cpi",
+      "at": "2027-10-14T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/cpi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "ppi",
+      "at": "2027-10-15T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/ppi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "fomc_statement",
+      "at": "2027-10-27T14:00:00-04:00",
+      "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+      "tentative": true
+    },
+    {
+      "kind": "fomc_press_conference",
+      "at": "2027-10-27T14:30:00-04:00",
+      "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+      "tentative": true
+    },
+    {
+      "kind": "employment_situation",
+      "at": "2027-11-05T08:30:00-04:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/empsit.htm",
+      "tentative": false
+    },
+    {
+      "kind": "cpi",
+      "at": "2027-11-10T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/cpi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "ppi",
+      "at": "2027-11-12T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/ppi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "employment_situation",
+      "at": "2027-12-03T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/empsit.htm",
+      "tentative": false
+    }
+  ]
+}

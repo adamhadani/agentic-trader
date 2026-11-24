@@ -10,6 +10,7 @@ from agentic_trader.market.session import (
     CMEFuturesSessionProvider,
     CompositeMarketSessionProvider,
     CryptoSessionProvider,
+    DeterministicCalendarProvider,
     MarketHolidayCalendar,
     MarketSessionType,
     ensure_et,
@@ -179,6 +180,24 @@ def test_market_holiday_calendar_calculations():
     # In 2026, July 4 is Saturday so July 3 is observed statutory holiday, not early close
     assert date(2026, 7, 3) not in cal["early_closes"]
     assert date(2026, 7, 3) in statutory
+
+
+def test_juneteenth_is_an_exchange_holiday_only_from_2022():
+    """NYSE and CME first closed for Juneteenth in 2022; the observed-date rule is unchanged."""
+    for day in (date(2019, 6, 19), date(2020, 6, 19), date(2021, 6, 18)):
+        assert MarketHolidayCalendar.is_equity_holiday(day) == (False, None), day
+        assert day not in MarketHolidayCalendar.get_year_calendar(day.year)["cme_1300_halt_days"], day
+    for day in (date(2022, 6, 20), date(2026, 6, 19)):
+        assert MarketHolidayCalendar.is_equity_holiday(day) == (True, "Juneteenth National Independence Day"), day
+        assert day in MarketHolidayCalendar.get_year_calendar(day.year)["cme_1300_halt_days"], day
+
+
+@pytest.mark.asyncio
+async def test_juneteenth_2021_is_a_deterministic_trading_day():
+    provider = DeterministicCalendarProvider()
+    assert (await provider.get_trading_day(date(2021, 6, 18))).is_trading_day is True
+    assert (await provider.get_trading_day(date(2022, 6, 20))).is_trading_day is False
+    assert (await provider.get_trading_day(date(2026, 6, 19))).is_trading_day is False
 
 
 @pytest.mark.asyncio

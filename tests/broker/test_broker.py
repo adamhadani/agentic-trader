@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -309,6 +309,23 @@ def test_alpaca_missing_credentials():
     broker = AlpacaBroker(config)
     with pytest.raises(ValueError, match="Missing required Alpaca credentials"):
         broker._validate_credentials()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("age", "fresh"), [(30, True), (90, False)])
+async def test_alpaca_session_clock_keeps_its_own_limit_when_the_quote_limit_is_wider(age, fresh):
+    config = AppConfig(execution_mode=ExecutionMode.ALPACA)
+    config.execution.entry_quote_max_age_seconds = 120
+    mock_client = MagicMock()
+    mock_client.get_clock.return_value = SimpleNamespace(
+        timestamp=datetime.now(UTC) - timedelta(seconds=age), is_open=True
+    )
+    broker = AlpacaBroker(config, client=mock_client)
+    if fresh:
+        assert await broker.regular_session_open() is True
+    else:
+        with pytest.raises(ValueError, match="Broker session clock is stale"):
+            await broker.regular_session_open()
 
 
 @pytest.mark.asyncio

@@ -4,13 +4,17 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
 import agentic_trader.research.setups.outcomes as outcomes_module
 from agentic_trader.config import WORKSPACE_ROOT
+from agentic_trader.data.providers import AlpacaDataProvider
+from agentic_trader.execution.durable import RankedOutcome
 from agentic_trader.research.setups.bracket_counterfactual import BracketCounterfactualProtocol
 from agentic_trader.research.setups.labels import BracketHit
+from agentic_trader.research.setups.net_excess import COST_FLOOR_BPS, cost_inputs, name_cost_bps, net_excess_r
 from agentic_trader.research.setups.outcomes import (
     _COLUMNS,
     CF_COLUMN_PREFIX,
@@ -21,6 +25,7 @@ from agentic_trader.research.setups.outcomes import (
     MARKET_PROXY_SYMBOL,
     PRIOR_OUTCOMES,
     RESOLVED_HITS,
+    buy_and_hold_r,
     label_journaled,
     market_r,
     news_alignment,
@@ -169,6 +174,35 @@ def test_label_journaled_fetch_failure_is_fetch_failed_not_immature():
     assert "no data for ZZZZ" in row["reason"]
 
 
+class RefusingStockClient:
+    """Alpaca refuses a window that starts after its end; a delayed provider must never send one."""
+
+    def __init__(self):
+        self.requests: list = []
+
+    def get_stock_bars(self, request):
+        self.requests.append(request)
+        raise RuntimeError("end should not be before start")
+
+
+def test_a_decision_within_the_bar_delay_is_immature_not_fetch_failed():
+    """Under delayed SIP a candidate decided less than the delay ago has no bar old enough to request: its
+    window starts after the clamped end, so the provider returns no bars (no request) and the labeller reads it
+    as IMMATURE, never as a fetch failure."""
+    now = datetime(2026, 11, 9, 15, 35, tzinfo=UTC)  # 10:35 New York
+    decided = now - timedelta(minutes=5)
+    client = RefusingStockClient()
+    provider = AlpacaDataProvider(stock_client=client, feed="sip", end_delay=timedelta(minutes=16), clock=lambda: now)
+    events = [_event("scan-1", decided, [_candidate(contract="AAPL")])]
+
+    result = label_journaled(events, provider, now=now, tape_symbol=None, with_beta=False)
+
+    [row] = result.to_dict("records")
+    assert row["hit"] == BracketHit.IMMATURE.value
+    assert row["market_reason"] is None
+    assert client.requests == []
+
+
 def test_label_journaled_fetches_once_per_symbol():
     frame = _bars(
         [
@@ -272,12 +306,17 @@ def test_summary_empty_frame():
     assert summary["fetch_failed_reasons"] == {}
     assert summary["counts"]["sent"]["fetch_failed"] == 0
     assert summary["counts"]["runner_up"]["fetch_failed"] == 0
+    assert summary["counts"]["journal_only"] == {"mature": 0, "immature": 0, "fetch_failed": 0}
+    assert set(summary["base_rates"]) == set(summary["market_exposure"]) - {"reason"}
+    assert set(summary["base_rates"]) == {"sent", "runner_up", "journal_only"}
     assert "llm_gate" in summary and "market_exposure" in summary
     assert summary["card_policy"] == {
         "withheld": 0,
         "would_withhold": 0,
         "withheld_mean_r_cost": None,
         "would_withhold_mean_r_cost": None,
+        "would_withhold_n_net_excess": 0,
+        "would_withhold_mean_net_excess_r": None,
     }
 
 
@@ -390,8 +429,9 @@ def test_label_journaled_adds_market_control_and_excess():
     assert row["excess_r"] == pytest.approx(row["r_cost"] - 1.0)
     assert row["market_reason"] is None
     # SPY is fetched once, with the same adjustment as the candidates, after them.
-    assert [call[0] for call in bars.calls] == ["AAPL", MARKET_PROXY_SYMBOL]
-    assert bars.calls[1][4] == "raw"
+    hourly_calls = [call for call in bars.calls if call[1] == "1h"]
+    assert [call[0] for call in hourly_calls] == ["AAPL", MARKET_PROXY_SYMBOL]
+    assert hourly_calls[1][4] == "raw"
 
 
 def test_spy_fetch_failure_leaves_market_r_null_with_a_reason():
@@ -402,7 +442,11 @@ def test_spy_fetch_failure_leaves_market_r_null_with_a_reason():
     assert row["market_r"] is None and row["excess_r"] is None
     assert row["market_reason"] == "RuntimeError: no data for SPY"
     exposure = summarize(frame)["market_exposure"]
-    assert exposure == {"sent": None, "runner_up": None, "reason": "RuntimeError: no data for SPY"}
+    assert exposure["runner_up"] is None and exposure["journal_only"] is None
+    assert exposure["reason"] == "RuntimeError: no data for SPY"
+    # No SPY control, but the mature row still counts: n counts controlled rows only.
+    assert exposure["sent"]["n"] == 0 and exposure["sent"]["mean_market_r"] is None
+    assert exposure["sent"]["mean_excess_r"] is None
 
 
 def test_market_symbol_none_skips_the_control_entirely():
@@ -491,8 +535,78 @@ def test_summary_blocks_on_an_empty_frame():
         "bracket_edit_mature": 0,
         "bracket_edit_mean_delta_r": None,
         "vetoed_bracket_edit_mean_delta_r": None,
+        "llm_errors": 0,
+        "by_identity": {},
     }
-    assert summary["market_exposure"] == {"sent": None, "runner_up": None, "reason": None}
+    assert summary["market_exposure"] == {"sent": None, "runner_up": None, "journal_only": None, "reason": None}
+
+
+_ERROR_BLOCK = {"error": "Timeout", "applied": True, "approved": False, "model": None, "prompt_sha256": "p2"}
+
+
+def _identity_frame():
+    bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
+    ok = {"approved": True, "rejection_reason": None, "stop_loss": 99.0, "take_profit": 102.0, "applied": True}
+    new = {**ok, "model": "gpt-5.6-sol", "prompt_sha256": "p2", "error": None, "malformed": False}
+    events = [
+        _event(
+            "s1",
+            DECIDED_AT,
+            [
+                {**_candidate(rank=1), "llm": ok, "signal_id": 1},  # old row: five keys
+                {**_candidate(rank=2), "llm": new, "signal_id": 2},
+                {**_candidate(rank=3, outcome="llm_vetoed"), "llm": {**new, "approved": False}},
+                {**_candidate(rank=4, outcome="llm_unavailable"), "llm": _ERROR_BLOCK},
+                {**_candidate(rank=5, outcome="llm_vetoed"), "llm": {**ok, "approved": False}},
+            ],
+        )
+    ]
+    return label_journaled(events, bars, now=NOW).sort_values("rank")
+
+
+def test_rows_carry_the_llm_identity_and_an_error_row_did_not_run():
+    rows = _identity_frame().to_dict("records")
+    assert all(pd.isna(rows[0][name]) for name in ("llm_model", "llm_prompt_sha256", "llm_error"))
+    assert rows[1]["llm_model"] == "gpt-5.6-sol" and rows[1]["llm_prompt_sha256"] == "p2"
+    assert rows[3]["llm_ran"] is False and rows[3]["llm_vetoed"] is False
+    assert rows[3]["llm_error"] == "Timeout" and pd.isna(rows[3]["llm_model"])
+    assert [row["llm_ran"] for row in rows] == [True, True, True, False, True]
+
+
+def test_error_rows_are_counted_not_attributed_and_by_identity_groups():
+    frame = _identity_frame()
+    gate = summarize(frame)["llm_gate"]
+    assert gate["llm_errors"] == 1
+    assert gate["ran"] == 4 and gate["vetoed"] == 2 and gate["approved"] == 2
+    assert set(gate["by_identity"]) == {"null|null", "gpt-5.6-sol|p2"}
+    old, new = gate["by_identity"]["null|null"], gate["by_identity"]["gpt-5.6-sol|p2"]
+    assert (old["ran"], old["vetoed"], old["approved"]) == (2, 1, 1)
+    assert (new["ran"], new["vetoed"], new["approved"]) == (2, 1, 1)
+    assert new["approved_mean_r_cost"] == pytest.approx(frame.loc[frame["rank"] == 2, "r_cost"].iloc[0])
+    assert "by_identity" not in new
+    assert sum(group["ran"] for group in gate["by_identity"].values()) == gate["ran"]
+
+
+def test_llm_errors_count_mature_rows_only_like_ran_vetoed_and_approved():
+    thin = _bars([("2026-03-01T14:00:00+00:00", 100.0, 100.0, 100.0, 100.0)])  # nothing after the decision
+    bars = FakeBarSource({"AAPL": AAPL_BARS, "MSFT": thin, MARKET_PROXY_SYMBOL: SPY_BARS})
+    ok = {"approved": True, "rejection_reason": None, "stop_loss": 99.0, "take_profit": 102.0, "applied": True}
+    events = [
+        _event(
+            "s1",
+            DECIDED_AT,
+            [
+                {**_candidate(rank=1), "llm": ok, "signal_id": 1},  # ran, mature
+                {**_candidate(rank=2, outcome="llm_unavailable"), "llm": _ERROR_BLOCK},  # error, mature
+                {**_candidate(contract="MSFT", rank=3), "llm": ok, "signal_id": 3},  # ran, immature
+                {**_candidate(contract="MSFT", rank=4, outcome="llm_unavailable"), "llm": _ERROR_BLOCK},  # immature
+            ],
+        )
+    ]
+    frame = label_journaled(events, bars, now=NOW)
+    assert frame["llm_error"].notna().sum() == 2  # both rows keep their error column
+    gate = summarize(frame)["llm_gate"]
+    assert (gate["ran"], gate["llm_errors"]) == (1, 1)
 
 
 def test_rows_carry_the_applied_llm_stop_for_execution_evidence():
@@ -586,9 +700,10 @@ def test_a_market_proxy_candidate_is_fetched_once():
     frame = label_journaled(
         [_event("s1", DECIDED_AT, [_candidate()]), _event("s2", later, [spy])], bars, now=NOW, tape_symbol=None
     )
-    assert [call[0] for call in bars.calls] == ["AAPL", MARKET_PROXY_SYMBOL]
+    hourly_calls = [call for call in bars.calls if call[1] == "1h"]
+    assert [call[0] for call in hourly_calls] == ["AAPL", MARKET_PROXY_SYMBOL]
     # One fetch covers every candidate's window: it starts at the earliest decision of all.
-    assert bars.calls[1][2] == DECIDED_AT
+    assert hourly_calls[1][2] == DECIDED_AT
     aapl = frame.loc[frame["contract"] == "AAPL"].iloc[0]
     assert aapl["market_r"] == pytest.approx(1.0)
 
@@ -622,6 +737,8 @@ def test_card_policy_columns_and_summary_block():
         "would_withhold": 1,
         "withheld_mean_r_cost": pytest.approx(withheld_r),
         "would_withhold_mean_r_cost": pytest.approx(withheld_r),
+        "would_withhold_n_net_excess": 0,  # no daily bars for a beta: no net excess
+        "would_withhold_mean_net_excess_r": None,
     }
     # The existing blocks are unchanged: a withheld candidate is still a runner-up there.
     assert summary["counts"]["runner_up"]["mature"] == 2
@@ -665,6 +782,51 @@ def test_summarize_reports_scans_and_sent_cards_per_trigger():
         "unknown": {"scans": 1, "sent": 0},
     }
     assert summarize(label_journaled([], FakeBarSource({}), now=NOW))["triggers"] == {}
+
+
+def _classed_frame(outcomes):
+    """One labelled row per outcome, each on a distinct symbol with SPY as the market control."""
+    candidates = [_candidate(contract=f"S{i}", rank=i + 1, outcome=outcome) for i, outcome in enumerate(outcomes)]
+    frames = {candidate["contract"]: AAPL_BARS for candidate in candidates}
+    bars = FakeBarSource({**frames, MARKET_PROXY_SYMBOL: SPY_BARS})
+    return label_journaled([_event("scan-1", DECIDED_AT, candidates)], bars, now=NOW)
+
+
+def test_summarize_separates_journal_only_from_runners_up():
+    outcomes = ["sent", "journal_only", "journal_only", "broad_index_excluded", "per-scan budget spent"]
+    s = summarize(_classed_frame(outcomes))
+    assert (
+        s["counts"]["sent"]["mature"],
+        s["counts"]["journal_only"]["mature"],
+        s["counts"]["runner_up"]["mature"],
+    ) == (1, 2, 2)
+    assert set(s["base_rates"]) == set(s["market_exposure"]) - {"reason"} == {"sent", "runner_up", "journal_only"}
+    assert [s["base_rates"][name]["n"] for name in ("sent", "runner_up", "journal_only")] == [1, 2, 2]
+    assert [s["market_exposure"][name]["n"] for name in ("sent", "runner_up", "journal_only")] == [1, 2, 2]
+    assert s["total"] == 5
+
+
+def test_summarize_counts_journal_only_by_maturity_and_keeps_broad_index_a_runner_up():
+    candidates = [
+        _candidate(contract="OK", rank=1, outcome=RankedOutcome.JOURNAL_ONLY),
+        _candidate(contract="ZZZZ", rank=2, outcome=RankedOutcome.JOURNAL_ONLY),
+        _candidate(contract="IDX", rank=3, outcome=RankedOutcome.BROAD_INDEX_EXCLUDED),
+        _candidate(contract="BAD", rank=4, outcome=RankedOutcome.BROAD_INDEX_EXCLUDED),
+    ]
+    prior_session = _bars([("2026-03-01T14:00:00+00:00", 100.0, 100.0, 100.0, 100.0)])
+    bars = FakeBarSource({"OK": AAPL_BARS, "IDX": AAPL_BARS, "BAD": prior_session}, raise_for={"ZZZZ"})
+    counts = summarize(label_journaled([_event("scan-1", DECIDED_AT, candidates)], bars, now=NOW, market_symbol=None))[
+        "counts"
+    ]
+    assert counts["journal_only"] == {"mature": 1, "immature": 0, "fetch_failed": 1}
+    assert counts["runner_up"] == {"mature": 1, "immature": 1, "fetch_failed": 0}
+    assert counts["sent"] == {"mature": 0, "immature": 0, "fetch_failed": 0}
+
+
+def test_summarize_without_journal_only_rows_reports_an_empty_class():
+    s = summarize(_classed_frame(["sent", "per-scan budget spent"]))
+    assert s["counts"]["journal_only"] == {"mature": 0, "immature": 0, "fetch_failed": 0}
+    assert s["base_rates"]["journal_only"] is None and s["market_exposure"]["journal_only"] is None
 
 
 def test_selection_compares_all_scorers_over_the_shadow_scored_scans():
@@ -874,6 +1036,24 @@ _SPY_HOURLY = _bars(
         ("2026-03-02T15:30:00Z", 500.5, 502.0, 500.0, 501.0),
     ]
 )
+# The same two bars followed by the rest of the regular session (to 15:30 ET) and the next session's
+# first bar, so a one-session horizon has closed.
+_RESOLVING_FULL_DAY = _bars(
+    [
+        ("2026-03-02T14:30:00Z", 100.0, 100.5, 99.5, 100.2),
+        ("2026-03-02T15:30:00Z", 100.2, 102.5, 100.0, 102.2),
+    ]
+    + [(f"2026-03-02T{hour}:30:00Z", 102.2, 103.5, 102.0, 103.0) for hour in (16, 17, 18, 19, 20)]
+    + [("2026-03-03T14:30:00Z", 103.0, 103.2, 102.8, 103.1)]
+)
+_SPY_FULL_DAY = _bars(
+    [
+        ("2026-03-02T14:30:00Z", 500.0, 501.0, 499.0, 500.5),
+        ("2026-03-02T15:30:00Z", 500.5, 502.0, 500.0, 501.0),
+    ]
+    + [(f"2026-03-02T{hour}:30:00Z", 501.0, 508.0, 500.5, 505.0) for hour in (16, 17, 18, 19, 20)]
+    + [("2026-03-03T14:30:00Z", 505.0, 505.5, 504.5, 505.2)]
+)
 # One bar that hits neither level and no later bars: the bracket is still open (IMMATURE).
 _OPEN_BARS = _bars([("2026-03-02T14:30:00Z", 100.0, 100.5, 99.5, 100.2)])
 
@@ -935,12 +1115,12 @@ def test_tape_fetch_is_one_raw_daily_request_after_the_hourly_ones():
     daily = _spy_daily([100.0] * 20 + [105.0], end="2026-02-27")  # last completed session before 2026-03-02
     source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": daily})
     frame = label_journaled(events, source, now=NOW)
-    daily_calls = [call for call in source.calls if call[1] == "1d"]
+    daily_calls = [call for call in source.calls if call[1] == "1d" and call[4] == "raw"]
     assert len(daily_calls) == 1
     symbol, _, start, end, adjustment = daily_calls[0]
     assert (symbol, adjustment, end) == ("SPY", "raw", NOW)
     assert start == DECIDED_AT - timedelta(days=TAPE_HISTORY_DAYS)
-    assert source.calls[-1] == daily_calls[0]
+    assert [call for call in source.calls if call[1] == "1h"] == source.calls[:2]
     assert frame["spy_ret_20"].tolist() == [pytest.approx(0.05)]
     assert frame["spy_above_200"].tolist() == [None]
     assert frame["tape_reason"].tolist() == [None]
@@ -950,7 +1130,7 @@ def test_tape_symbol_none_skips_the_daily_fetch():
     events = [_event("s1", DECIDED_AT, [_candidate()])]
     source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": pd.DataFrame()})
     frame = label_journaled(events, source, now=NOW, tape_symbol=None)
-    assert not [call for call in source.calls if call[1] == "1d"]
+    assert not [call for call in source.calls if call[1] == "1d" and call[4] == "raw"]
     assert frame["spy_ret_20"].tolist() == [None] and frame["tape_reason"].tolist() == [None]
 
 
@@ -1354,7 +1534,20 @@ def test_columns_include_target_atr_and_cf_columns():
     columns = list(_COLUMNS)
     assert columns[columns.index("stop") + 1 : columns.index("stop") + 3] == ["target", "atr_14"]
     expected = [f"cf_{arm.name}_{kind}" for arm in LIVE_COUNTERFACTUAL_ARMS for kind in ("hit", "r_cost", "market_r")]
-    start = columns.index("excess_r") + 1
+    assert columns[columns.index("excess_r") + 1 : columns.index("excess_r") + 12] == [
+        "beta",
+        "beta_reason",
+        "beta_market_r",
+        "beta_excess_r",
+        "fill_price",
+        "risk_unit",
+        "name_cost_bps",
+        "cost_reason",
+        "net_excess_r",
+        "hold_r",
+        "timing_r",
+    ]
+    start = columns.index("timing_r") + 1
     assert columns[start : start + 12] == expected
     assert columns[start + 12] == "market_reason"
     assert all(name.startswith(CF_COLUMN_PREFIX) for name in expected)
@@ -1447,6 +1640,7 @@ def test_counterfactual_summary_shapes_and_advantage():
         "timeout_rate": None,
         "mean_r_cost": None,
         "mean_excess_r": None,
+        "mean_beta_excess_r": None,
         "advantage_vs_live_excess": None,
     }
 
@@ -1457,3 +1651,467 @@ def test_summarize_empty_frame_has_counterfactual_block():
     assert set(block["arms"]) == {arm.name for arm in LIVE_COUNTERFACTUAL_ARMS}
     for arm in block["arms"].values():
         assert arm["n_pairs"] == 0 and arm["mean_r_cost"] is None and arm["advantage_vs_live_excess"] is None
+
+
+def _adjusted_daily(closes, *, end="2026-02-27"):
+    index = pd.bdate_range(end=end, periods=len(closes)) + pd.Timedelta(hours=20)
+    return pd.DataFrame({"Close": list(closes)}, index=pd.DatetimeIndex(index, tz="UTC"))
+
+
+def _half_beta_dailies(n=150):
+    rng = np.random.default_rng(3)
+    market_ret = rng.normal(0.0, 0.01, n - 1)
+    market = 100.0 * np.cumprod(np.concatenate([[1.0], 1.0 + market_ret]))
+    symbol = 50.0 * np.cumprod(np.concatenate([[1.0], 1.0 + 0.5 * market_ret]))
+    return _adjusted_daily(symbol), _adjusted_daily(market)
+
+
+def test_rows_carry_beta_and_hold_columns():
+    aapl_daily, spy_daily = _half_beta_dailies()
+    source = DailyAwareBarSource(
+        {"AAPL": _RESOLVING_FULL_DAY, "SPY": _SPY_HOURLY}, {"AAPL": aapl_daily, "SPY": spy_daily}
+    )
+    frame = label_journaled(
+        [_event("s1", DECIDED_AT, [_candidate()])], source, now=NOW, tape_symbol=None, max_hold_sessions=1
+    )
+    [row] = frame.to_dict("records")
+    assert row["hit"] == BracketHit.TARGET.value
+    assert row["beta"] == pytest.approx(0.5, abs=1e-9) and row["beta_reason"] is None
+    assert row["beta_market_r"] == pytest.approx(0.5 * row["market_r"])
+    assert row["beta_excess_r"] == pytest.approx(row["r_cost"] - row["beta_market_r"])
+    # AAPL's own buy-and-hold over the full one-session horizon: open 100.0 -> last close 103.0 on a 1.0 risk unit.
+    assert row["hold_r"] == pytest.approx((103.0 / 100.0 - 1.0) * 100.0 / 1.0)
+    assert row["timing_r"] == pytest.approx(row["r_cost"] - row["hold_r"])
+
+
+def test_daily_beta_fetch_uses_adjusted_bars():
+    aapl_daily, spy_daily = _half_beta_dailies()
+    source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"AAPL": aapl_daily, "SPY": spy_daily})
+    label_journaled([_event("s1", DECIDED_AT, [_candidate()])], source, now=NOW, tape_symbol=None)
+    recorded = [(call[0], call[1], call[4]) for call in source.calls]
+    assert recorded == [
+        ("AAPL", "1h", "raw"),
+        ("SPY", "1h", "raw"),
+        ("AAPL", "1d", "all"),
+        ("SPY", "1d", "all"),
+    ]
+    adjusted = [call for call in source.calls if call[4] == "all"]
+    assert all(call[2] == DECIDED_AT - timedelta(days=200) for call in adjusted)
+
+
+def test_daily_fetch_failure_sets_beta_reason_only():
+    aapl_daily, spy_daily = _half_beta_dailies()
+    source = DailyAwareBarSource(
+        {"AAPL": _RESOLVING_FULL_DAY, "SPY": _SPY_HOURLY},
+        {"AAPL": aapl_daily, "SPY": spy_daily},
+        raise_daily_for={"AAPL"},
+    )
+    [row] = label_journaled(
+        [_event("s1", DECIDED_AT, [_candidate()])], source, now=NOW, tape_symbol=None, max_hold_sessions=1
+    ).to_dict("records")
+    assert row["beta_reason"] == "fetch_failed: RuntimeError"
+    assert row["beta"] is None and row["beta_market_r"] is None and row["beta_excess_r"] is None
+    assert row["hit"] == BracketHit.TARGET.value
+    assert row["market_r"] is not None and row["hold_r"] is not None and row["timing_r"] is not None
+    spy_failed = DailyAwareBarSource(
+        {"AAPL": _RESOLVING_FULL_DAY, "SPY": _SPY_HOURLY},
+        {"AAPL": aapl_daily, "SPY": spy_daily},
+        raise_daily_for={"SPY"},
+    )
+    [row] = label_journaled(
+        [_event("s1", DECIDED_AT, [_candidate()])], spy_failed, now=NOW, tape_symbol=None, max_hold_sessions=1
+    ).to_dict("records")
+    assert row["beta_reason"] == "fetch_failed: RuntimeError" and row["beta"] is None
+
+
+def test_immature_rows_carry_no_beta_columns():
+    aapl_daily, spy_daily = _half_beta_dailies()
+    source = DailyAwareBarSource({"AAPL": _OPEN_BARS, "SPY": _SPY_HOURLY}, {"AAPL": aapl_daily, "SPY": spy_daily})
+    [row] = label_journaled([_event("s1", DECIDED_AT, [_candidate()])], source, now=NOW, tape_symbol=None).to_dict(
+        "records"
+    )
+    assert row["hit"] == BracketHit.IMMATURE.value
+    assert [row[name] for name in ("beta_market_r", "beta_excess_r", "hold_r", "timing_r")] == [None] * 4
+
+
+def test_spy_candidate_beta_one_and_hold_is_the_full_horizon_return():
+    _, spy_daily = _half_beta_dailies()
+    spy = _candidate(contract=MARKET_PROXY_SYMBOL, entry=500.0, stop=499.0, target=501.0)
+    source = DailyAwareBarSource({"SPY": _SPY_FULL_DAY}, {"SPY": spy_daily})
+    [row] = label_journaled(
+        [_event("s1", DECIDED_AT, [spy])], source, now=NOW, tape_symbol=None, max_hold_sessions=1
+    ).to_dict("records")
+    assert row["beta"] == pytest.approx(1.0, abs=1e-9)
+    # The bracket exits at the target on bar 2; the hold control runs on to the session close (505).
+    assert row["hold_r"] == pytest.approx((505.0 / 500.0 - 1.0) * 500.0 / 1.0)
+    assert row["beta_market_r"] == pytest.approx(row["market_r"])
+    assert len([call for call in source.calls if call[1] == "1d"]) == 1
+
+
+class _StartHonouringBarSource(DailyAwareBarSource):
+    """Like the real provider, a daily request returns only bars at or after ``start``."""
+
+    def fetch_bars(self, symbol, timeframe, start, end, *, adjustment):
+        frame = super().fetch_bars(symbol, timeframe, start, end, adjustment=adjustment)
+        return frame.loc[frame.index >= pd.Timestamp(start)] if timeframe == "1d" else frame
+
+
+def test_market_proxy_beta_series_covers_the_earliest_decision_when_spy_is_ranked_later():
+    aapl_daily, spy_daily = _half_beta_dailies()
+    later = DECIDED_AT + timedelta(days=60)
+    events = [
+        _event("s1", DECIDED_AT, [_candidate()]),
+        _event("s2", later, [_candidate(contract=MARKET_PROXY_SYMBOL, entry=500.0, stop=499.0, target=501.0)]),
+    ]
+    source = _StartHonouringBarSource(
+        {"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"AAPL": aapl_daily, "SPY": spy_daily}
+    )
+    frame = label_journaled(events, source, now=NOW + timedelta(days=90), tape_symbol=None)
+    aapl = frame.loc[frame["contract"] == "AAPL"].iloc[0]
+    assert aapl["beta_reason"] is None and aapl["beta"] == pytest.approx(0.5, abs=1e-9)
+    spy_daily_calls = [c for c in source.calls if c[0] == "SPY" and c[1] == "1d"]
+    assert [c[2] for c in spy_daily_calls] == [DECIDED_AT - timedelta(days=200)]
+
+
+def test_no_daily_beta_fetch_for_a_symbol_whose_hourly_fetch_failed():
+    aapl_daily, spy_daily = _half_beta_dailies()
+    source = DailyAwareBarSource(
+        {"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"AAPL": aapl_daily, "SPY": spy_daily}, raise_for={"AAPL"}
+    )
+    label_journaled([_event("s1", DECIDED_AT, [_candidate()])], source, now=NOW, tape_symbol=None)
+    assert [c[0] for c in source.calls if c[1] == "1d"] == ["SPY"]
+
+
+def _synthetic_mature_frame(rows):
+    """Mature rows built directly: (contract, r_cost, market_r, beta, hold_r, timing_r)."""
+    records = []
+    for i, (contract, r_cost, market, beta, hold, timing) in enumerate(rows):
+        record = dict.fromkeys(_COLUMNS)
+        beta_market = None if beta is None or market is None else beta * market
+        record.update(
+            scan_id="s1",
+            contract=contract,
+            rank=i + 1,
+            outcome="sent",
+            sent=True,
+            hit=BracketHit.TARGET.value,
+            r_cost=r_cost,
+            market_r=market,
+            excess_r=None if market is None else r_cost - market,
+            beta=beta,
+            beta_market_r=beta_market,
+            beta_excess_r=None if beta_market is None else r_cost - beta_market,
+            hold_r=hold,
+            timing_r=timing,
+            llm_ran=False,
+            llm_vetoed=False,
+            llm_bracket_edited=False,
+            card_policy_withheld=False,
+            prior_same_session=0,
+        )
+        records.append(record)
+    return pd.DataFrame(records, columns=list(_COLUMNS))
+
+
+def test_exposure_reports_beta_and_timing():
+    frame = _synthetic_mature_frame(
+        [("AAPL", 2.0, 1.0, 0.5, 1.5, 0.5), ("MSFT", 1.0, 2.0, 1.5, None, None), ("XLK", 0.0, 1.0, None, 0.5, -0.5)]
+    )
+    sent = summarize(frame)["market_exposure"]["sent"]
+    assert sent["n_beta"] == 2
+    assert sent["mean_beta"] == pytest.approx(1.0)
+    assert sent["mean_beta_market_r"] == pytest.approx((0.5 + 3.0) / 2)
+    assert sent["mean_beta_excess_r"] == pytest.approx(((2.0 - 0.5) + (1.0 - 3.0)) / 2)
+    assert sent["mean_hold_r"] == pytest.approx(1.0)
+    assert sent["mean_timing_r"] == pytest.approx(0.0)
+
+
+def test_exposure_beta_keys_are_none_without_any_beta():
+    frame = _synthetic_mature_frame([("AAPL", 1.0, 1.0, None, None, None)])
+    sent = summarize(frame)["market_exposure"]["sent"]
+    assert sent["n_beta"] == 0
+    assert sent["mean_beta"] is None and sent["mean_beta_excess_r"] is None and sent["mean_hold_r"] is None
+
+
+def test_by_asset_class_with_map():
+    frame = _synthetic_mature_frame(
+        [("AAPL", 2.0, 1.0, 0.5, None, None), ("MSFT", 1.0, 0.0, 1.0, None, None), ("TLT", -1.0, 1.0, None, None, None)]
+    )
+    classes = summarize(frame, asset_classes={"AAPL": "single_stock", "MSFT": "single_stock", "TLT": "rates_credit"})[
+        "by_asset_class"
+    ]
+    assert classes["single_stock"] == {
+        "n": 2,
+        "mean_r_cost": pytest.approx(1.5),
+        "mean_excess_r": pytest.approx((1.0 + 1.0) / 2),
+        "mean_beta_excess_r": pytest.approx((1.5 + 1.0) / 2),
+    }
+    assert classes["rates_credit"]["n"] == 1 and classes["rates_credit"]["mean_beta_excess_r"] is None
+
+
+def test_by_asset_class_unclassified_without_map():
+    frame = _synthetic_mature_frame([("AAPL", 2.0, 1.0, 0.5, None, None), ("TLT", 0.0, 0.0, None, None, None)])
+    classes = summarize(frame)["by_asset_class"]
+    assert list(classes) == ["unclassified"] and classes["unclassified"]["n"] == 2
+    assert summarize(frame, asset_classes={"AAPL": "single_stock"})["by_asset_class"].keys() == {
+        "single_stock",
+        "unclassified",
+    }
+
+
+def test_counterfactual_beta_excess():
+    frame = _synthetic_mature_frame([("AAPL", 2.0, 1.0, 0.5, None, None), ("MSFT", 1.0, 1.0, None, None, None)])
+    prefix = f"{CF_COLUMN_PREFIX}{LIVE_COUNTERFACTUAL_ARMS[0].name}_"
+    frame[f"{prefix}r_cost"] = [3.0, 1.0]
+    frame[f"{prefix}hit"] = [BracketHit.TARGET.value] * 2
+    frame[f"{prefix}market_r"] = [2.0, 1.0]
+    arm = summarize(frame)["counterfactual"]["arms"][LIVE_COUNTERFACTUAL_ARMS[0].name]
+    assert arm["mean_beta_excess_r"] == pytest.approx(3.0 - 0.5 * 2.0)
+    empty = summarize(frame)["counterfactual"]["arms"][LIVE_COUNTERFACTUAL_ARMS[1].name]
+    assert empty["mean_beta_excess_r"] is None
+
+
+def test_empty_frame_has_new_keys():
+    summary = summarize(pd.DataFrame(columns=list(_COLUMNS)))
+    assert summary["by_asset_class"] == {}
+    for arm in summary["counterfactual"]["arms"].values():
+        assert arm["mean_beta_excess_r"] is None
+
+
+def _day_bars(day, opens_closes):
+    """Regular hourly bars for one New York day (March, EST = UTC-5): hours 09..15 NY."""
+    rows = []
+    for hour, (open_price, close_price) in zip(range(14, 21), opens_closes, strict=False):
+        rows.append(
+            (
+                f"2026-03-{day:02d}T{hour:02d}:30:00+00:00",
+                open_price,
+                max(open_price, close_price) + 0.1,
+                min(open_price, close_price) - 0.1,
+                close_price,
+            )
+        )
+    return rows
+
+
+def _flat_day(day, price):
+    return _day_bars(day, [(price, price)] * 7)
+
+
+# Entry open 100 on Mon 3/2; the name rallies to 110 by the close of Tue 3/3 (the last day of a 2-session horizon).
+_HORIZON_BARS = _bars(
+    _day_bars(2, [(100.0, 100.0)] * 7)
+    + _day_bars(3, [(100.0, 105.0)] + [(105.0, 105.0)] * 5 + [(105.0, 110.0)])
+    + _flat_day(4, 110.0)
+)
+_ENTRY = pd.Timestamp("2026-03-02T14:30:00+00:00")
+
+
+def test_buy_and_hold_r_is_the_full_horizon_return_not_the_exit_window():
+    # Long entry 100, stop 99 (1R = 1% of entry): +10% over the horizon = +10R.
+    assert buy_and_hold_r("LONG", 100.0, 99.0, _ENTRY, _HORIZON_BARS, 2) == pytest.approx(10.0)
+    assert buy_and_hold_r("SHORT", 100.0, 101.0, _ENTRY, _HORIZON_BARS, 2) == pytest.approx(-10.0)
+    # One-session horizon ends at the close of the entry session.
+    assert buy_and_hold_r("LONG", 100.0, 99.0, _ENTRY, _HORIZON_BARS, 1) == pytest.approx(0.0)
+
+
+def test_buy_and_hold_r_is_none_until_the_horizon_session_has_closed():
+    through_open_of_tuesday = _bars(_day_bars(2, [(100.0, 100.0)] * 7) + _day_bars(3, [(100.0, 105.0)] * 3))
+    assert buy_and_hold_r("LONG", 100.0, 99.0, _ENTRY, through_open_of_tuesday, 2) is None
+    no_entry_bar = _bars(_day_bars(2, [(100.0, 100.0)] * 7))
+    assert buy_and_hold_r("LONG", 100.0, 99.0, pd.Timestamp("2026-03-09T14:30:00+00:00"), no_entry_bar, 1) is None
+    assert buy_and_hold_r("LONG", 100.0, 100.0, _ENTRY, _HORIZON_BARS, 2) is None
+
+
+def test_a_stop_exit_followed_by_a_rally_has_the_full_horizon_hold_return():
+    stopped_then_rally = _bars(
+        _day_bars(2, [(100.0, 100.0)] * 7)
+        + [("2026-03-03T14:30:00+00:00", 100.0, 100.1, 98.0, 98.5)]
+        + _day_bars(3, [(98.5, 98.5)] * 7)[1:-1]
+        + [("2026-03-03T20:30:00+00:00", 98.5, 110.0, 98.4, 110.0)]
+        + _flat_day(4, 110.0)
+    )
+    source = FakeBarSource({"AAPL": stopped_then_rally, MARKET_PROXY_SYMBOL: SPY_BARS})
+    [row] = label_journaled(
+        [_event("s1", DECIDED_AT, [_candidate(stop=99.0, target=150.0)])],
+        source,
+        now=datetime(2026, 3, 5, tzinfo=UTC),
+        max_hold_sessions=2,
+        tape_symbol=None,
+        with_beta=False,
+    ).to_dict("records")
+    assert row["hit"] == BracketHit.STOP.value
+    assert row["hold_r"] == pytest.approx(10.0)
+    assert row["timing_r"] == pytest.approx(row["r_cost"] - 10.0)
+
+
+def test_a_timeout_exit_has_hold_r_equal_to_the_bracket_r_up_to_the_entry_factor():
+    flat_then_drift = _bars(_flat_day(2, 100.0) + _day_bars(3, [(100.0, 101.0)] * 7) + _flat_day(4, 101.0))
+    source = FakeBarSource({"AAPL": flat_then_drift, MARKET_PROXY_SYMBOL: SPY_BARS})
+    [row] = label_journaled(
+        [_event("s1", DECIDED_AT, [_candidate(stop=90.0, target=150.0)])],
+        source,
+        now=datetime(2026, 3, 5, tzinfo=UTC),
+        max_hold_sessions=2,
+        cost_bps=0.0,
+        tape_symbol=None,
+        with_beta=False,
+    ).to_dict("records")
+    assert row["hit"] == BracketHit.TIMEOUT.value
+    assert row["hold_r"] == pytest.approx(row["r"])
+    assert row["timing_r"] == pytest.approx(0.0)
+
+
+def test_exposure_hold_timing_and_beta_reasons_cover_rows_without_a_market_r():
+    frame = _synthetic_mature_frame(
+        [("AAPL", 2.0, 1.0, 0.5, 1.5, 0.5), ("MSFT", 1.0, None, None, 2.5, -1.5), ("XLK", 0.0, 3.0, None, None, None)]
+    )
+    frame["beta_reason"] = [None, "fetch_failed: RuntimeError", "short_history"]
+    sent = summarize(frame)["market_exposure"]["sent"]
+    # hold/timing average every mature row with a finite value, SPY market_r or not.
+    assert sent["n"] == 2 and sent["mean_hold_r"] == pytest.approx((1.5 + 2.5) / 2)
+    assert sent["mean_timing_r"] == pytest.approx((0.5 - 1.5) / 2)
+    assert sent["beta_reasons"] == {"fetch_failed: RuntimeError": 1, "short_history": 1}
+    # the beta-one excess over exactly the rows that carry a beta excess.
+    assert sent["mean_beta_excess_r"] == pytest.approx(2.0 - 0.5)
+    assert sent["mean_excess_r_same_rows"] == pytest.approx(2.0 - 1.0)
+
+
+def test_buy_and_hold_r_waits_for_a_later_session_even_with_a_final_hour_bar():
+    # A complete-looking horizon session (through the 15:30 ET bar) may still be forming; it matures only once
+    # a later session's bar exists, as the labeller's timeout does.
+    same_day_only = _RESOLVING_FULL_DAY.loc[_RESOLVING_FULL_DAY.index < pd.Timestamp("2026-03-03", tz="UTC")]
+    entry = pd.Timestamp("2026-03-02T14:30:00Z")
+    assert buy_and_hold_r("LONG", 100.0, 99.0, entry, same_day_only, 1) is None
+    assert buy_and_hold_r("LONG", 100.0, 99.0, entry, _RESOLVING_FULL_DAY, 1) == pytest.approx(3.0)
+
+
+def _net_excess_source(**kwargs):
+    aapl_daily, spy_daily = _half_beta_dailies()
+    return DailyAwareBarSource(
+        {"AAPL": _RESOLVING_FULL_DAY, "SPY": _SPY_HOURLY}, {"AAPL": aapl_daily, "SPY": spy_daily}, **kwargs
+    )
+
+
+def test_label_journaled_adds_net_excess_columns():
+    source = _net_excess_source()
+    [row] = label_journaled(
+        [_event("s1", DECIDED_AT, [_candidate()])], source, now=NOW, tape_symbol=None, max_hold_sessions=1
+    ).to_dict("records")
+    assert row["timeframe"] == "1h"
+    assert row["fill_price"] == 100.0  # the entry bar open
+    assert row["risk_unit"] == pytest.approx(1.0)
+    # No Volume in the daily frames: the cost is the floor, so the unit equals beta_excess_r.
+    assert row["name_cost_bps"] == 5.0
+    assert row["net_excess_r"] == pytest.approx(row["beta_excess_r"])
+
+
+def test_label_journaled_daily_bars_source():
+    bars = _net_excess_source()
+    daily = _net_excess_source()
+    label_journaled(
+        [_event("s1", DECIDED_AT, [_candidate()])],
+        bars,
+        daily_bars=daily,
+        now=NOW,
+        tape_symbol=None,
+        max_hold_sessions=1,
+    )
+    assert [c[0] for c in daily.calls] == ["AAPL", "SPY"]
+    assert all(c[1] == "1d" and c[4] == "all" for c in daily.calls)
+    assert not [c for c in bars.calls if c[1] == "1d"]
+
+
+def test_daily_fetch_failure_reason():
+    class Boom(DailyAwareBarSource):
+        def fetch_bars(self, symbol, timeframe, start, end, *, adjustment):
+            if timeframe == "1d" and symbol == "AAPL":
+                raise ConnectionError("down")
+            return super().fetch_bars(symbol, timeframe, start, end, adjustment=adjustment)
+
+    aapl_daily, spy_daily = _half_beta_dailies()
+    source = Boom({"AAPL": _RESOLVING_FULL_DAY, "SPY": _SPY_HOURLY}, {"AAPL": aapl_daily, "SPY": spy_daily})
+    [row] = label_journaled(
+        [_event("s1", DECIDED_AT, [_candidate()])], source, now=NOW, tape_symbol=None, max_hold_sessions=1
+    ).to_dict("records")
+    assert row["cost_reason"] == "fetch_failed: ConnectionError"
+    assert row["name_cost_bps"] == 5.0
+    assert row["net_excess_r"] is None
+
+
+def test_exposure_reports_net_excess():
+    frame = _synthetic_mature_frame([("AAPL", 2.0, 1.0, 0.5, 1.5, 0.5), ("MSFT", 1.0, 2.0, 1.5, None, None)])
+    frame["net_excess_r"] = [1.0, None]
+    frame["name_cost_bps"] = [5.0, 15.0]
+    sent = summarize(frame)["market_exposure"]["sent"]
+    assert sent["n_net_excess"] == 1
+    assert sent["mean_net_excess_r"] == pytest.approx(1.0)
+    assert sent["mean_name_cost_bps"] == pytest.approx(10.0)
+
+
+def test_card_policy_summary_reports_the_would_withhold_net_excess():
+    """`would_withhold` is a verdict on the posterior in net_excess_r_v1: the summary reports that unit beside R."""
+    frame = _synthetic_mature_frame(
+        [("AAPL", 2.0, 1.0, 0.5, None, None), ("MSFT", -1.0, 0.5, 1.0, None, None), ("NVDA", 1.0, 0.2, 1.0, None, None)]
+    )
+    frame["would_withhold"] = [True, True, False]
+    frame["net_excess_r"] = [1.25, None, 0.4]  # MSFT has no beta-matched excess
+    block = summarize(frame)["card_policy"]
+    assert (block["would_withhold"], block["would_withhold_mean_r_cost"]) == (2, pytest.approx(0.5))
+    assert block["would_withhold_n_net_excess"] == 1
+    assert block["would_withhold_mean_net_excess_r"] == pytest.approx(1.25)
+
+
+def _with_volume(daily, volume):
+    return daily.assign(Volume=float(volume))
+
+
+def test_a_daily_volume_prices_the_per_name_cost_into_net_excess():
+    """With volume in the daily bars the cost is the floor plus impact, and net_excess_r charges that cost."""
+    aapl_daily, spy_daily = _half_beta_dailies()
+    aapl_daily = _with_volume(aapl_daily, 10_000)  # about $0.5M a day: a $100k reference order has impact
+    source = DailyAwareBarSource(
+        {"AAPL": _RESOLVING_FULL_DAY, "SPY": _SPY_HOURLY}, {"AAPL": aapl_daily, "SPY": _with_volume(spy_daily, 1e8)}
+    )
+    [row] = label_journaled(
+        [_event("s1", DECIDED_AT, [_candidate()])], source, now=NOW, tape_symbol=None, max_hold_sessions=1
+    ).to_dict("records")
+    expected_cost = name_cost_bps(row["fill_price"], row["risk_unit"], cost_inputs(aapl_daily, DECIDED_AT.date()))
+    assert row["cost_reason"] is None and row["name_cost_bps"] > COST_FLOOR_BPS
+    assert row["name_cost_bps"] == pytest.approx(expected_cost)
+    assert row["net_excess_r"] == pytest.approx(
+        net_excess_r(row["r"], row["fill_price"], row["risk_unit"], expected_cost, row["beta"], row["market_r"])
+    )
+    # The flat 5 bp beta excess charges less than the per-name cost does.
+    assert row["net_excess_r"] < row["beta_excess_r"]
+
+
+# A SHORT that opens at 100 and reaches its 98 target on the second bar, then the rest of the session and the next
+# session's first bar (a one-session horizon has closed).
+_SHORT_RESOLVING_FULL_DAY = _bars(
+    [
+        ("2026-03-02T14:30:00Z", 100.0, 100.5, 99.5, 99.8),
+        ("2026-03-02T15:30:00Z", 99.8, 100.0, 97.5, 97.8),
+    ]
+    + [(f"2026-03-02T{hour}:30:00Z", 97.8, 98.2, 97.0, 97.5) for hour in (16, 17, 18, 19, 20)]
+    + [("2026-03-03T14:30:00Z", 97.5, 97.8, 97.2, 97.4)]
+)
+
+
+def test_a_short_candidates_net_excess_uses_its_signed_r_and_market_r():
+    aapl_daily, spy_daily = _half_beta_dailies()
+    source = DailyAwareBarSource(
+        {"AAPL": _SHORT_RESOLVING_FULL_DAY, "SPY": _SPY_HOURLY}, {"AAPL": aapl_daily, "SPY": spy_daily}
+    )
+    short = _candidate(direction="SHORT", entry=100.0, stop=101.0, target=98.0)
+    [row] = label_journaled(
+        [_event("s1", DECIDED_AT, [short])], source, now=NOW, tape_symbol=None, max_hold_sessions=1
+    ).to_dict("records")
+    assert (row["direction"], row["hit"]) == ("SHORT", BracketHit.TARGET.value)
+    # The short gains as the name falls; SPY rose over the hold, which a short's beta-matched control credits.
+    assert row["r"] == pytest.approx(2.0) and row["market_r"] == pytest.approx(-(501.0 / 500.0 - 1.0) * 100.0)
+    assert row["beta"] == pytest.approx(0.5, abs=1e-9) and row["name_cost_bps"] == COST_FLOOR_BPS
+    expected = net_excess_r(
+        row["r"], row["fill_price"], row["risk_unit"], row["name_cost_bps"], row["beta"], row["market_r"]
+    )
+    assert row["net_excess_r"] == pytest.approx(expected) == pytest.approx(2.0 - 0.1 + 0.5 * 0.2)

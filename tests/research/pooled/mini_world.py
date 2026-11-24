@@ -12,15 +12,19 @@ from agentic_trader.research.pooled.campaign import (
     CampaignProtocol,
     EventsCampaignProtocol,
     Family,
+    InsiderCampaignProtocol,
     IntradayCampaignProtocol,
     NullCheckSpec,
     Selection,
+    ShortVolumeCampaignProtocol,
     load_campaign_protocol,
 )
 from agentic_trader.research.pooled.cube import LabelCube
 from agentic_trader.research.pooled.events import EVENT_FIELDS, EventCoverage, EventFrames
+from agentic_trader.research.pooled.insider_fields import INSIDER_FIELDS, InsiderCoverage, InsiderFrames
 from agentic_trader.research.pooled.runner import CubeBuild
 from agentic_trader.research.pooled.scoring import ScoreBook
+from agentic_trader.research.pooled.short_fields import SHORT_FIELDS, ShortCoverage, ShortFrames
 from tests.research.pooled.test_formula import hourly
 
 
@@ -239,6 +243,59 @@ def event_frames(seed: int = 3) -> dict[str, pd.DataFrame]:
 EVENT_FRAMES = event_frames()
 
 
+def short_frames(seed: int = 4) -> dict[str, pd.DataFrame]:
+    """Synthetic short_fields_v1 frames on BAR_DAYS; NaN for the first 20 rows (the baseline warm-up)."""
+    rng = np.random.default_rng(seed)
+    index = pd.DatetimeIndex([pd.Timestamp(d) for d in BAR_DAYS])
+    n = len(BAR_DAYS)
+    frames = {}
+    for name in NAMES:
+        columns = {
+            "short_ratio": rng.uniform(0.2, 0.7, n),
+            "short_ratio_z": rng.normal(0.0, 1.0, n),
+            "short_volume_rel": rng.normal(1.0, 0.2, n),
+            "offex_share": rng.uniform(0.2, 0.6, n),
+        }
+        for values in columns.values():
+            values[:20] = np.nan
+        frames[name] = pd.DataFrame(columns, index=index)
+    return frames
+
+
+SHORT_FRAMES = short_frames()
+
+
+def insider_frames(seed: int = 5) -> dict[str, pd.DataFrame]:
+    """Synthetic insider_fields_v1 frames on BAR_DAYS.
+
+    The first four names are purchased (1-3 distinct buyers, positive ``insider_buy_rel``) from the 21st
+    session; the rest are covered with no activity (zeros). Every name is NaN on the first 20 rows, so the
+    conditional seeds are finite only where a name has more than one buyer.
+    """
+    rng = np.random.default_rng(seed)
+    index = pd.DatetimeIndex([pd.Timestamp(d) for d in BAR_DAYS])
+    n = len(BAR_DAYS)
+    frames = {}
+    for j, name in enumerate(NAMES):
+        buyers = rng.integers(1, 4, n).astype(float) if j < 4 else np.zeros(n)
+        buy_rel = buyers * rng.uniform(0.01, 0.1, n)
+        columns = {
+            "insider_net_ratio": np.where(buyers > 0, 1.0, np.nan),
+            "insider_buy_rel": buy_rel,
+            "insider_sell_rel": np.zeros(n),
+            "insider_buyers": buyers,
+            "insider_buy_age": np.where(buyers > 0, rng.uniform(0.0, 60.0, n), np.nan),
+            "insider_opp_buy_rel": buy_rel * (rng.uniform(0.0, 1.0, n) > 0.5),
+        }
+        for values in columns.values():
+            values[:20] = np.nan
+        frames[name] = pd.DataFrame(columns, index=index)
+    return frames
+
+
+INSIDER_FRAMES = insider_frames()
+
+
 def mini_events_protocol(**update):
     """The mini fixed-set protocol reading daily bars plus the events_fields_v1 columns."""
     document = mini_fixed_set_protocol(**update).model_dump(mode="json")
@@ -268,6 +325,66 @@ def mini_events_protocol(**update):
     return EventsCampaignProtocol.model_validate(document)
 
 
+def mini_short_protocol(**update):
+    """The mini fixed-set protocol reading daily bars plus the short_fields_v1 columns."""
+    document = mini_fixed_set_protocol().model_dump(mode="json")
+    document.update(
+        id="pooled-short-volume-campaign",
+        score_inputs="daily",
+        short_inputs={
+            "fields_version": "short_fields_v1",
+            "short_volume": {
+                "source": "finra-regsho-cnms",
+                "files_sha256": "d" * 64,
+                "files_from": "2018-08-01",
+                "files_through": "2026-09-01",
+                "z_window": 20,
+                "min_total_volume": 10000,
+                "max_offex_share": 1.5,
+            },
+            "corporate_actions": {
+                "source": "alpaca",
+                "content_sha256": "b" * 64,
+                "window": ["2016-01-01", "2027-03-31"],
+                "trailing_sessions": 252,
+            },
+        },
+    )
+    document.update(update)
+    return ShortVolumeCampaignProtocol.model_validate(document)
+
+
+def mini_insider_protocol(**update):
+    """The mini fixed-set protocol reading daily bars plus the insider_fields_v1 columns."""
+    document = mini_fixed_set_protocol().model_dump(mode="json")
+    document.update(
+        id="pooled-insider-campaign",
+        score_inputs="daily",
+        insider_inputs={
+            "fields_version": "insider_fields_v1",
+            "insider_filings": {
+                "source": "sec-form345-datasets",
+                "files_sha256": "e" * 64,
+                "quarters_from": "2015q1",
+                "quarters_through": "2026q3",
+                "buy_window": 63,
+                "net_window": 126,
+                "owner_roles": ["Officer", "Director"],
+                "exclude_10b5_1": True,
+                "max_trade_rel": 10,
+            },
+            "corporate_actions": {
+                "source": "alpaca",
+                "content_sha256": "b" * 64,
+                "window": ["2016-01-01", "2027-03-31"],
+                "trailing_sessions": 252,
+            },
+        },
+    )
+    document.update(update)
+    return InsiderCampaignProtocol.model_validate(document)
+
+
 def events_cube_build(cube: LabelCube) -> CubeBuild:
     coverage = EventCoverage(
         symbols_without_reports=(),
@@ -287,4 +404,45 @@ def events_cube_build(cube: LabelCube) -> CubeBuild:
         bar_failures={},
         static_used=(),
         events=EventFrames(frames=EVENT_FRAMES, coverage=coverage),
+    )
+
+
+def short_cube_build(cube: LabelCube) -> CubeBuild:
+    coverage = ShortCoverage(
+        symbols_without_rows=(),
+        unscored_rows=0,
+        thin_days=0,
+        offex_clipped=0,
+        identity_breaks={},
+        first_finite={name: dict.fromkeys(SHORT_FIELDS, BAR_DAYS[20].isoformat()) for name in NAMES},
+    )
+    return CubeBuild(
+        cube=cube,
+        trading_days=BAR_DAYS,
+        adjusted=ADJUSTED,
+        raw=ADJUSTED,
+        bar_failures={},
+        static_used=(),
+        short=ShortFrames(frames=SHORT_FRAMES, coverage=coverage),
+    )
+
+
+def insider_cube_build(cube: LabelCube) -> CubeBuild:
+    coverage = InsiderCoverage(
+        symbols_without_cik=(),
+        symbols_without_rows=(),
+        unscored_rows=0,
+        drops={},
+        identity_breaks={},
+        coverage_start={name: BAR_DAYS[20].isoformat() for name in NAMES},
+        first_finite={name: dict.fromkeys(INSIDER_FIELDS, BAR_DAYS[20].isoformat()) for name in NAMES},
+    )
+    return CubeBuild(
+        cube=cube,
+        trading_days=BAR_DAYS,
+        adjusted=ADJUSTED,
+        raw=ADJUSTED,
+        bar_failures={},
+        static_used=(),
+        insider=InsiderFrames(frames=INSIDER_FRAMES, coverage=coverage),
     )

@@ -1,7 +1,9 @@
 import io
+import logging
 import os
 import re
 from collections.abc import Mapping
+from datetime import date, time, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
@@ -55,10 +57,13 @@ from agentic_trader.constants import (
     RuntimeEnvironment,
     SizingMode,
 )
+from agentic_trader.data.edgar_filings import FilingCategory
 from agentic_trader.market.bars import BAR_DURATIONS
 from agentic_trader.research.alpha.probe import MAX_PROBE_TERM_DAYS
+from agentic_trader.research.alpha.universe import ETF_RESEARCH_UNIVERSE
 
 
+_logger = logging.getLogger("copilot.config")
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -160,6 +165,27 @@ class UniverseConfig(BaseModel):
             for entry in entries
         }
 
+    def asset_classes(self) -> dict[str, str]:
+        """Symbol -> asset class for the outcome report: ``etf_equity``, ``rates_credit``, ``metals``
+        (an ``etf*`` group split by sector) or ``single_stock`` (every other group)."""
+        by_sector = {"etf_rates_credit": "rates_credit", "etf_metals": "metals"}
+        return {
+            entry.symbol: by_sector.get(entry.sector, "etf_equity") if group.startswith("etf") else "single_stock"
+            for group, entries in self.groups.items()
+            for entry in entries
+        }
+
+    def outcome_asset_classes(self) -> dict[str, str]:
+        """``asset_classes`` for the outcome report, with the research ETF cohorts beneath it so a
+        symbol removed from the configured universe (BIL, SHY) keeps its class in journaled rows.
+        The configured universe is authoritative where both list a symbol."""
+        research = {
+            symbol: cohort if cohort in ("rates_credit", "metals") else "etf_equity"
+            for cohort, symbols in ETF_RESEARCH_UNIVERSE.cohorts
+            for symbol in symbols
+        }
+        return {**research, **self.asset_classes()}
+
     def sector_groups(self) -> dict[str, list[str]]:
         groups: dict[str, list[str]] = {}
         for entries in self.groups.values():
@@ -182,12 +208,38 @@ class AprioriConfig(BaseModel):
     # The frozen study entered at 10:35 prices: a decision scan that reaches its drift
     # decision more than this long after its slot journals the decision skipped instead.
     max_drift_lateness_seconds: int = Field(default=900, gt=0)
+    # The PEAD card's measured base rate (docs/pead-base-rate-2026-10-30.md): an immutable file pinned by SHA-256.
+    pead_base_rate_path: Path = Field(default=Path("config/research/pead-base-rate-v1.json"), validate_default=True)
+    pead_base_rate_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("pead_base_rate_path", mode="after")
+    @classmethod
+    def _resolve_pead_base_rate_path(cls, value: Path) -> Path:
+        """A relative path must mean the same file for the daemon, an operator CLI invocation and a test alike."""
+        if value.is_absolute():
+            return value
+        return (WORKSPACE_ROOT / value).resolve()
 
 
 class ScanBudget(StrEnum):
     FULL = "full"  # scheduled scans: per-scan, per-session and per-group limits
     SESSION = "session"  # operator scans: per-session and per-group limits only
     NONE = "none"  # explicit --no-budget or dry runs
+    JOURNAL_ONLY = "journal_only"  # the daemon's swing and intraday jobs: collect, rank and journal, send nothing
+
+
+# Unlevered, long-only ETFs on a headline US equity benchmark (a total-market, large-, mid- or small-cap segment
+# index in cap or equal weight, the Dow 30, the Nasdaq-100). Sector, style, factor, dividend, thematic,
+# international, bond and commodity ETFs stay eligible. SPYM replaced SPLG: the 2026-10-15 Alpaca asset
+# snapshot lists no SPLG.
+DEFAULT_BROAD_INDEX_ETFS: tuple[str, ...] = (
+    *("SPY", "VOO", "IVV", "SPYM", "RSP"),  # S&P 500, cap and equal weight
+    *("VTI", "ITOT", "SCHB", "IWV"),  # total market
+    *("IWB", "VV", "SCHX", "OEF"),  # large cap, S&P 100
+    *("QQQ", "QQQM", "DIA"),  # Nasdaq-100, Dow 30
+    *("MDY", "IJH", "IWR", "VO"),  # mid cap
+    *("IWM", "IJR", "VB"),  # small cap
+)
 
 
 class ScanConfig(BaseModel):
@@ -201,6 +253,17 @@ class ScanConfig(BaseModel):
     # Frozen setup-study ranker (ranker.json) scored in shadow at RANK. Evidence only:
     # it never changes ranking, the card budget or any card. None records features only.
     shadow_ranker_artifact: Path | None = None
+    # An unrestricted scan never sends a native card on these names (a card-selection rule in run_scan, not an
+    # entry-risk rule): they are still collected, ranked and journaled. A restricted scan still cards them.
+    # An empty tuple turns the rule off.
+    broad_index_etfs: tuple[str, ...] = DEFAULT_BROAD_INDEX_ETFS
+
+    @field_validator("broad_index_etfs", mode="after")
+    @classmethod
+    def _broad_index_symbols(cls, symbols: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(symbols)) != len(symbols) or any(not re.fullmatch(r"[A-Z][A-Z.]{0,5}", s) for s in symbols):
+            raise ValueError("scan.broad_index_etfs must be distinct upper-case symbols")
+        return symbols
 
     @field_validator("shadow_ranker_artifact", mode="after")
     @classmethod
@@ -223,10 +286,12 @@ CardPolicyMode = Literal["off", "preview", "enforce"]
 class CardPolicyConfig(BaseModel):
     """Measured-evidence card policy, statistics worker and card validity (docs/card-evidence.md).
 
-    Ships off: the evidence block is always rendered, but nothing is withheld until the operator
-    sets ``preview`` (journal ``would_withhold``, still send) and then ``enforce``. It withholds
-    native cards only on complete measured evidence (partial, stale or missing evidence never
-    withholds; alpha, probe and drift cards are exempt) and is not a risk rule.
+    The code default is off; the shipped config runs ``enforce`` at 0.0 (operator decision 2026-10-30,
+    after ``preview`` from 2026-10-28, which journals ``would_withhold`` and still sends). The evidence block is always rendered. It
+    withholds native cards only on complete, time-matured evidence whose posterior expected excess R
+    (``net_excess_r_v1``: a frozen replay prior shrunk toward the live record) is below
+    ``min_measured_ev`` (partial, stale or missing evidence never withholds; alpha, probe and drift
+    cards are exempt) and is not a risk rule.
     """
 
     model_config = {"extra": "forbid"}
@@ -239,6 +304,17 @@ class CardPolicyConfig(BaseModel):
     stats_poll_seconds: int = Field(default=300, ge=10, le=3600)
     stats_max_age_seconds: int = Field(default=345600, gt=0)
     validity: CardValidity = "session_close"
+    # The frozen replay prior (docs/card-stats-prior-2026-10-28.md): an immutable file pinned by SHA-256.
+    prior_path: Path = Field(default=Path("config/research/card-stats-prior-v2.json"), validate_default=True)
+    prior_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("prior_path", mode="after")
+    @classmethod
+    def _resolve_prior_path(cls, value: Path) -> Path:
+        """A relative path must mean the same file for the daemon, an operator CLI invocation and a test alike."""
+        if value.is_absolute():
+            return value
+        return (WORKSPACE_ROOT / value).resolve()
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -370,6 +446,176 @@ class NewsConfig(BaseModel):
     model: str | None = None
 
 
+class LLMGateConfig(BaseModel):
+    """The native-card LLM gate (docs/superpowers/specs/2026-10-27-llm-gate-hygiene-design.md).
+
+    Each gate call has one deadline, ``timeout_seconds``, enforced by the evaluator and passed to the
+    client. A timeout, a provider error or an invalid reply never approves a native card.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    timeout_seconds: float = Field(default=60.0, gt=0, le=180, allow_inf_nan=False)
+
+
+class EarningsCaptureConfig(BaseModel):
+    """Dated earnings-calendar capture (docs/superpowers/specs/2026-11-06-earnings-capture-design.md).
+
+    The daemon captures the Nasdaq forward earnings calendar once per New York weekday for the next
+    ``horizon_days`` calendar days and journals it. Research and context, and the release exit's second source
+    beside the live Nasdaq lookup (off, it leaves the live lookup only, so ``unknown`` is more likely). It is also the
+    earnings blackout's fallback when the live lookup fails; with it off under ``risk.earnings_calendar_unknown:
+    closed``, a single failed live page refuses equity entries.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = False
+    horizon_days: int = Field(default=28, ge=7, le=42)
+
+
+class FilingVetoConfig(BaseModel):
+    """The filing veto (docs/superpowers/specs/2026-11-06-release-exit-filing-veto-design.md, section 4).
+
+    With ``capture`` the daemon journals each covered symbol's recent negative EDGAR filings (late-filing
+    notices, adverse 8-K items, offering prospectuses) after 06:00 New York and ``pre_scan_minutes`` before
+    each suggestion scan. ``entry_block`` ``preview`` labels a long equity card whose issuer filed one within
+    its category's window (calendar days); ``enforce`` refuses it for the ``enforce_categories`` only (the code
+    default is all three; the shipped config enforces ``late_filing`` and ``adverse_8k`` since 2026-11-16 and
+    leaves ``offering`` journal-only). Catalog, paper-probe and alpha cards are exempt. Stale, missing or
+    uncovered evidence never refuses, and a short never evaluates the rule.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    capture: bool = False
+    entry_block: EntryBlockMode = "off"
+    late_filing_days: int = Field(default=30, ge=1, le=120)
+    adverse_8k_days: int = Field(default=60, ge=1, le=120)
+    offering_days: int = Field(default=7, ge=1, le=120)
+    pre_scan_minutes: int = Field(default=30, ge=10, le=120)
+    max_age_seconds: int = Field(default=345600, gt=0)
+    # Under ``enforce`` only these categories refuse; the others are journaled and labelled. All three by default.
+    enforce_categories: tuple[FilingCategory, ...] = (
+        FilingCategory.LATE_FILING,
+        FilingCategory.ADVERSE_8K,
+        FilingCategory.OFFERING,
+    )
+
+    @field_validator("entry_block", mode="before")
+    @classmethod
+    def yaml_off(cls, value: Any) -> Any:
+        # YAML 1.1 reads a bare `off` as False; that spelling means "off". `on`/True stays invalid.
+        return "off" if value is False else value
+
+    @field_validator("enforce_categories")
+    @classmethod
+    def _categories_valid(cls, value: tuple[FilingCategory, ...]) -> tuple[FilingCategory, ...]:
+        if not value:
+            raise ValueError("enforce_categories must not be empty")
+        if len(set(value)) != len(value):
+            raise ValueError("enforce_categories must be distinct")
+        return value
+
+    def enforced_windows(self) -> dict[str, int]:
+        """``windows()`` restricted to ``enforce_categories``: the windows whose filings refuse under ``enforce``."""
+        return {category: days for category, days in self.windows().items() if category in self.enforce_categories}
+
+    def windows(self) -> dict[str, int]:
+        """Each veto category's window before the decision date, in calendar days (``filing_date`` inclusive).
+
+        Keyed by the ``FilingCategory`` members, typed ``str`` so it is the ``Mapping[str, int]`` the
+        ``filing_veto`` rule reads (``Mapping`` is invariant in its key type).
+        """
+        return {
+            FilingCategory.LATE_FILING: self.late_filing_days,
+            FilingCategory.ADVERSE_8K: self.adverse_8k_days,
+            FilingCategory.OFFERING: self.offering_days,
+        }
+
+
+class ReleaseExitConfig(BaseModel):
+    """The release exit (docs/superpowers/specs/2026-11-06-release-exit-filing-veto-design.md, section 3).
+
+    Once per New York trading day, at the first five-minute tick from ``minutes_before_close`` before the
+    calendar's close (an early close honoured), one pass finds every tracked native equity position whose next
+    earnings report falls before the next session's open. ``preview`` journals the pass and sends one notice per
+    such position; ``enforce`` (shipped since 2026-11-16; the code default is ``off``) closes it through
+    ``PositionCloseService``. An ``unknown`` status never closes.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    mode: EntryBlockMode = "off"
+    minutes_before_close: int = Field(default=30, ge=10, le=120)
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def yaml_off(cls, value: Any) -> Any:
+        # YAML 1.1 reads a bare `off` as False; that spelling means "off". `on`/True stays invalid.
+        return "off" if value is False else value
+
+
+class ScorecardConfig(BaseModel):
+    """The weekly lane scorecard (docs/superpowers/specs/2026-11-14-catalog-auto-entry-scorecard-design.md, part C).
+
+    The daemon's 15-minute job sends one Telegram message per ISO week, the first tick at or after the latest
+    ``due_weekday`` (Monday 0 .. Sunday 6) ``due_time_et`` New York time, so a daemon that was down at the due time
+    publishes the missed week on its next tick. ``activity_days`` New York days of activity, ``record_days`` trailing
+    days of realized and counterfactual record. The code default is on; it registers only in the daemon.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = True
+    due_weekday: int = Field(default=5, ge=0, le=6)
+    due_time_et: str = "09:00"
+    activity_days: int = Field(default=7, ge=1, le=90)
+    record_days: int = Field(default=90, ge=7, le=180)
+
+    @field_validator("due_time_et")
+    @classmethod
+    def valid_time(cls, value: str) -> str:
+        if not re.fullmatch(HHMM_PATTERN, value):
+            raise ValueError(f"Invalid HH:MM time: {value}")
+        return value
+
+    @model_validator(mode="after")
+    def record_covers_activity(self):
+        if self.record_days < self.activity_days:
+            raise ValueError("scorecard.record_days must be at least activity_days")
+        return self
+
+
+class InsiderWatchConfig(BaseModel):
+    """Insider watch cards (docs/superpowers/specs/2026-10-23-insider-watch-cards-design.md).
+
+    The daemon captures each SEC filing date's Form 4 filings for cohort v3 once per New York date
+    (from ``backfill_from`` on a first run); the 10:35 suggestion scan applies the frozen ``insider`` v1
+    cluster rule to the merged history (``archive_dir`` quarterly data sets, then the journaled captures)
+    and sends at most ``max_cards_per_session`` unvalidated watch cards (tap-only unless
+    ``execution.auto_entry_catalog`` lists ``insider_watch``), none while
+    ``max_open_positions`` watch positions are open, each capped at ``max_risk_per_trade_usd``.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = False
+    max_cards_per_session: int = Field(default=2, ge=1, le=10)
+    max_open_positions: int = Field(default=4, ge=1, le=20)
+    max_risk_per_trade_usd: float = Field(default=100.0, gt=0, le=10000, allow_inf_nan=False)
+    archive_dir: Path = Field(default=Path("~/agentic-trader-research/insider-filings-cache"), validate_default=True)
+    backfill_from: date = date(2026, 10, 1)
+    # The pooled lane's bar cache holding the cube the insider v1 study ran on: its raw daily bars give the
+    # plausibility filter of every archived trade exactly as the study applied it (read once per process).
+    pooled_cache_dir: Path = Field(default=Path("~/agentic-trader-research/pooled-cache-v1"), validate_default=True)
+
+    @field_validator("archive_dir", "pooled_cache_dir")
+    @classmethod
+    def expand_home(cls, value: Path) -> Path:
+        return value.expanduser()
+
+
 DEFAULT_CORRELATION_GROUPS: dict[str, list[str]] = {
     "us_broad_market": ["/MES", "/ES", "SPY", "VOO", "IVV"],
     "us_tech": ["/MNQ", "/NQ", "QQQ", "XLK"],
@@ -388,6 +634,10 @@ class PortfolioConfig(BaseModel):
     max_notional_exposure: float = 60000.0
     max_concurrent_contracts: int = 2
     max_concurrent_positions: int = 4
+    # Open plus in-flight catalog, watch, probe and alpha positions at which a non-native entry is refused at
+    # admission and the catalog sources stop carding, so natives keep the rest of ``max_concurrent_positions``.
+    # None (the code default) applies no non-native ceiling. A capacity rule, not an entry-risk rule.
+    max_non_native_positions: int | None = Field(default=None, ge=1)
     default_equity_risk_dollars: float = 250.0
     max_futures_exposure: float = 40000.0
     max_equity_exposure: float = 40000.0
@@ -397,6 +647,16 @@ class PortfolioConfig(BaseModel):
     enable_dynamic_correlation: bool = False
     correlation_groups: dict[str, list[str]] = Field(default_factory=lambda: dict(DEFAULT_CORRELATION_GROUPS))
 
+    @model_validator(mode="after")
+    def _non_native_cap_fits_the_book(self) -> PortfolioConfig:
+        cap = self.max_non_native_positions
+        if cap is not None and cap > self.max_concurrent_positions:
+            raise ValueError(
+                f"max_non_native_positions ({cap}) cannot exceed max_concurrent_positions "
+                f"({self.max_concurrent_positions})"
+            )
+        return self
+
 
 class RiskConfig(BaseModel):
     min_risk_reward_ratio: float = 2.0
@@ -405,6 +665,24 @@ class RiskConfig(BaseModel):
     lockout_pre_event_minutes: int = 60
     lockout_post_event_minutes: int = 30
     earnings_blackout_days: int = Field(default=7, ge=0)
+    # The static tier-1 calendar (docs/production.md, "Tier-1 calendar renewal"): an immutable file, pinned by
+    # SHA-256 when set. An expired or invalid calendar leaves the lockout unverified; `open` only labels that,
+    # `closed` refuses new entries.
+    macro_calendar_path: Path = Field(default=Path("config/calendar/us-tier1-v1.json"), validate_default=True)
+    macro_calendar_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    macro_calendar_unknown: Literal["open", "closed"] = "open"
+    macro_calendar_renewal_days: int = Field(default=30, ge=1)
+    # When neither the live Nasdaq lookup nor the journaled dated capture can vouch for an equity's earnings
+    # calendar: `open` labels the card unverified, `closed` refuses the entry.
+    earnings_calendar_unknown: Literal["open", "closed"] = "open"
+
+    @field_validator("macro_calendar_path", mode="after")
+    @classmethod
+    def _resolve_macro_calendar_path(cls, value: Path) -> Path:
+        """A relative path must mean the same file for the daemon, an operator CLI invocation and a test alike."""
+        if value.is_absolute():
+            return value
+        return (WORKSPACE_ROOT / value).resolve()
 
 
 class TrendPullbackConfig(BaseModel):
@@ -485,10 +763,12 @@ class RegimeConfig(BaseModel):
     extreme_min_rr: float = Field(default=2.5, ge=2)
     cache_ttl_seconds: int = 900
     yield_curve_enabled: bool = True
-    credit_oas_enabled: bool = True
-    inflation_breakeven_enabled: bool = True
     hy_oas_elevated_threshold: float = 3.50  # 350 bps
     hy_oas_critical_threshold: float = 5.00  # 500 bps
+    # The UNKNOWN macro stress policy, applied when a decision input (3m, 2y, 10y, HY OAS) is missing.
+    # Below 1.0 by validation: a missing feed never sizes at full risk.
+    unknown_risk_multiplier: float = Field(default=0.5, ge=0.10, lt=1.0)
+    unknown_breakout_allowed: bool = False
 
 
 class FrictionConfig(BaseModel):
@@ -531,6 +811,92 @@ class PositionSizingConfig(BaseModel):
         return self
 
 
+# The computed readiness check for the operator's trading halt; the quiet-hours summary lists it first.
+TRADING_HALT_CHECK = "trading_halt"
+# Readiness checks for unresolved broker work: quiet hours can never mute them.
+BROKER_WORK_CHECKS = ("entry_recovery", "entry_cancellation", "close_recovery")
+
+# Every readiness check name an incident can carry. Spelled out because config must not import diagnostics;
+# a test pins it against HealthComponent and the computed readiness checks.
+READINESS_CHECK_NAMES = frozenset(
+    {
+        "reconciliation",
+        "worker",
+        "scan",
+        "telegram",
+        "delivery",
+        "accounting",
+        "alpha_observer",
+        "alpha_decisions",
+        "alpha_daily_panel",
+        "card_stats",
+        "corporate_actions",
+        "insider_capture",
+        "earnings_capture",
+        "filings_capture",
+        "daemon_started",
+        "alpha_registry",
+        "entry_recovery",
+        "entry_cancellation",
+        "outbox",
+        "close_recovery",
+        TRADING_HALT_CHECK,
+        "broker_stream",
+        "macro_calendar",
+        "event_loop",
+        "storage",
+        "endpoint",
+    }
+)
+
+
+QUIET_HOURS_TIME_HINT = 'quote the time, e.g. "09:15"'
+
+
+class QuietHoursConfig(BaseModel):
+    enabled: bool = False
+    alert_start_et: time = time(9, 15)
+    alert_end_et: time = time(16, 30)
+    # endpoint and storage are exempt by default: while either fails, the broker-work checks go unobserved.
+    exempt_components: list[str] = Field(default_factory=lambda: [*BROKER_WORK_CHECKS, "endpoint", "storage"])
+
+    @field_validator("alert_start_et", "alert_end_et", mode="before")
+    @classmethod
+    def require_quoted_time(cls, value: Any) -> Any:
+        # YAML 1.1 reads an unquoted 10:00 as the integer 600, which pydantic would turn into 00:10 UTC.
+        # ValueError, not TypeError: pydantic reports only ValueError as a ValidationError.
+        if not isinstance(value, str | time):
+            raise ValueError(  # noqa: TRY004
+                f"Quiet hours times must be New York wall-clock strings, not {type(value).__name__}; "
+                f"{QUIET_HOURS_TIME_HINT}"
+            )
+        return value
+
+    @field_validator("alert_start_et", "alert_end_et")
+    @classmethod
+    def require_wall_clock_time(cls, value: time) -> time:
+        if value.tzinfo is not None:
+            raise ValueError(
+                f"Quiet hours times are New York wall-clock and take no UTC offset; {QUIET_HOURS_TIME_HINT}"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def validate_window(self):
+        if self.alert_start_et >= self.alert_end_et:
+            raise ValueError("Quiet hours alert_start_et must be before alert_end_et")
+        unknown = [name for name in self.exempt_components if name not in READINESS_CHECK_NAMES]
+        if unknown:
+            raise ValueError(f"Unknown quiet-hours exempt components: {', '.join(unknown)}")
+        missing = [name for name in BROKER_WORK_CHECKS if name not in self.exempt_components]
+        if missing:
+            raise ValueError(
+                "Quiet hours exempt_components must list every broker-work check; "
+                f"broker-work checks always page: missing {', '.join(missing)}"
+            )
+        return self
+
+
 class OperationsConfig(BaseModel):
     notifications_enabled: bool = True
     startup_grace_seconds: float = Field(default=120, ge=0, allow_inf_nan=False)
@@ -542,6 +908,7 @@ class OperationsConfig(BaseModel):
     healthy_observation_days: int = Field(default=30, ge=1)
     retention_interval_seconds: float = Field(default=3600, gt=0, allow_inf_nan=False)
     retention_batch_size: int = Field(default=1000, ge=1, le=10000)
+    quiet_hours: QuietHoursConfig = Field(default_factory=QuietHoursConfig)
 
 
 class AccountingConfig(BaseModel):
@@ -570,7 +937,9 @@ class ExecutionConfig(BaseModel):
     entry_preflight_lease_seconds: float = Field(default=60, gt=0, le=300)
     entry_queue_max_age_seconds: float = Field(default=120, gt=0)
     signal_max_age_seconds: float = Field(default=14400, gt=0)
-    entry_quote_max_age_seconds: float = Field(default=60, gt=0)
+    entry_quote_max_age_seconds: float = Field(default=120, gt=0, le=300, allow_inf_nan=False)
+    entry_clock_max_age_seconds: float = Field(default=60, gt=0, le=300, allow_inf_nan=False)
+    entry_trade_max_age_seconds: float = Field(default=300, gt=0, le=900, allow_inf_nan=False)
     entry_evidence_max_age_seconds: float = Field(default=30, gt=0, le=120, allow_inf_nan=False)
     entry_max_price_drift_pct: float = Field(default=0.01, gt=0, le=0.1)
     worker_interval_seconds: float = Field(default=2, gt=0, le=60)
@@ -581,6 +950,16 @@ class ExecutionConfig(BaseModel):
     notification_retry_seconds: float = Field(default=5, gt=0)
     notification_max_retry_seconds: float = Field(default=900, gt=0)
     card_freshness: CardFreshnessConfig = Field(default_factory=CardFreshnessConfig)
+    # "session": new native cards record a one-session entry lifetime (Alpaca only); "off": untimed GTC.
+    native_entry_lifetime: Literal["off", "session"] = "off"
+    # "paper": native suggestion-scan cards are entered automatically on the Alpaca paper account; "off": tap only.
+    auto_entry: Literal["off", "paper"] = "off"
+    # Catalog card sources the auto-entry sweep also enters (no LLM approval needed: their evidence is the frozen
+    # rule): "pead" (the PEAD probe) and "insider_watch". Inert (a warning at load) unless `auto_entry` is "paper".
+    auto_entry_catalog: tuple[Literal["pead", "insider_watch"], ...] = ()
+    # Consecutive failed reconciliation passes of one timed signal's evidence read before it becomes a review halt
+    # (1: first failure). A pass is the 60 s monitor plus one per stream update and scan.
+    lifetime_evidence_review_after_failures: int = Field(default=5, ge=1, le=60)
 
     broker_request_timeout_seconds: float = Field(default=10, gt=0, le=60)
     stop_replace_timeout_seconds: float = Field(default=10, gt=0, le=60)
@@ -695,6 +1074,23 @@ class MarketDataConfig(BaseModel):
     retry_backoff_factor: float = DEFAULT_DATA_RETRY_BACKOFF_FACTOR
     scan_concurrency: int = Field(default=8, ge=1, le=32)
     max_requests_per_minute: int = Field(default=150, ge=1, le=1000)
+    # Scan bars: the scan fetcher and every reader in its units (the dynamic universe, the card labellers, the
+    # doctor probe). "configured" reads `alpaca_feed`, which ALPACA_DATA_FEED overrides; "sip_delayed" reads SIP
+    # with every request ending `sip_delay_minutes` back, since the free plan refuses a SIP end under 15 minutes
+    # old. The floor is 16, not 15: an end exactly 15 minutes old sits on the entitlement edge, where request
+    # queueing or clock skew turns it into a 403. Broker quotes (`AppConfig.alpaca_data_feed`) never follow this.
+    scan_bars: Literal["configured", "sip_delayed"] = "configured"
+    sip_delay_minutes: int = Field(default=16, ge=16, le=60)
+
+    @property
+    def bars_feed(self) -> str:
+        """The Alpaca feed scan bars are read on."""
+        return "sip" if self.scan_bars == "sip_delayed" else self.alpaca_feed
+
+    @property
+    def bars_end_delay(self) -> timedelta | None:
+        """How far before now every scan-bar request must end; ``None`` leaves request ends as given."""
+        return timedelta(minutes=self.sip_delay_minutes) if self.scan_bars == "sip_delayed" else None
 
 
 class DatabaseConfig(BaseModel):
@@ -845,6 +1241,12 @@ class AppConfig(BaseModel):
     book_sizing: BookSizingConfig = Field(default_factory=BookSizingConfig)
     corporate_actions: CorporateActionsConfig = Field(default_factory=CorporateActionsConfig)
     news: NewsConfig = Field(default_factory=NewsConfig)
+    llm_gate: LLMGateConfig = Field(default_factory=LLMGateConfig)
+    insider_watch: InsiderWatchConfig = Field(default_factory=InsiderWatchConfig)
+    earnings_capture: EarningsCaptureConfig = Field(default_factory=EarningsCaptureConfig)
+    filing_veto: FilingVetoConfig = Field(default_factory=FilingVetoConfig)
+    release_exit: ReleaseExitConfig = Field(default_factory=ReleaseExitConfig)
+    scorecard: ScorecardConfig = Field(default_factory=ScorecardConfig)
     explicit_contracts: tuple[str, ...] | None = None
     risk: RiskConfig = Field(default_factory=RiskConfig)
     strategies: StrategyConfig = Field(default_factory=StrategyConfig)
@@ -1118,7 +1520,14 @@ def load_config(
         card_policy=CardPolicyConfig(**(cfg_dict.get("card_policy") or {})),
         book_sizing=BookSizingConfig(**(cfg_dict.get("book_sizing") or {})),
         corporate_actions=CorporateActionsConfig(**(cfg_dict.get("corporate_actions") or {})),
+        apriori=AprioriConfig(**(cfg_dict.get("apriori") or {})),
         news=NewsConfig(**(cfg_dict.get("news") or {})),
+        llm_gate=LLMGateConfig(**(cfg_dict.get("llm_gate") or {})),
+        insider_watch=InsiderWatchConfig(**(cfg_dict.get("insider_watch") or {})),
+        earnings_capture=EarningsCaptureConfig(**(cfg_dict.get("earnings_capture") or {})),
+        filing_veto=FilingVetoConfig(**(cfg_dict.get("filing_veto") or {})),
+        release_exit=ReleaseExitConfig(**(cfg_dict.get("release_exit") or {})),
+        scorecard=ScorecardConfig(**(cfg_dict.get("scorecard") or {})),
         explicit_contracts=tuple(explicit_contracts),
         risk=RiskConfig(**cfg_dict.get("risk", {})),
         strategies=strategies_config,
@@ -1177,4 +1586,20 @@ def load_config(
         alpaca_data_feed=alpaca_data_feed,
         alpaca_paper=alpaca_paper,
     )
+    if config.execution.auto_entry_catalog and config.execution.auto_entry != "paper":
+        # Inert, not an error: ``auto_entry_marker`` marks nothing unless ``auto_entry_active``, so
+        # ``auto_entry: "off"`` alone is the off-switch and the daemon still starts.
+        _logger.warning(
+            "auto_entry_catalog_inert: execution.auto_entry_catalog is set but execution.auto_entry mode=%s; "
+            "no catalog card is auto-entered",
+            config.execution.auto_entry,
+        )
+    if config.execution.auto_entry == "paper":
+        if execution_mode == ExecutionMode.ALPACA and not alpaca_paper:
+            raise ValueError("execution.auto_entry: paper is refused on a live Alpaca account; set it to off")
+        if config.execution.native_entry_lifetime != "session":
+            raise ValueError(
+                "execution.auto_entry: paper requires execution.native_entry_lifetime: session "
+                "(an auto entry must never rest as an untimed GTC order)"
+            )
     return config

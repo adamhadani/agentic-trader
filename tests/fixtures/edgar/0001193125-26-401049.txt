@@ -1,0 +1,208 @@
+<SEC-DOCUMENT>0001193125-26-401049.txt : 20260924
+<SEC-HEADER>0001193125-26-401049.hdr.sgml : 20260924
+<ACCEPTANCE-DATETIME>20260924161508
+ACCESSION NUMBER:		0001193125-26-401049
+CONFORMED SUBMISSION TYPE:	4
+PUBLIC DOCUMENT COUNT:		1
+CONFORMED PERIOD OF REPORT:	20260922
+FILED AS OF DATE:		20260924
+DATE AS OF CHANGE:		20260924
+
+REPORTING-OWNER:
+
+	OWNER DATA:
+		COMPANY CONFORMED NAME:			NIPPON LIFE INSURANCE CO
+		CENTRAL INDEX KEY:			0000905591
+		ORGANIZATION NAME:
+		STATE OF INCORPORATION:			M0
+		FISCAL YEAR END:			0331
+
+	FILING VALUES:
+		FORM TYPE:		4
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-41504
+		FILM NUMBER:		261404934
+
+	BUSINESS ADDRESS:
+		STREET 1:		1-6-6 MARUNOUCHI
+		STREET 2:		CHIYODA-KU
+		CITY:			TOKYO
+		STATE:			M0
+		ZIP:			100-8288
+		BUSINESS PHONE:		81355339292
+
+	MAIL ADDRESS:
+		STREET 1:		1-6-6 MARUNOUCHI
+		STREET 2:		CHIYODA-KU
+		CITY:			TOKYO
+		STATE:			M0
+		ZIP:			100-8288
+
+ISSUER:
+
+	COMPANY DATA:
+		COMPANY CONFORMED NAME:			Corebridge Financial, Inc.
+		CENTRAL INDEX KEY:			0001889539
+		STANDARD INDUSTRIAL CLASSIFICATION:	LIFE INSURANCE [6311]
+		ORGANIZATION NAME:           	02 Finance
+		EIN:				954715639
+		STATE OF INCORPORATION:			DE
+		FISCAL YEAR END:			1231
+
+	BUSINESS ADDRESS:
+		STREET 1:		2919 ALLEN PARKWAY
+		STREET 2:		WOODSON TOWER
+		CITY:			HOUSTON
+		STATE:			TX
+		ZIP:			77019
+		BUSINESS PHONE:		1-877-375-2422
+
+	MAIL ADDRESS:
+		STREET 1:		2919 ALLEN PARKWAY
+		STREET 2:		WOODSON TOWER
+		CITY:			HOUSTON
+		STATE:			TX
+		ZIP:			77019
+
+	FORMER COMPANY:
+		FORMER CONFORMED NAME:	SAFG Retirement Services, Inc.
+		DATE OF NAME CHANGE:	20211020
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>4
+<SEQUENCE>1
+<FILENAME>ownership.xml
+<DESCRIPTION>4
+<TEXT>
+<XML>
+<?xml version="1.0"?>
+<ownershipDocument>
+
+    <schemaVersion>X0609</schemaVersion>
+
+    <documentType>4</documentType>
+
+    <periodOfReport>2026-09-22</periodOfReport>
+
+    <issuer>
+        <issuerCik>0001889539</issuerCik>
+        <issuerName>Corebridge Financial, Inc.</issuerName>
+        <issuerTradingSymbol>CRBG</issuerTradingSymbol>
+        <issuerForeignTradingSymbol></issuerForeignTradingSymbol>
+    </issuer>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0000905591</rptOwnerCik>
+            <rptOwnerName>NIPPON LIFE INSURANCE CO</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>true</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>3-5-12, IMABASHI, CHUO-KU</rptOwnerStreet1>
+            <rptOwnerStreet2></rptOwnerStreet2>
+            <rptOwnerCity>OSAKA</rptOwnerCity>
+            <rptOwnerNonUSStateTerritory></rptOwnerNonUSStateTerritory>
+            <rptOwnerCountry>M0</rptOwnerCountry>
+            <rptOwnerZipCode>541-8501</rptOwnerZipCode>
+            <rptOwnerStateDescription>JAPAN</rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>false</isDirector>
+            <isOfficer>false</isOfficer>
+            <isTenPercentOwner>true</isTenPercentOwner>
+            <isOther>false</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <aff10b5One>true</aff10b5One>
+
+    <nonDerivativeTable>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Common Stock</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-09-22</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>P</transactionCode>
+                <equitySwapInvolved>false</equitySwapInvolved>
+                <footnoteId id="F1"/>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>296668</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <value>34.3091</value>
+                    <footnoteId id="F3"/>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>A</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>124116681</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>D</value>
+                </directOrIndirectOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Common Stock</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-09-22</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>P</transactionCode>
+                <equitySwapInvolved>false</equitySwapInvolved>
+                <footnoteId id="F1"/>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>200</value>
+                    <footnoteId id="F2"/>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <value>34.92</value>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>A</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>124116881</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>D</value>
+                </directOrIndirectOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+    </nonDerivativeTable>
+
+    <footnotes>
+        <footnote id="F1">The purchases reported herein were effected pursuant to a Rule 10b5-1 plan adopted by the Reporting Person on August 7, 2026.</footnote>
+        <footnote id="F2">Includes 124,083,610 shares held of record by the Reporting Person and 33,271 shares held of record by Nissay Asset Management Corporation, a direct wholly owned subsidiary of the Reporting Person, which the Reporting Person may be deemed to beneficially own.</footnote>
+        <footnote id="F3">The price reported in Column 4 is a weighted average price. These shares were purchased in multiple transactions at prices ranging from $33.89 to $34.86, inclusive. The Reporting Person undertakes to provide to the Issuer, any security holder of the Issuer or the staff of the Securities and Exchange Commission, upon request, full information regarding the number of shares purchased at each separate price within the range set forth herein.</footnote>
+    </footnotes>
+
+    <ownerSignature>
+        <signatureName>By: /s/ Yohei Miyanaga, General Manager</signatureName>
+        <signatureDate>2026-09-24</signatureDate>
+    </ownerSignature>
+</ownershipDocument>
+</XML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

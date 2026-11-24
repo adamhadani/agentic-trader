@@ -6,7 +6,8 @@ Fixtures seed already-accepted timed orders; session-alpha admission stays disab
 import asyncio
 import json
 import time
-from datetime import UTC, datetime, time as dt_time, timedelta
+from dataclasses import asdict, replace
+from datetime import UTC, date, datetime, time as dt_time, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -15,14 +16,17 @@ import pytest
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.constants import SignalStatus, SystemStateKey
 from agentic_trader.execution.closing import PositionCloseService
-from agentic_trader.execution.durable import EventKind, WorkKind, WorkStatus
+from agentic_trader.execution.durable import EventKind, WorkItem, WorkKind, WorkStatus
 from agentic_trader.execution.lifetime_policy import (
     DAILY_ENTRY_LIFETIME_SECONDS,
+    NATIVE_ENTRY_LIFETIME_KEY,
+    NativeEntryLifetimePolicy,
     SessionLifetimePolicy,
     TradeLifetimePolicy,
+    daily_entry_lifetime,
 )
 from agentic_trader.execution.lifetimes import TradeLifetimeService
-from agentic_trader.market.session import AlpacaCalendarProvider, MarketCalendarDay
+from agentic_trader.market.session import AlpacaCalendarProvider, MarketCalendarDay, regular_session_certainly_closed
 from agentic_trader.research.alpha.strategy import AprioriBracketPolicy, TimedAlphaExecutionPolicy, session_entry_policy
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.lifetimes import LifetimeRepository
@@ -106,6 +110,9 @@ async def lifecycle_case(request, alpaca_http, temp_db):
             broker,
             PositionCloseService(broker, database),
             config=broker.config.execution,
+            # The closed-market grace has its own tests; pinning an open market keeps every
+            # other test independent of the weekday it runs on.
+            market_closed=lambda now: False,
         )
         for database in databases
     ]
@@ -162,10 +169,28 @@ async def test_exact_cancel_once_across_clients_and_restarts(lifecycle_case, out
     assert len([call for call in c.venue.calls if call[0] == "DELETE"]) == 1
 
 
-@pytest.mark.parametrize("state", ["partial", "historical", "replacement", "missing_protection"])
+# A realistic pre-marker native card's provenance: every block a scan writes, no entry lifetime.
+HISTORICAL_NATIVE_PROVENANCE = {
+    "strategy": "trend_pullback",
+    "setup_quality": 0.71,
+    "regime": {"macro_stress": "LOW", "vix": 15.2, "risk_multiplier": 1.0},
+    "news": {"status": "scored", "headlines": 2, "tone": "neutral"},
+    "book_sizing": {"mode": "enforce", "factor": 0.83},
+    "llm_verdict": {"approved": True},
+}
+
+
+@pytest.mark.parametrize(
+    "state", ["partial", "historical", "historical_provenance", "replacement", "missing_protection"]
+)
 async def test_unsafe_or_untimed_entries_never_cancel(lifecycle_case, state):
     c = lifecycle_case
-    if state == "partial":
+    if state == "historical_provenance":
+        async with c.db.session_factory() as session, session.begin():
+            row = await session.get(SignalRecord, c.signal_id)
+            row.alpha_policy = None
+            row.decision_provenance = json.dumps(HISTORICAL_NATIVE_PROVENANCE, allow_nan=False)
+    elif state == "partial":
         c.venue.entry.update(status="partially_filled", filled_qty="2")
     elif state == "replacement":
         c.venue.entry["replaced_by"] = "00000000-0000-0000-0000-000000000099"
@@ -178,7 +203,8 @@ async def test_unsafe_or_untimed_entries_never_cancel(lifecycle_case, state):
     await c.services[0].reconcile()
     assert not any(call[0] != "GET" for call in c.venue.calls)
     assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
-    assert (await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true") is (state != "historical")
+    untimed = state in ("historical", "historical_provenance")
+    assert (await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true") is (not untimed)
 
 
 def filled_position(c):
@@ -267,7 +293,7 @@ async def test_newer_partial_projection_fences_stale_rest_cancel_claim(lifecycle
         }
     )
     await c.db.workflows.observe_orders([newer])
-    await c.services[0].reconcile()
+    await c.services[0].reconcile()  # a failure after the evidence was read is an immediate review
     assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
     assert not any(call[0] != "GET" for call in c.venue.calls)
     assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
@@ -421,6 +447,200 @@ async def test_daily_entry_only_policy_never_schedules_a_holding_close(lifecycle
     assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
 
 
+async def mark_native(c, *, submitted_seconds_ago=None, submitted_at=None, marker=None):
+    """Turn the fixture signal into a marked native card: no alpha_policy, provenance marker only.
+
+    The fixture services have no session calendar, so the one-session outer bound governs them.
+    """
+    provenance = {NATIVE_ENTRY_LIFETIME_KEY: marker or asdict(NativeEntryLifetimePolicy())}
+    async with c.db.session_factory() as session, session.begin():
+        row = await session.get(SignalRecord, c.signal_id)
+        row.alpha_policy, row.timeframe = None, "4h"
+        row.decision_provenance = json.dumps(provenance, allow_nan=False)
+    if submitted_at is None:
+        submitted_at = datetime.now(UTC) - timedelta(seconds=submitted_seconds_ago)
+    c.venue.entry.update(submitted_at=submitted_at.isoformat())
+
+
+@pytest.mark.parametrize("marker", ["current", "written_v2"])
+async def test_marked_native_entry_cancelled_once_after_deadline(lifecycle_case, marker):
+    c = lifecycle_case
+    await mark_native(
+        c,
+        submitted_seconds_ago=DAILY_ENTRY_LIFETIME_SECONDS + 1,
+        marker=asdict(daily_entry_lifetime()) if marker == "written_v2" else None,
+    )
+
+    def response(method, path, query, body):
+        if method == "DELETE":
+            assert path == f"/v2/orders/{c.venue.entry['id']}"
+            complete_cancel(c)
+            return 204, None
+        return None
+
+    c.venue.override = response
+    await asyncio.gather(*(service.reconcile() for service in c.services))
+    await c.services[1].reconcile()
+    cancels = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert len(cancels) == 1 and cancels[0].status == WorkStatus.ACCEPTED
+    assert len([call for call in c.venue.calls if call[0] == "DELETE"]) == 1
+    assert not any(call[0] in ("POST", "PATCH") for call in c.venue.calls)
+    assert (await c.db.get_signal_by_id(c.signal_id))["status"] == SignalStatus.FAILED
+    assert await c.db.workflows.list_work(WorkKind.NOTIFICATION)
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+    await assert_capacity_released(c)
+
+
+async def assert_capacity_released(c):
+    """A confirmed cancel frees the signal's reservation and no longer fences fresh admission."""
+    assert c.signal_id not in {s["id"] for s in await c.db.get_active_positions()}
+    candidate = await c.db.record_signal(
+        contract="QQQ",
+        strategy="fixture",
+        direction="LONG",
+        entry_price=100,
+        stop_loss=95,
+        take_profit=110,
+        risk_dollars=50,
+        quantity=10,
+        asset_class="EQUITY",
+    )
+    request = OrderRequest(
+        signal_id=candidate,
+        symbol="QQQ",
+        asset_class="EQUITY",
+        direction="LONG",
+        quantity=10,
+        entry_price=100,
+        stop_loss=95,
+        take_profit=110,
+    )
+    item, reason = await c.db.workflows.enqueue_entry(request, c.broker.config)
+    assert item is not None, reason
+
+
+async def test_marked_native_entry_untouched_before_deadline(lifecycle_case):
+    c = lifecycle_case
+    await mark_native(c, submitted_seconds_ago=DAILY_ENTRY_LIFETIME_SECONDS - 60)
+    await c.services[0].reconcile()
+    assert not any(call[0] != "GET" for call in c.venue.calls)
+    assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert (await c.db.get_signal_by_id(c.signal_id))["status"] == SignalStatus.EXECUTED
+
+
+class SubmissionDayCalendar:
+    """The broker calendar for one regular session, as ``AlpacaCalendarProvider`` returns it."""
+
+    def __init__(self, day):
+        self.day = day
+        self.requests = []
+
+    async def get_calendar_range(self, start, end):
+        self.requests.append((start, end))
+        return [self.day] if start <= self.day.date <= end else []
+
+
+NY = ZoneInfo("America/New_York")
+# A regular Wednesday and the early-close Friday after Thanksgiving (13:00 close).
+REGULAR_DAY = MarketCalendarDay(date(2026, 10, 21), True, False, dt_time(9, 30), dt_time(16, 0))
+EARLY_DAY = MarketCalendarDay(date(2026, 11, 27), True, True, dt_time(9, 30), dt_time(13, 0))
+
+
+def calendar_service(c, day, now):
+    return TradeLifetimeService(
+        LifetimeRepository(c.db.workflows),
+        c.broker,
+        PositionCloseService(c.broker, c.db),
+        config=c.broker.config.execution,
+        clock=lambda: now,
+        calendar=SubmissionDayCalendar(day),
+    )
+
+
+@pytest.mark.parametrize(("day", "close"), [(REGULAR_DAY, dt_time(16, 0)), (EARLY_DAY, dt_time(13, 0))])
+async def test_marked_native_entry_is_cancelled_five_minutes_after_its_session_close(lifecycle_case, day, close):
+    """Due at the submission session's close + 5 min (calendar-aware), while the host is still awake."""
+    c = lifecycle_case
+    due = datetime.combine(day.date, close, tzinfo=NY) + timedelta(minutes=5)
+    await mark_native(c, submitted_at=datetime.combine(day.date, dt_time(10, 0), tzinfo=NY))
+    broker_confirms_cancel(c)
+    await calendar_service(c, day, due - timedelta(seconds=1)).reconcile()
+    assert not deletes(c) and not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    service = calendar_service(c, day, due)
+    await service.reconcile()
+    assert service.calendar.requests == [(day.date, day.date)]
+    (item,) = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert item.status == WorkStatus.ACCEPTED and item.payload["lifetime"] == asdict(NativeEntryLifetimePolicy())
+    assert len(deletes(c)) == 1
+    assert (await c.db.get_signal_by_id(c.signal_id))["status"] == SignalStatus.FAILED
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+
+
+async def test_marked_native_partial_fill_before_the_deadline_neither_halts_nor_reviews(lifecycle_case):
+    c = lifecycle_case
+    await mark_native(c, submitted_seconds_ago=DAILY_ENTRY_LIFETIME_SECONDS - 60)
+    c.venue.entry.update(status="partially_filled", filled_qty="2")
+    await c.services[0].reconcile()
+    assert not mutations(c)
+    assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+    assert not [e for e in await c.db.workflows.events() if e["kind"] == EventKind.LIFETIME_REVIEW]
+
+
+async def filled_marked_native(c, *, fill_after_deadline_seconds):
+    """A marked entry the desk saw resting, then filled and recorded (``executed_at`` set)."""
+    submitted = datetime.now(UTC) - timedelta(days=2)
+    await mark_native(c, submitted_at=submitted)
+    filled_at = submitted + timedelta(seconds=DAILY_ENTRY_LIFETIME_SECONDS + fill_after_deadline_seconds)
+    c.venue.entry.update(status="filled", filled_qty="10", filled_avg_price="100", filled_at=filled_at.isoformat())
+    await c.db.workflows.observe_orders(await c.broker.read_entry_group(c.venue.entry["id"]))
+    await c.db.update_signal_execution(c.signal_id, c.venue.entry["id"], fill_price=100, executed_at=filled_at)
+    c.venue.calls.clear()
+
+
+async def test_a_filled_marked_native_position_is_never_read_and_a_read_error_cannot_halt(lifecycle_case):
+    c = lifecycle_case
+    await filled_marked_native(c, fill_after_deadline_seconds=-3600)
+    c.venue.override = lambda method, path, query, body: (503, {"message": "unavailable"})
+    await asyncio.gather(*(service.reconcile() for service in c.services))
+    assert await c.services[0].resume_blockers() == []
+    assert not c.venue.calls
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+    assert not await notice_texts(c)
+
+
+async def test_a_marked_native_entry_filled_after_its_deadline_gets_one_notice(lifecycle_case):
+    c = lifecycle_case
+    await filled_marked_native(c, fill_after_deadline_seconds=60)
+    await asyncio.gather(*(service.reconcile() for service in c.services))
+    await c.services[1].reconcile()
+    assert not c.venue.calls
+    texts = await notice_texts(c)
+    assert len(texts) == 1 and f"Entry #{c.signal_id} (SPY) filled after its session-close cancel deadline" in texts[0]
+    events = [e for e in await c.db.workflows.events() if e["kind"] == EventKind.ENTRY_LIFETIME_MISSED]
+    assert len(events) == 1 and events[0]["stream"] == f"signal/{c.signal_id}/lifetime"
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+
+
+async def test_partial_fill_on_marked_native_entry_halts(lifecycle_case):
+    c = lifecycle_case
+    await mark_native(c, submitted_seconds_ago=DAILY_ENTRY_LIFETIME_SECONDS + 1)
+    c.venue.entry.update(status="partially_filled", filled_qty="2")
+    await c.services[0].reconcile()
+    assert not any(call[0] != "GET" for call in c.venue.calls)
+    assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+
+
+async def test_resume_blockers_include_marked_native_signals(lifecycle_case):
+    c = lifecycle_case
+    await mark_native(c, submitted_seconds_ago=DAILY_ENTRY_LIFETIME_SECONDS - 60)
+    assert not await c.services[0].resume_blockers()
+    c.venue.entry.update(status="partially_filled", filled_qty="2")
+    assert await c.services[0].resume_blockers() == [c.signal_id]
+    assert not any(call[0] != "GET" for call in c.venue.calls)
+
+
 class AllDaysCalendar:
     def __init__(self):
         self.calls = 0
@@ -479,6 +699,28 @@ async def test_session_policy_waits_before_session_twenty(lifecycle_case):
     assert not await c.db.workflows.events(f"signal/{c.signal_id}/lifetime")
 
 
+async def lifetime_reviews(c, signal_id=None):
+    events = await c.db.workflows.events(f"signal/{signal_id or c.signal_id}/lifetime")
+    return [e for e in events if e["kind"] == EventKind.LIFETIME_REVIEW]
+
+
+async def assert_review_only_at_threshold(c, type_name):
+    """Sweeps 1..4 retry silently (blockers still block, nothing closes); sweep 5 reviews once."""
+    threshold = c.broker.config.execution.lifetime_evidence_review_after_failures
+    assert threshold == 5
+    for sweep in range(1, threshold):
+        assert await c.services[0].reconcile() == (type_name,), sweep
+        assert not await lifetime_reviews(c)
+        assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+        assert c.signal_id in await c.services[0].resume_blockers()
+    assert await c.services[0].reconcile() == (type_name,)
+    assert not any(call[0] != "GET" for call in c.venue.calls)
+    assert c.signal_id in await c.services[0].resume_blockers()
+    reviews = await lifetime_reviews(c)
+    assert [e["payload"]["reason"] for e in reviews] == [f"lifecycle_evidence_unavailable:{type_name}"]
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+
+
 async def test_session_policy_calendar_failure_reviews_and_never_closes(lifecycle_case):
     c = lifecycle_case
     await use_session_policy(c, fill_days_ago=25)
@@ -489,15 +731,7 @@ async def test_session_policy_calendar_failure_reviews_and_never_closes(lifecycl
 
     for service in c.services:
         service.calendar = Down()
-    await c.services[0].reconcile()
-    assert not any(call[0] != "GET" for call in c.venue.calls)
-    assert c.signal_id in await c.services[0].resume_blockers()
-    events = await c.db.workflows.events(f"signal/{c.signal_id}/lifetime")
-    assert any(
-        e["kind"] == EventKind.LIFETIME_REVIEW
-        and e["payload"]["reason"] == "lifecycle_evidence_unavailable:RuntimeError"
-        for e in events
-    )
+    await assert_review_only_at_threshold(c, "RuntimeError")
 
 
 async def test_session_policy_alpaca_calendar_provider_failure_reviews_and_never_closes(lifecycle_case):
@@ -511,12 +745,783 @@ async def test_session_policy_alpaca_calendar_provider_failure_reviews_and_never
 
     for service in c.services:
         service.calendar = AlpacaCalendarProvider(trading_client=RaisingAlpacaTradingClient())
-    await c.services[0].reconcile()
+    await assert_review_only_at_threshold(c, "RuntimeError")
+
+
+# Evidence-read failures retry per sweep; only a persistent failure is a review halt.
+
+PLANTED = "planted secret text"
+
+
+def group_read_fails(c, failures):
+    """The broker's group read raises ConnectionError for the next ``failures`` calls, then recovers."""
+    real = c.broker.read_entry_group
+    state = {"left": failures}
+
+    async def read(order_id):
+        if state["left"] > 0:
+            state["left"] -= 1
+            raise ConnectionError(PLANTED)
+        return await real(order_id)
+
+    c.broker.read_entry_group = read
+    return state
+
+
+async def test_failed_evidence_reads_retry_before_review(lifecycle_case, caplog):
+    c = lifecycle_case
+    resting(c)  # reads succeed with nothing to do, so the signal stays active across sweeps
+    service = c.services[0]
+    assert c.broker.config.execution.lifetime_evidence_review_after_failures == 5
+    group_read_fails(c, 4)
+    for _ in range(4):
+        assert await service.reconcile() == ("ConnectionError",)
+        assert not await lifetime_reviews(c)
+        assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+    assert await service.reconcile() == ()  # reads recovered
+    assert service._evidence_failures == {}
+    group_read_fails(c, 4)  # the count restarted: four more failures still do not review
+    for _ in range(4):
+        assert await service.reconcile() == ("ConnectionError",)
+    assert not await lifetime_reviews(c)
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+    assert PLANTED not in caplog.text
+    assert not any(PLANTED in str(getattr(r, "__dict__", {})) for r in caplog.records)
+
+
+async def test_persistent_evidence_failure_reviews_at_threshold(lifecycle_case, caplog):
+    c = lifecycle_case
+    group_read_fails(c, 100)
+    for _ in range(4):
+        await c.services[0].reconcile()
+    assert not await lifetime_reviews(c)
+    assert await c.services[0].reconcile() == ("ConnectionError",)
+    reviews = await lifetime_reviews(c)
+    assert [e["payload"]["reason"] for e in reviews] == ["lifecycle_evidence_unavailable:ConnectionError"]
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+    assert PLANTED not in json.dumps(reviews, default=str)
+    assert PLANTED not in caplog.text
+    assert not any(PLANTED in str(getattr(r, "__dict__", {})) for r in caplog.records)
+
+
+async def test_threshold_one_reviews_on_first_failure(lifecycle_case):
+    c = lifecycle_case
+    c.broker.config.execution.lifetime_evidence_review_after_failures = 1
+    group_read_fails(c, 100)
+    assert await c.services[0].reconcile() == ("ConnectionError",)
+    assert len(await lifetime_reviews(c)) == 1
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+
+
+async def journaled_fill(c):
+    """A filled holding position that is still waiting, with the filled projection journaled."""
+    await use_session_policy(c, fill_days_ago=18)
+    assert await c.services[0].reconcile() == ()
+
+
+def set_market(c, closed):
+    for service in c.services:
+        service.market_closed = lambda now: closed
+
+
+async def test_filled_position_read_failures_while_closed_never_review(lifecycle_case, caplog):
+    c = lifecycle_case
+    service = c.services[0]
+    await journaled_fill(c)
+    group_read_fails(c, 100)
+    set_market(c, True)
+    for _ in range(10):
+        assert await service.reconcile() == ("ConnectionError",)
+        assert not await lifetime_reviews(c)
+        assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+        assert c.signal_id not in service._evidence_failures
+        assert not any(call[0] != "GET" for call in c.venue.calls)
+    set_market(c, False)
+    for _ in range(4):
+        assert await service.reconcile() == ("ConnectionError",)
+        assert not await lifetime_reviews(c)
+    assert await service.reconcile() == ("ConnectionError",)
+    reviews = await lifetime_reviews(c)
+    assert [e["payload"]["reason"] for e in reviews] == ["lifecycle_evidence_unavailable:ConnectionError"]
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+    assert PLANTED not in caplog.text
+
+
+async def test_the_count_carries_across_a_closed_window(lifecycle_case):
+    c = lifecycle_case
+    service = c.services[0]
+    await journaled_fill(c)
+    group_read_fails(c, 100)
+    set_market(c, False)
+    for _ in range(3):
+        await service.reconcile()
+    assert service._evidence_failures[c.signal_id] == 3
+    set_market(c, True)
+    for _ in range(10):
+        await service.reconcile()
+    assert service._evidence_failures[c.signal_id] == 3
+    assert not await lifetime_reviews(c)
+    set_market(c, False)
+    await service.reconcile()
+    assert service._evidence_failures[c.signal_id] == 4
+    assert not await lifetime_reviews(c)
+    await service.reconcile()
+    assert len(await lifetime_reviews(c)) == 1
+
+
+async def test_a_resting_entry_still_reviews_while_closed(lifecycle_case):
+    c = lifecycle_case
+    resting(c)
+    group_read_fails(c, 100)
+    set_market(c, True)
+    await assert_review_only_at_threshold(c, "ConnectionError")
+
+
+async def test_the_grace_needs_a_journaled_fill(lifecycle_case):
+    c = lifecycle_case
+    await use_session_policy(c, fill_days_ago=18)
+    group_read_fails(c, 100)  # no successful sweep first: nothing is journaled as filled
+    set_market(c, True)
+    await assert_review_only_at_threshold(c, "ConnectionError")
+
+
+async def test_a_failed_clock_read_at_a_passed_deadline_while_closed_is_not_counted(lifecycle_case):
+    c = lifecycle_case
+    filled_position(c)
+
+    async def clock_down():
+        raise ConnectionError(PLANTED)
+
+    c.broker.regular_session_open = clock_down
+    set_market(c, True)
+    for _ in range(10):
+        assert await c.services[0].reconcile() == ("ConnectionError",)
+    assert not await lifetime_reviews(c)
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
     assert not any(call[0] != "GET" for call in c.venue.calls)
-    assert c.signal_id in await c.services[0].resume_blockers()
-    events = await c.db.workflows.events(f"signal/{c.signal_id}/lifetime")
-    assert any(
-        e["kind"] == EventKind.LIFETIME_REVIEW
-        and e["payload"]["reason"] == "lifecycle_evidence_unavailable:RuntimeError"
-        for e in events
+
+
+async def test_a_failed_grace_lookup_counts_the_pass(lifecycle_case, caplog, monkeypatch):
+    c = lifecycle_case
+    service = c.services[0]
+    await journaled_fill(c)
+    group_read_fails(c, 100)
+    set_market(c, True)
+
+    async def broken(order_id):
+        raise RuntimeError(PLANTED)
+
+    monkeypatch.setattr(service.repository, "order", broken)
+    for _ in range(4):
+        await service.reconcile()
+    assert not await lifetime_reviews(c)
+    await service.reconcile()
+    assert len(await lifetime_reviews(c)) == 1
+    assert PLANTED not in caplog.text
+    assert "RuntimeError" in caplog.text
+
+
+async def test_default_market_closed_is_the_static_calendar(lifecycle_case):
+    c = lifecycle_case
+    service = TradeLifetimeService(
+        c.services[0].repository, c.broker, c.services[0].close_service, config=c.broker.config.execution
     )
+    assert service.market_closed is regular_session_certainly_closed
+
+
+async def test_a_journaled_resting_entry_still_reviews_while_closed(lifecycle_case):
+    c = lifecycle_case
+    resting(c)
+    assert await c.services[0].reconcile() == ()  # journals the unfilled projection
+    group_read_fails(c, 100)
+    set_market(c, True)
+    await assert_review_only_at_threshold(c, "ConnectionError")
+
+
+async def test_a_journaled_partial_fill_still_reviews_while_closed(lifecycle_case):
+    c = lifecycle_case
+    await mark_native(c, submitted_seconds_ago=60)
+    c.venue.entry.update(status="partially_filled", filled_qty="2")
+    assert await c.services[0].reconcile() == ()  # journals the partial projection
+    order = await c.services[0].repository.order(c.venue.entry["id"])
+    assert order.status == "partially_filled"
+    group_read_fails(c, 100)
+    set_market(c, True)
+    await assert_review_only_at_threshold(c, "ConnectionError")
+
+
+@pytest.mark.parametrize(("status", "filled"), [("filled", "2"), ("accepted", "10")])
+async def test_a_crafted_projection_that_is_not_a_full_fill_does_not_get_the_grace(lifecycle_case, status, filled):
+    c = lifecycle_case
+    await use_session_policy(c, fill_days_ago=18)  # no sweep yet: nothing is journaled, so the observe can seed it
+    real = (await c.broker.read_entry_group(c.venue.entry["id"]))[0]
+    assert await c.services[0].repository.order(real.order_id) is None
+    crafted = real.model_copy(update={"status": status, "filled_quantity": filled})
+    await c.db.workflows.observe_orders([crafted])
+    journaled = await c.services[0].repository.order(real.order_id)
+    assert (journaled.status, journaled.filled_quantity) == (status, filled)  # the observe path kept it
+    group_read_fails(c, 100)
+    set_market(c, True)
+    await assert_review_only_at_threshold(c, "ConnectionError")
+
+
+async def test_a_raising_predicate_counts_the_pass(lifecycle_case, caplog):
+    c = lifecycle_case
+    await journaled_fill(c)
+    group_read_fails(c, 100)
+
+    def broken(now):
+        raise RuntimeError(PLANTED)
+
+    for service in c.services:
+        service.market_closed = broken
+    await assert_review_only_at_threshold(c, "ConnectionError")
+    assert PLANTED not in caplog.text
+
+
+async def test_default_predicate_drives_the_grace_from_the_service_clock(lifecycle_case):
+    c = lifecycle_case
+    await journaled_fill(c)
+    base = c.services[0]
+    service = TradeLifetimeService(base.repository, c.broker, base.close_service, config=c.broker.config.execution)
+    signal = next(s for s in await c.db.get_active_positions() if s["id"] == c.signal_id)
+    ny = ZoneInfo("America/New_York")
+    service.clock = lambda: datetime(2026, 11, 7, 12, 0, tzinfo=ny)  # Saturday
+    assert await service._closed_market_grace(signal) is True
+    service.clock = lambda: datetime(2026, 11, 9, 10, 0, tzinfo=ny)  # Monday, regular session
+    assert await service._closed_market_grace(signal) is False
+
+
+async def seed_durable_entry(c, signal_id, order_id):
+    """An accepted durable entry for ``signal_id`` so its evidence read reaches the broker."""
+    request = OrderRequest(
+        signal_id=signal_id,
+        symbol="QQQ",
+        asset_class="EQUITY",
+        direction="LONG",
+        quantity=10,
+        entry_price=100,
+        stop_loss=95,
+        take_profit=110,
+        client_order_id=f"client-{signal_id}",
+    )
+    now = datetime.now(UTC)
+    async with c.db.session_factory() as session, session.begin():
+        await c.db.workflows.lock(session)
+        event = await c.db.workflows.append(
+            session, stream=f"fixture/entry-{signal_id}", kind=EventKind.ENTRY_RESOLVED, payload={"fixture": True}
+        )
+        session.add(
+            WorkItemRecord(
+                id=request.client_order_id,
+                scope=c.db.workflows.scope,
+                kind=WorkKind.ENTRY,
+                status=WorkStatus.ACCEPTED,
+                dedup_key=str(signal_id),
+                sequence=event.id,
+                payload=encode(request.model_dump(mode="json")),
+                result=encode({"order_id": order_id, "success": True}),
+                attempts=1,
+                created_at=now,
+                available_at=now,
+            )
+        )
+
+
+async def test_failing_signal_does_not_block_healthy_signal(lifecycle_case):
+    c = lifecycle_case
+    healthy_id = c.signal_id
+    policy = TimedAlphaExecutionPolicy(lifetime=TradeLifetimePolicy(resting_seconds=120, holding_seconds=180))
+    failing_id = await c.db.record_signal(
+        contract="QQQ",
+        strategy="alpha_lifetime_fixture",
+        direction="LONG",
+        entry_price=100,
+        stop_loss=95,
+        take_profit=110,
+        risk_dollars=50,
+        quantity=10,
+        asset_class="EQUITY",
+        alpha_policy=policy.to_dict(),
+        alpha_version="fixture-session-version",
+        timeframe="15m",
+    )
+    # Processed before the healthy signal: the failure must not stop the sweep.
+    async with c.db.session_factory() as session, session.begin():
+        failing_row = await session.get(SignalRecord, failing_id)
+        healthy_row = await session.get(SignalRecord, healthy_id)
+        failing_row.timestamp = healthy_row.timestamp - timedelta(hours=1)
+    await c.db.update_signal_execution(failing_id, "failing-order-id")
+    await seed_durable_entry(c, failing_id, "failing-order-id")
+    real = c.broker.read_entry_group
+
+    async def read(order_id):
+        if order_id == "failing-order-id":
+            raise ConnectionError(PLANTED)
+        return await real(order_id)
+
+    c.broker.read_entry_group = read
+    service = c.services[0]
+    assert await service.reconcile() == ("ConnectionError",)
+    assert service._evidence_failures == {failing_id: 1}
+    # The healthy signal's expired entry was still cancelled in the same sweep.
+    cancels = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert [item.payload["signal_id"] for item in cancels] == [healthy_id]
+    assert healthy_id not in service._evidence_failures
+    assert not await lifetime_reviews(c, failing_id)
+
+
+async def test_entry_lifetime_of_failure_still_halts_first_sweep(lifecycle_case, monkeypatch):
+    c = lifecycle_case
+
+    def broken(signal):
+        raise ValueError(PLANTED)
+
+    monkeypatch.setattr("agentic_trader.execution.lifetimes.entry_lifetime_of", broken)
+    assert await c.services[0].reconcile() == ("ValueError",)
+    reviews = await lifetime_reviews(c)
+    assert [e["payload"]["reason"] for e in reviews] == ["lifecycle_evidence_unavailable:ValueError"]
+    assert PLANTED not in json.dumps(reviews, default=str)
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+
+
+async def test_failed_broker_clock_read_retries_then_reviews(lifecycle_case, caplog):
+    c = lifecycle_case
+    filled_position(c)  # the holding deadline has passed, so the decision is a close needing the broker clock
+
+    async def clock_down():
+        raise ConnectionError(PLANTED)
+
+    c.broker.regular_session_open = clock_down
+    service = c.services[0]
+    for _ in range(4):
+        assert await service.reconcile() == ("ConnectionError",)
+        assert not await lifetime_reviews(c)
+        assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+        assert not any(call[0] != "GET" for call in c.venue.calls)
+    assert await service.reconcile() == ("ConnectionError",)
+    reviews = await lifetime_reviews(c)
+    assert [e["payload"]["reason"] for e in reviews] == ["lifecycle_evidence_unavailable:ConnectionError"]
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+    assert not any(call[0] != "GET" for call in c.venue.calls)
+    assert PLANTED not in caplog.text
+
+
+async def test_deterministic_review_still_halts_first_sweep(lifecycle_case):
+    c = lifecycle_case
+    async with c.db.session_factory() as session, session.begin():
+        row = await session.get(SignalRecord, c.signal_id)
+        row.broker_order_id = "someone-elses-order"  # the durable entry no longer matches the signal
+    assert await c.services[0].reconcile() == ()
+    reviews = await lifetime_reviews(c)
+    assert [e["payload"]["reason"] for e in reviews] == ["missing_durable_entry_identity"]
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+
+
+# Operator cancel: any resting desk entry, timed or not, with no deadline or policy fence.
+
+
+def resting(c):
+    """The fixture entry rests well inside its own deadline, so only the operator can cancel it."""
+    c.venue.entry.update(submitted_at=(datetime.now(UTC) - timedelta(seconds=10)).isoformat())
+
+
+def broker_confirms_cancel(c):
+    def response(method, path, query, body):
+        if method == "DELETE":
+            assert path == f"/v2/orders/{c.venue.entry['id']}"
+            complete_cancel(c)
+            return 204, None
+        return None
+
+    c.venue.override = response
+
+
+def deletes(c):
+    return [call for call in c.venue.calls if call[0] == "DELETE"]
+
+
+def mutations(c):
+    return [call for call in c.venue.calls if call[0] != "GET"]
+
+
+async def notice_texts(c):
+    return [item.payload["arguments"]["text"] for item in await c.db.workflows.list_work(WorkKind.NOTIFICATION)]
+
+
+async def test_preview_makes_no_delete(lifecycle_case):
+    c = lifecycle_case
+    resting(c)
+    result = await c.services[0].cancel_resting_entry(c.signal_id, confirm=False)
+    assert (result.status, result.reason, result.symbol) == ("preview", None, "SPY")
+    assert not mutations(c)
+    assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert not await c.db.workflows.list_work(WorkKind.NOTIFICATION)
+    assert (await c.db.get_signal_by_id(c.signal_id))["status"] == SignalStatus.EXECUTED
+
+
+async def test_preview_never_observes_broker_evidence(lifecycle_case):
+    """A preview writes nothing: even an unfilled-terminal parent is left to the projection pipeline."""
+    c = lifecycle_case
+    complete_cancel(c)
+    result = await c.services[0].cancel_resting_entry(c.signal_id, confirm=False)
+    assert (result.status, result.reason) == ("refused", "not_resting")
+    assert not await c.db.workflows.list_work(WorkKind.NOTIFICATION)
+    assert (await c.db.get_signal_by_id(c.signal_id))["status"] == SignalStatus.EXECUTED
+
+
+async def test_confirm_cancels_once_with_notice(lifecycle_case):
+    c = lifecycle_case
+    resting(c)
+    broker_confirms_cancel(c)
+    result = await c.services[0].cancel_resting_entry(c.signal_id, confirm=True)
+    assert (result.status, result.reason, result.work_status) == ("submitted", None, WorkStatus.ACCEPTED)
+    assert len(deletes(c)) == 1
+    assert not any(call[0] in ("POST", "PATCH") for call in c.venue.calls)
+    (item,) = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert item.status == WorkStatus.ACCEPTED and item.payload["cause"] == "operator"
+    assert (await c.db.get_signal_by_id(c.signal_id))["status"] == SignalStatus.FAILED
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+    texts = await notice_texts(c)
+    assert any(f"Operator cancel requested for entry SPY (signal {c.signal_id})" in t for t in texts)
+    assert any("operator cancellation: confirmed_unfilled_cancellation" in t for t in texts)
+    await assert_capacity_released(c)
+
+
+@pytest.mark.parametrize("filled", ["10", "2"])
+async def test_refused_when_filled(lifecycle_case, filled):
+    c = lifecycle_case
+    resting(c)
+    c.venue.entry.update(
+        status="filled" if filled == "10" else "partially_filled",
+        filled_qty=filled,
+        filled_avg_price="100",
+        filled_at=datetime.now(UTC).isoformat(),
+    )
+    for confirm in (False, True):
+        result = await c.services[0].cancel_resting_entry(c.signal_id, confirm=confirm)
+        assert (result.status, result.reason) == ("refused", "not_resting")
+    assert not mutations(c)
+    assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+
+
+async def test_refused_when_close_active(lifecycle_case):
+    c = lifecycle_case
+    resting(c)
+    claimed, _ = await c.db.claim_close_request(
+        {"id": "operator-close", "symbol": "SPY", "direction": "LONG", "quantity": 10, "signal_id": c.signal_id}
+    )
+    assert claimed
+    for confirm in (False, True):
+        result = await c.services[0].cancel_resting_entry(c.signal_id, confirm=confirm)
+        assert (result.status, result.reason) == ("refused", "close_active")
+    assert not mutations(c)
+    assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+
+
+async def test_refused_unknown_signal(lifecycle_case):
+    c = lifecycle_case
+    result = await c.services[0].cancel_resting_entry(c.signal_id + 1000, confirm=True)
+    assert (result.status, result.reason, result.symbol) == ("refused", "unknown_signal", None)
+    assert not c.venue.calls
+
+
+async def test_refused_when_bracket_group_changed(lifecycle_case):
+    c = lifecycle_case
+    resting(c)
+    c.venue.stop["replaced_by"] = "00000000-0000-0000-0000-000000000099"
+    for confirm in (False, True):
+        result = await c.services[0].cancel_resting_entry(c.signal_id, confirm=confirm)
+        assert (result.status, result.reason) == ("refused", "incomplete_or_changed_bracket_group")
+    assert not mutations(c)
+    assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+
+
+async def test_second_confirm_is_refused_cancel_in_progress(lifecycle_case):
+    c = lifecycle_case
+    resting(c)
+    broker_confirms_cancel(c)
+    first = await c.services[0].cancel_resting_entry(c.signal_id, confirm=True)
+    assert first.status == "submitted"
+    for service in c.services:
+        again = await service.cancel_resting_entry(c.signal_id, confirm=True)
+        assert (again.status, again.reason) == ("refused", "cancel_in_progress")
+    assert len(deletes(c)) == 1
+    assert len(await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)) == 1
+
+
+@pytest.mark.parametrize("marker", ["absent", "malformed"])
+async def test_operator_cancel_of_untimed_historical_entry(lifecycle_case, marker):
+    """Untimed entries, and a malformed marker that keeps a signal in resume_blockers, are cancellable."""
+    c = lifecycle_case
+    resting(c)
+    provenance = dict(HISTORICAL_NATIVE_PROVENANCE)
+    if marker == "malformed":
+        provenance[NATIVE_ENTRY_LIFETIME_KEY] = "nope"
+    async with c.db.session_factory() as session, session.begin():
+        row = await session.get(SignalRecord, c.signal_id)
+        row.alpha_policy = None
+        row.decision_provenance = json.dumps(provenance, allow_nan=False)
+    broker_confirms_cancel(c)
+    result = await c.services[0].cancel_resting_entry(c.signal_id, confirm=True)
+    assert (result.status, result.work_status) == ("submitted", WorkStatus.ACCEPTED)
+    assert len(deletes(c)) == 1
+    assert (await c.db.get_signal_by_id(c.signal_id))["status"] == SignalStatus.FAILED
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+
+
+async def test_operator_and_deadline_cancel_race_single_work_item(lifecycle_case):
+    c = lifecycle_case
+    await mark_native(c, submitted_seconds_ago=DAILY_ENTRY_LIFETIME_SECONDS + 1)
+    broker_confirms_cancel(c)
+    _, result = await asyncio.gather(
+        c.services[0].reconcile(), c.services[1].cancel_resting_entry(c.signal_id, confirm=True)
+    )
+    assert result.status == "submitted" or result.reason in ("cancel_in_progress", "not_resting")
+    (item,) = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert item.status == WorkStatus.ACCEPTED
+    assert len(deletes(c)) <= 1
+    assert not any(call[0] in ("POST", "PATCH") for call in c.venue.calls)
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+
+
+async def test_begin_cancel_refuses_a_marked_native_signal_with_a_mismatched_policy(lifecycle_case):
+    c = lifecycle_case
+    await mark_native(c, submitted_seconds_ago=DAILY_ENTRY_LIFETIME_SECONDS + 1)
+    service = c.services[0]
+    signal = await c.db.get_signal_by_id(c.signal_id)
+    identity = await service._entry_identity(signal)
+    orders = await c.broker.read_entry_group(identity.order_id)
+    await c.db.workflows.observe_orders(orders)
+    other = asdict(TradeLifetimePolicy(resting_seconds=120, holding_seconds=180))
+    refused = await service.repository.begin_cancel(c.signal_id, identity, orders, other, now=datetime.now(UTC))
+    assert refused == "lifetime_mismatch"
+    assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    # The resolved policy, whichever marker shape the signal stored.
+    matching = asdict(NativeEntryLifetimePolicy())
+    claimed = await service.repository.begin_cancel(c.signal_id, identity, orders, matching, now=datetime.now(UTC))
+    assert isinstance(claimed, WorkItem)
+
+
+async def claim_inputs(c):
+    service = c.services[0]
+    identity = await service._entry_identity(await c.db.get_signal_by_id(c.signal_id))
+    orders = await c.broker.read_entry_group(identity.order_id)
+    await c.db.workflows.observe_orders(orders)
+    return service.repository, identity, orders
+
+
+async def test_begin_cancel_ownership_mismatch_is_an_operator_refusal_and_a_deadline_error(lifecycle_case):
+    c = lifecycle_case
+    repository, identity, orders = await claim_inputs(c)
+    foreign = replace(identity, client_order_id="someone-else")
+    refused = await repository.begin_cancel(
+        c.signal_id, foreign, orders, None, now=datetime.now(UTC), reason="operator"
+    )
+    assert refused == "no_durable_entry"
+    lifetime = asdict(TradeLifetimePolicy(resting_seconds=120, holding_seconds=180))
+    with pytest.raises(ValueError, match="ownership"):
+        await repository.begin_cancel(c.signal_id, foreign, orders, lifetime, now=datetime.now(UTC))
+    assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+
+
+@pytest.mark.parametrize(
+    ("change", "token"),
+    [
+        ("parent_fill", "not_resting"),
+        ("child_fill", "not_resting"),
+        ("child_replaced", "incomplete_or_changed_bracket_group"),
+        ("missing_projection", "incomplete_or_changed_bracket_group"),
+    ],
+)
+async def test_operator_claim_refuses_changed_projections_under_the_lock(lifecycle_case, change, token):
+    c = lifecycle_case
+    resting(c)
+    repository, identity, orders = await claim_inputs(c)
+    later = datetime.now(UTC) + timedelta(seconds=1)
+    parent = next(o for o in orders if o.order_id == identity.order_id)
+    child = next(o for o in orders if o.order_id != identity.order_id)
+    if change == "missing_projection":
+        orders = [*orders, child.model_copy(update={"order_id": "00000000-0000-0000-0000-000000000077"})]
+    else:
+        target, update = {
+            "parent_fill": (parent, {"status": "partially_filled", "filled_quantity": "2"}),
+            "child_fill": (child, {"status": "partially_filled", "filled_quantity": "2"}),
+            "child_replaced": (child, {"replaced_by": "00000000-0000-0000-0000-000000000099"}),
+        }[change]
+        await c.db.workflows.observe_orders(
+            [target.model_copy(update={**update, "updated_at": later, "source": "stream"})]
+        )
+    refused = await repository.begin_cancel(
+        c.signal_id, identity, orders, None, now=datetime.now(UTC), reason="operator"
+    )
+    assert refused == token
+    assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert not mutations(c)
+
+
+# A DELETE that loses the fill race: the broker rejects it (422) because the entry already filled.
+
+
+def fill_race(c, *, filled, child=None):
+    def response(method, path, query, body):
+        if method == "DELETE":
+            c.venue.entry.update(
+                status="filled" if filled == "10" else "partially_filled",
+                filled_qty=filled,
+                filled_avg_price="100",
+                filled_at=datetime.now(UTC).isoformat(),
+            )
+            if child == "canceled":
+                c.venue.stop.update(status="canceled")
+            elif child == "replaced":
+                c.venue.stop["replaced_by"] = "00000000-0000-0000-0000-000000000099"
+            elif child == "both_held":
+                c.venue.take_profit.update(status="held")
+            elif child == "two_limits":
+                c.venue.stop.update(type="limit", limit_price="95", stop_price=None)
+            elif child == "take_profit_accepted":
+                c.venue.take_profit.update(status="accepted")
+            return 422, {"code": 42210000, "message": "order is already filled"}
+        return None
+
+    c.venue.override = response
+
+
+async def race_cancel(c, cause):
+    if cause == "operator":
+        resting(c)
+        result = await c.services[0].cancel_resting_entry(c.signal_id, confirm=True)
+        assert result.status == "submitted"
+    else:
+        await mark_native(c, submitted_seconds_ago=DAILY_ENTRY_LIFETIME_SECONDS + 1)
+        await c.services[0].reconcile()
+    assert len(deletes(c)) == 1
+    (item,) = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    return item
+
+
+@pytest.mark.parametrize("cause", ["operator", "deadline"])
+async def test_full_fill_before_cancel_is_terminal_without_halt(lifecycle_case, cause):
+    c = lifecycle_case
+    fill_race(c, filled="10")
+    item = await race_cancel(c, cause)
+    assert item.status == WorkStatus.REJECTED and item.result["reason"] == "filled_before_cancel"
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+    assert (await c.db.get_signal_by_id(c.signal_id))["status"] == SignalStatus.EXECUTED
+    texts = await notice_texts(c)
+    assert any(
+        f"Entry #{c.signal_id} filled before the {cause} cancellation; the position is open and protected." in t
+        for t in texts
+    )
+    assert not await c.db.workflows.list_work(
+        WorkKind.ENTRY_CANCEL, statuses=(WorkStatus.SUBMITTING, WorkStatus.UNKNOWN)
+    )
+    assert not await c.services[1].resume_blockers()
+    await c.services[1].recover()
+    await c.services[1].reconcile()
+    assert len(deletes(c)) == 1
+    assert not any(call[0] in ("POST", "PATCH") for call in c.venue.calls)
+    (item,) = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert item.status == WorkStatus.REJECTED
+
+
+@pytest.mark.parametrize("cause", ["operator", "deadline"])
+@pytest.mark.parametrize(
+    ("filled", "child"),
+    [
+        ("2", None),
+        ("10", "canceled"),
+        ("10", "replaced"),
+        ("10", "both_held"),
+        ("10", "two_limits"),
+        ("10", "take_profit_accepted"),
+    ],
+)
+async def test_partial_or_unprotected_fill_race_stays_unknown_and_halts(lifecycle_case, cause, filled, child):
+    c = lifecycle_case
+    fill_race(c, filled=filled, child=child)
+    item = await race_cancel(c, cause)
+    assert item.status == WorkStatus.UNKNOWN
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+    assert (await c.db.get_signal_by_id(c.signal_id))["status"] == SignalStatus.EXECUTED
+
+
+async def test_a_later_cancel_of_a_filled_before_cancel_entry_says_so(lifecycle_case):
+    c = lifecycle_case
+    fill_race(c, filled="10")
+    await race_cancel(c, "operator")
+    again = await c.services[1].cancel_resting_entry(c.signal_id, confirm=True)
+    assert (again.status, again.reason) == ("refused", "filled_before_cancel")
+    assert len(deletes(c)) == 1
+
+
+async def test_an_accepted_delete_then_a_protected_fill_is_unknown_and_halts(lifecycle_case):
+    """``filled_before_cancel`` needs the broker to refuse the DELETE: an accepted one is polled, then UNKNOWN."""
+    c = lifecycle_case
+    resting(c)
+
+    def response(method, path, query, body):
+        if method == "DELETE":
+            c.venue.entry.update(
+                status="filled", filled_qty="10", filled_avg_price="100", filled_at=datetime.now(UTC).isoformat()
+            )
+            return 204, None
+        return None
+
+    c.venue.override = response
+    result = await c.services[0].cancel_resting_entry(c.signal_id, confirm=True)
+    assert (result.status, result.work_status) == ("submitted", WorkStatus.UNKNOWN)
+    (item,) = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert item.status == WorkStatus.UNKNOWN and not item.result["transport_error"]
+    assert len([call for call in c.venue.calls if call[0] == "GET" and "orders" in call[1]]) > 2  # polled
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+    await c.services[1].recover()
+    (item,) = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert item.status == WorkStatus.UNKNOWN and len(deletes(c)) == 1
+
+
+async def test_a_failed_lookup_never_resolves_filled_before_cancel(lifecycle_case):
+    """Projected fill evidence alone is not a fresh exact read: UNKNOWN, the lookup reason kept, halt.
+
+    A later successful read may upgrade it (the refused DELETE's error is kept), and the notice says
+    the earlier halt remains.
+    """
+    c = lifecycle_case
+    resting(c)
+    repository, identity, orders = await claim_inputs(c)
+    item = await repository.begin_cancel(c.signal_id, identity, orders, None, now=datetime.now(UTC), reason="operator")
+    assert isinstance(item, WorkItem)
+    c.venue.entry.update(
+        status="filled", filled_qty="10", filled_avg_price="100", filled_at=datetime.now(UTC).isoformat()
+    )
+    filled = await c.broker.read_entry_group(identity.order_id)
+    await c.db.workflows.observe_orders(filled)
+    await repository.resolve_cancel(item, [], reason="lookup_failed:APIError", transport_error="APIError")
+    (stored,) = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert stored.status == WorkStatus.UNKNOWN and stored.result["reason"] == "lookup_failed:APIError"
+    assert stored.result["transport_error"] == "APIError"
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+    await repository.resolve_cancel(stored, filled)
+    (upgraded,) = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert upgraded.status == WorkStatus.REJECTED and upgraded.result["reason"] == "filled_before_cancel"
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+    assert any("The earlier halt stays until /resume." in t for t in await notice_texts(c))
+
+
+async def test_an_untapped_card_is_refused_as_not_submitted(lifecycle_case):
+    c = lifecycle_case
+    pending = await c.db.record_signal(
+        contract="QQQ",
+        strategy="fixture",
+        direction="LONG",
+        entry_price=100,
+        stop_loss=95,
+        take_profit=110,
+        risk_dollars=50,
+        quantity=10,
+        asset_class="EQUITY",
+    )
+    result = await c.services[0].cancel_resting_entry(pending, confirm=True)
+    assert (result.status, result.reason, result.signal_status) == ("refused", "not_resting", SignalStatus.PENDING)
+    assert not c.venue.calls

@@ -15,15 +15,28 @@ Top-level `card_policy:` (`CardPolicyConfig`; unknown keys fail the load):
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `mode` | `"off"` | `off`: the policy is not evaluated (the evidence block is still rendered); `preview`: evaluate and journal `would_withhold`, still send; `enforce`: withhold |
-| `min_measured_ev` | `null` | Threshold on the measured mean R after cost; required when `mode` is not `off` |
-| `min_mature_cards` | `20` | Mature labels a `(strategy, direction)` needs before the policy may withhold; also the card's "insufficient evidence" floor |
-| `stats_window_days` | `90` | Labeller window, in New York calendar days |
+| `min_measured_ev` | `null` | Threshold on the posterior expected excess R in `net_excess_r_v1`; required when `mode` is not `off` (the key keeps its name) |
+| `min_mature_cards` | `20` | Mature labels a `(strategy, timeframe, direction)` needs before the policy may withhold; also the card's "insufficient evidence" floor |
+| `stats_window_days` | `90` (shipped `180`) | Labeller window, in New York calendar days |
 | `stats_time_et` | `"08:30"` | Daily due time of the statistics worker (HH:MM New York) |
 | `stats_poll_seconds` | `300` | Worker poll interval |
 | `stats_max_age_seconds` | `345600` | Evidence older than this is `stale` on cards and in `card_stats` readiness (four days covers weekends and holidays) |
 | `validity` | `"session_close"` | Card validity; see [Card validity](#card-validity) |
+| `prior_path` | `config/research/card-stats-prior-v2.json` | The frozen replay prior ([provenance](card-stats-prior-2026-10-28.md)); a relative path resolves from the workspace root |
+| `prior_sha256` | `null` | SHA-256 of the prior file; the worker refuses a missing or mismatched digest |
 
 Validation requires `stats_max_age_seconds` to exceed `stats_poll_seconds`.
+
+The code default is `off`. `config/config.yaml` ships `mode: "enforce"`, `min_measured_ev: 0.0`,
+`stats_window_days: 180`, the prior path and its pinned digest. It ran `preview` from 2026-10-28 and
+ships `enforce` by operator decision on 2026-10-30. That decision was made without the always-valid
+confidence sequence over the posterior that the v2 spec asked for (section 5), which is not built. A
+policy read every day at a fixed threshold inflates false withholds. A wrongly withheld key keeps its
+labels (withheld candidates stay journaled and labelled), so it can recover. Moving the pinned prior
+from v1 to v2 also changed the effect: the posterior mean moves with the prior mean, so for
+SQUEEZE_BREAKOUT 4h the posterior goes negative at a live mean below -0.155R at n=20 (v1: -0.276R) and
+below -0.062R at n=50 (v1: -0.110R), and `enforce` withholds that key sooner. The other two keys shift
+by about 0.001R at n=20.
 
 Quote `"off"` in YAML. YAML 1.1 reads a bare `off` as `false`; the loader maps `false` back to `"off"`
 and rejects `on`/`true`.
@@ -33,33 +46,75 @@ and rejects `on`/`true`.
 The daemon task `run_card_stats_worker` (readiness component `card_stats`) polls every
 `stats_poll_seconds`. When the New York time is at or after `stats_time_et`, outside every
 suggestion-scan window (each `scheduler.suggestion_scan_times_et` slot from 5 minutes before to 20
-minutes after), today's key `card_stats/{et_date}` is missing, and no scan holds the scan lock
-(`TradingCopilot.scan_running`: suggestion, swing, intraday or operator scans, including a late
-misfire-grace run), it reads every `scan_candidates_ranked` event of the last `stats_window_days` ET
-dates (`research/setups/sources.scan_ranked_events`), labels them in a worker thread with the
-outcome labeller's protocol defaults (`label_journaled`: 20 sessions, 5 bp per side, SPY proxy) on
-the configured feed, and appends one `card_stats_snapshot` event to stream `card_stats` with key
-`card_stats/{et_date}` (idempotent; retention keeps it). The scan checks apply when a run starts; a
-scan that begins during a labelling run shares the provider with it. The worker runs every calendar
-day without a trading-day check; consecutive non-trading days differ only where the window's oldest
-date drops out.
+minutes after), today's key `card_stats/net_excess_r_v1/{et_date}` is missing (a v1 `card_stats/{et_date}`
+event does not count), and no scan holds the scan lock (`TradingCopilot.scan_running`: suggestion, swing,
+intraday or operator scans, including a late misfire-grace run), it reads every `scan_candidates_ranked`
+event of the last `stats_window_days` ET dates (`research/setups/sources.scan_ranked_events`), builds the
+population, labels it in a worker thread (`label_journaled`: 20 sessions, SPY proxy, beta and per-name cost
+from SIP daily bars, every read ending `SIP_HISTORY_DELAY` (16 minutes) before the run, since the subscription
+refuses SIP history that ends now: `research/setups/sources.build_daily_bar_source`) and appends one
+`card_stats_snapshot` event to stream `card_stats` (idempotent; retention keeps it). The scan checks apply when a run starts; a scan that begins during a labelling run
+shares the provider with it. The worker runs every calendar day without a trading-day check.
 
-Payload (`CardStatsSnapshot`, `agentic_trader/research/setups/card_stats.py`):
+Population (`card_population`, `agentic_trader/research/setups/card_stats.py`):
 
-- provenance: `computed_at`, `window_start`, `window_end` (ET dates), `feed`, `cost_bps_per_side`,
-  `max_hold_sessions`, `labeller_protocol` (`setup-outcomes-v1`), `code_revision`,
-  `events_considered`, `rows_labelled`;
-- `keys`: one row per `(strategy, direction)` plus the aggregate `("*", "*")`, each with `n_mature`,
-  `n_immature`, `n_fetch_failed`, `target_rate`, `stop_rate`, `timeout_rate`, `mean_r_cost`,
-  `mean_timeout_r`, `median_holding_sessions`, `first_decided_at`, `last_decided_at`. Rates are over
-  mature rows; fetch failures are counted and excluded from every rate; rows without a strategy or
-  direction count only in the aggregate. Every number is finite or null.
+- only `scope == "universe"` events with `trigger == "suggestion_scan"`: by the spec, the population is
+  suggestion scans only, so swing, intraday and operator scans never enter it; contracts in
+  `scan.broad_index_etfs` or in the prior's `excluded_symbols` (BIL, SHY: the replay excluded them) are never
+  carded and so never counted;
+- malformed candidates (`_plannable`: a direction other than LONG or SHORT, a missing or non-finite entry,
+  stop or target, or a geometry `SetupLevels` refuses, which is anything but `stop < entry < target` for a
+  LONG and `target < entry < stop` for a SHORT) are dropped before labelling and counted as `n_malformed`
+  under their key (a missing part as `?`): displayed, never partial;
+- one row per (contract, strategy, timeframe, direction, New York decision date), the earliest decision kept
+  (10:35 beats 14:35), before labelling, so the duplicate costs no bar request.
+
+Maturity: a row is eligible only when at least `max_hold_sessions + 1` (21) exchange sessions lie strictly
+after its decision date and strictly before the snapshot's New York date (`complete_sessions_between`:
+weekdays that are not `MarketHolidayCalendar` holidays). Younger rows are `n_young` and enter no statistic,
+which removes censoring exactly.
+
+Payload (`CardStatsSnapshot`):
+
+- provenance: `computed_at`, `window_start`, `window_end` (ET dates), `feed`, `cost_bps_per_side` (the 5 bp
+  cost floor), `max_hold_sessions`, `labeller_protocol` (`setup-outcomes-v1`), `code_revision`,
+  `events_considered` (suggestion-scan universe events read), `rows_labelled`, `unit` (`net_excess_r_v1`),
+  `prior_sha256`, `prior_window_start`, `prior_window_end`, `prior_feed`, `cohort_end` (the latest eligible
+  decision session) and `n_malformed`. A v1 payload still validates (all of these default);
+- `keys`: one row per (`strategy`, `timeframe`, `direction`): the union of the live keys, the prior's keys and
+  the malformed keys, plus the aggregate `("*", "*", "*")`, which has no prior or posterior. Counts: `n_mature`
+  (eligible with a finite `net_excess_r`), `n_young`, `n_unresolved` (eligible but still `immature`),
+  `n_immature` (= young + unresolved), `n_fetch_failed` (eligible, hourly or daily: a `fetch_failed` hit, or a
+  `beta_reason` or `cost_reason` starting `fetch_failed`), `n_no_beta` (eligible, resolved, no net excess, not a
+  fetch failure) and `n_malformed`. Rates, `mean_r_cost`, holding and decided-at are over the `n_mature` rows;
+  `live_mean` and `live_se` are the mean and standard error of `net_excess_r` (`live_se` is null below two rows);
+  `prior_*` and `posterior_*` come from the frozen prior (`prior_source` is `replay` for a prior key and
+  `skeptical` otherwise: zero mean at the pooled spread and tau; `prior_se` is `sqrt(tau² + se_session²)`,
+  `prior_weight` the pseudo-count `k`); `mean_name_cost_bps` is the mean per-name cost. Every number is finite or
+  null; rows without a strategy, timeframe or direction count only in the aggregate.
+
+The prior (`card-stats-prior-v2`, [derivation](card-stats-prior-2026-10-28.md#v2-2026-10-30)) shrinks each
+key's raw replay mean toward the cross-key mean by empirical Bayes (`replay_mean`, `shrinkage`, `mean`); the
+posterior weight is unchanged. The card's prior line shows `(shrunk from +0.13R)` after the prior mean when
+the raw replay mean (`prior_replay_mean`) differs from it by 0.005R or more; evidence stored before v2 has no
+`prior_replay_mean` and renders as before.
+
+Failures: a prior that cannot be loaded raises `CardStatsUnavailable("card statistics prior unavailable: REASON")`.
+`load_prior` checks, in order, the configured digest, the file, its SHA-256, the model (every field present
+and valid, no unknown key, `sd`, `tau`, `pooled_sd` and `pooled_tau` positive, `se_session` and the counts
+non-negative), `version`, `unit` and the cost, clip and beta constants, and REASON is one fixed phrase per
+check (`prior digest is not configured`, `prior file not found`, `prior file unreadable`,
+`prior digest mismatch`, `prior file invalid`, `prior version mismatch`, `prior unit mismatch`,
+`prior constants differ from the code`, `prior shrinkage inconsistent`): never a path or file content. So do an SPY hourly read that failed
+for every row, and every row's beta read failing (the SPY daily read or every symbol's). Nothing is written and the
+previous snapshot stays authoritative until it ages out. A single symbol's failed daily read only makes its rows
+`n_fetch_failed`; its cost never falls back to the floor silently.
 
 Readiness: every successful poll (detail `not_due`, `scan_window`, `present`, `scan_busy` or
 `recorded`) and the start of a labelling run (`labelling N scan events`) observe `card_stats` ready unless a
 failure from the same New York date is held;
-a failure observes it failed. The detail of `CardStatsUnavailable` is `CardStatsUnavailable: every
-bar fetch failed for N candidates: TYPE, …` (up to three exception type names, first 200 characters);
+a failure observes it failed. The detail of `CardStatsUnavailable` is its message (`every bar fetch failed for N candidates: TYPE, …` with up to three exception type
+names, or one of the failures above), first 200 characters;
 any other error's detail is its type name only, because readiness details reach Telegram incident
 notices; messages go to the log. If every candidate's bar fetch fails, nothing is written
 (`CardStatsUnavailable`) and the previous snapshot stays authoritative until it is older than
@@ -80,36 +135,61 @@ scan windows and running scans.
 ## Evidence block
 
 `TradingCopilot.run_scan` reads the newest `card_stats` snapshot in this scope once per scan
-(`CardStatsRepository.latest`) and looks up each native candidate's `(strategy, direction)`
+(`CardStatsRepository.latest`) and looks up each native candidate's `(strategy, timeframe, direction)`
 (`lookup`). The result, `CardEvidence`, is stored in the signal's `decision_provenance["card_evidence"]`
-and in its outbox notification (with the key's `n_fetch_failed`, 0 without a row, and its
-`first_decided_at`), so the Telegram card, the terminal card, the dry-run print and a
-re-priced replacement render the same facts from one helper (`format_evidence_lines`). PEAD drift
-cards keep their own block and carry none. The block sits inside the card, right after the target
-line:
+and in its outbox notification (with the key's `n_fetch_failed` and `n_unresolved`, 0 without a row, its
+`first_decided_at`, the posterior and the prior), so the Telegram card, the terminal card, the dry-run print
+and a re-priced replacement render the same facts from one helper (`format_evidence_lines`). PEAD drift
+cards keep their own block and carry none. The block sits inside the card, right after the target line.
 
-| Status | When | Line |
+The unit is `net_excess_r_v1`: the journaled bracket's R, less the round-trip per-name cost
+(`2·c/1e4·fill/risk_unit`, `c` at least 5 bp per side and growing with the name's volatility and the
+order's share of its dollar volume), less beta times the matched SPY return (a past-only 120-session
+beta), clipped to ±10R. The live record is the mean of that unit over matured, de-duplicated
+suggestion-scan candidates; it is shrunk toward the frozen replay prior of its
+`(strategy, timeframe, direction)` (`posterior = (n·x̄ + k·prior) / (n + k)`, `k = sd² / (tau² +
+se_session²)`), so with no mature live rows the card states the prior alone, and a key the replay never
+covered gets a skeptical prior at zero.
+
+`lookup` returns `unavailable` for a snapshot whose `unit` is not `net_excess_r_v1`: a v1 snapshot read on
+deploy day renders "no statistics in this scope" and never withholds (`CardStatsSnapshot.snapshot_key` is
+`card_stats/{unit}/{date}` for the snapshot's own unit, and the v1 key `card_stats/{date}` for a snapshot
+without one).
+
+| Status | When | Lines |
 | --- | --- | --- |
-| `measured` | snapshot fresh, at least `min_mature_cards` mature labels with rates and a finite mean R | `• Measured record (STRATEGY, DIRECTION): N mature candidates since FIRST_DECIDED: T% target / S% stop / O% timeout, mean ±X.XXR after cost`, then `• Implied EV at R.R:1: ±Y.YYR` |
-| `insufficient` | fewer mature labels, or no row for the key (the `("*", "*")` aggregate is never a fallback) | `• Measured record: insufficient evidence (N/MIN mature candidates)` |
+| `measured` | snapshot fresh, at least `min_mature_cards` mature labels, rates and a finite posterior | `• Expected excess (STRATEGY TIMEFRAME, DIRECTION): ±P.PPR ± S.SS vs beta-matched SPY after cost`, then `  replay 2021–26: ±X.XXR over N setups · live: ±Y.YYR over N mature since FIRST_DECIDED (T% target / S% stop / O% timeout)` |
+| `insufficient` | fewer mature labels (the prior and posterior are still shown), or no row for the key (the `("*", "*", "*")` aggregate is never a fallback) | the same two lines with `live: N/MIN mature, not yet decisive`; with no row, `• Measured record: insufficient evidence (0/MIN mature candidates)` |
 | `stale` | snapshot older than `stats_max_age_seconds` | `• Measured record: statistics stale (last computed DATE)` |
-| `unavailable` | no snapshot in this scope (every dry scan), a failed read, an unreadable payload (including a non-finite number), or a key at or over the floor without rates or a finite mean R | `• Measured record: no statistics in this scope` |
+| `unavailable` | no snapshot in this scope (every dry scan), a failed read, an unreadable payload (including a non-finite number), a snapshot not in the v2 unit, or a key at or over the floor without rates or a finite posterior | `• Measured record: no statistics in this scope` |
+
+A skeptical prior reads `no replay prior (shrunk toward 0)` in place of the replay part. When the key has
+fetch failures or unresolved candidates the second line ends ` · K unreadable (never withheld)`.
+
+Example, measured (illustrative live figures):
+
+    • Expected excess (TREND_PULLBACK 4h, LONG): -0.09R ± 0.15 vs beta-matched SPY after cost
+      replay 2021–26: -0.08R over 7,049 setups · live: -0.12R over 23 mature since 2026-09-24 (43% target / 52% stop / 4% timeout)
 
 `FIRST_DECIDED` is the New York date of the key's first journaled decision (`first_decided_at`), or
 `window_start` when the key has none: the count is of mature labelled candidates, sent or not, not of
 cards. A stored payload is rendered by the same rule: `insufficient` only below the floor, and a
-`measured` payload without rates or a mean renders the `unavailable` line.
+`measured` payload without a posterior or live mean renders the `unavailable` line. A queued notification
+whose `card_evidence` predates the unit parses with `unit` null and renders the `unavailable` line.
 
-The last line is always, in italics: "Not validated alpha. Record measured on journaled candidates'
-deterministic brackets at the next hourly open (FEED, C bp/side)." The parenthesis is omitted when no
-snapshot exists.
+The last line is always, in italics: "Not validated alpha. Replay prior (PRIOR_FEED 2021–26) and live record
+(FEED) on journaled candidates' deterministic brackets; mature = 21+ sessions old; per-name cost ≥ 5
+bp/side." `PRIOR_FEED` is the snapshot's `prior_feed` upper-cased without its provider prefix (the shipped
+prior records `alpaca:sip`, so `SIP`); `CardEvidence.prior_feed` carries it. Evidence without a prior window
+or prior feed (no snapshot) carries a shorter caveat ending "per-name cost ≥ 5 bp/side." The snapshot's
+`prior_window_start` and `prior_window_end` are dates: the writer refuses a prior whose window is not ISO
+`YYYY-MM-DD`, so a scan's `lookup` never meets one. The old "Implied EV at
+R:R" line is gone: it mixed gross target and stop R with after-cost timeout R, and was computed from
+censored rates.
 
-`mean` is the directly measured quantity: the mean cost-adjusted R of the key's mature labels at the
-journaled bracket. The implied EV is `target_rate·rr − stop_rate + timeout_rate·mean_timeout_r` at the
-card's own ratio `rr` (no timeouts' R counts as 0); it is labelled implied because the card's ratio can
-differ from the journaled bracket. It mixes gross R for target and stop hits (`+rr` and `−1`, before
-cost) with the timeouts' after-cost mean R, so it is not an after-cost figure and is not comparable to
-`mean`.
+Two properties of the snapshot the card reads: `events_considered` counts only suggestion-scan universe
+events (not every journaled scan), and a journaled event whose `decided_at` does not parse is skipped,
+not counted and not labelled.
 
 The card title reads `📋 SETUP:` (it read `🚨 TRADE SIGNAL:`). `Macro Check` states the deterministic
 lockout gate: a candidate that reached the LLM already passed it, so the evaluator sets
@@ -122,22 +202,31 @@ block; a malformed one renders the `unavailable` line and still delivers.
 `decide(policy, evidence)` (`agentic_trader/execution/card_policy.py`) is pure:
 
     would_withhold = mode != "off" and evidence.status == "measured"
-                     and n_mature >= min_mature_cards and n_fetch_failed == 0
-                     and mean_r_cost < min_measured_ev
+                     and n_mature >= min_mature_cards
+                     and n_fetch_failed == 0 and n_unresolved == 0
+                     and posterior_mean < min_measured_ev
     withhold       = would_withhold and mode == "enforce"
+
+`posterior_mean` is the expected excess R in `net_excess_r_v1`; `CardPolicyDecision.measured_ev` and the
+journal key `measured_ev` carry it (the field names are unchanged).
 
 It runs in `run_scan`'s send loop for native candidates only, after the card-budget refusals and before
 the LLM. A withheld candidate gets the fixed outcome `card_policy_withheld`
 (`RankedOutcome.CARD_POLICY_WITHHELD`), spends no scan, session or LLM budget, becomes a runner-up with
-reason `card policy: measured EV -0.39R over 30 < +0.00R` (three decimals when two would print the EV
+reason `card policy: expected excess -0.06R over 23 < +0.00R` (three decimals when two would print the value
 and the threshold as equal, such as `-0.004R … < +0.000R`), and the next rank is considered, like an
-LLM veto. Insufficient, stale, unavailable or partial (`n_fetch_failed > 0`) evidence never withholds:
-the policy is a switch on complete measured evidence, not a fail-closed rule. Every scan applies it
-(suggestion, swing, intraday, `/scan`, Re-evaluate). Every full-universe scan (suggestion, swing
-including its run at daemon start, unrestricted `/scan`) is journaled and labelled with its `trigger`
-(`suggestion_scan` | `swing_scan` | `operator_scan`); symbol- or timeframe-scoped scans (intraday job,
-`/scan SYMBOL`, Re-evaluate) show evidence and obey the policy but are not journaled. `cards outcomes`
+LLM veto. Insufficient, stale, unavailable or partial (`n_fetch_failed > 0` or `n_unresolved > 0`) evidence never
+withholds: the policy is a switch on complete measured evidence, not a fail-closed rule. Every scan applies it
+(suggestion, `/scan`, Re-evaluate); the daemon's swing and intraday jobs are journal-only
+(`ScanBudget.JOURNAL_ONLY`) and read neither the snapshot nor the policy. Every full-universe scan
+(suggestion, swing including its run at daemon start, unrestricted `/scan`) is journaled and labelled
+with its `trigger` (`suggestion_scan` | `swing_scan` | `operator_scan`); symbol- or timeframe-scoped
+scans (intraday job, `/scan SYMBOL`, Re-evaluate) are not journaled, and all but the journal-only
+intraday job show evidence and obey the policy. `cards outcomes`
 reports a `trigger` column and a `triggers` summary block; events without a trigger report under `"unknown"`.
+The `triggers` block counts scans from labelled rows only; the `supply` block
+([below](#outcome-classes-and-scan-supply)) counts scans from the events, so scans that ranked nothing
+appear there.
 
 Outside the policy: PEAD drift and catalog cards (no evidence block), and policy-locked native cards
 (a versioned alpha with `alpha_version` or `alpha_policy`, or a paper probe). A policy-locked card
@@ -149,16 +238,20 @@ has every field null. Whether such a card is sent belongs to its versioned polic
 Evidence recorded:
 
 - `scan_candidates_ranked` gains top-level `card_policy: {mode, min_measured_ev, min_mature_cards,
-  snapshot_key}` and, per candidate, `card_policy: {measured_ev, n_mature, would_withhold,
-  n_fetch_failed}` (`measured_ev`/`n_mature` null unless the evidence is measured; `would_withhold` null
-  while the mode is `off`; `n_fetch_failed` is the key's count, 0 without a row; every field null for a
+  snapshot_key, unit}` and, per candidate, `card_policy: {measured_ev, n_mature, would_withhold,
+  n_fetch_failed, unit}` (`unit` is `net_excess_r_v1`, and marks new blocks apart from old ones, which have
+  none; `measured_ev`, the posterior, and `n_mature` are null unless the evidence is measured;
+  `would_withhold` null while the mode is `off`; `n_fetch_failed` is the key's count, 0 without a row; every field, `unit` included, null for a
   policy-locked candidate). `would_withhold` is the policy's verdict on every other native candidate,
   whether or not it reached the send step.
 - A sent card's `decision_provenance` carries the same `card_policy` block and its `card_evidence`.
 - `preview` logs one `card_policy_would_withhold` line for each candidate that reaches the check.
 - `copilot cards outcomes` adds the `card_policy_withheld` and `would_withhold` columns and the summary
-  block `card_policy: {withheld, would_withhold, withheld_mean_r_cost, would_withhold_mean_r_cost}`
-  (counts over every row, means over mature rows). Withheld candidates stay in the journal and keep
+  block `card_policy: {withheld, would_withhold, withheld_mean_r_cost, would_withhold_mean_r_cost,
+  would_withhold_n_net_excess, would_withhold_mean_net_excess_r}` (counts over every row, means over mature
+  rows; the last two are the would-withhold rows in the policy's own unit, `net_excess_r_v1`, and how many
+  carry one). `--days` accepts up to 180, the shipped `stats_window_days`, so the report can cover the
+  window the cards measure. Withheld candidates stay in the journal and keep
   being labelled, so a strategy below the threshold keeps accruing evidence and can recover. The
   existing summary blocks are unchanged; a withheld candidate is still a runner-up there. The
   end-of-session digest counts it among the runners-up; the reason shows in the scan summary and in a
@@ -166,6 +259,41 @@ Evidence recorded:
 
 Operate it in order: `off` until a snapshot exists; `preview` with a threshold, reading `would_withhold`
 for several sessions; then `enforce`. Each change is a config edit and the controlled restart.
+
+What `enforce` at 0.0 does. The replay prior for TREND_PULLBACK 4h LONG is -0.077R in v2 (about 63 live
+rows), so once a key's live floor (`min_mature_cards`) is met the posterior sits below zero unless the
+live record lifts it, and most native cards are withheld. On 2026-10-30 that key had 19 of 20 mature
+labels. The squeeze keys send until each reaches its own floor. Preview evaluated zero cards between
+2026-10-28 and the decision (trading was halted through 10-29 and there were no setups on 10-30), so
+there is no preview contrast to read. The review's estimate is about 0.5 cards per session. Going back
+is a config edit (`mode: "preview"`) and the controlled restart. There is no confidence sequence behind
+the daily reads (spec section 5); see above.
+
+## Broad-index exclusion
+
+An unrestricted scan (no `symbols`, any budget, a dry run included) never sends a native card on a broad US
+equity index ETF. `scan.broad_index_etfs` lists them, 23 names by default: SPY, VOO, IVV, SPYM, RSP; VTI,
+ITOT, SCHB, IWV; IWB, VV, SCHX, OEF; QQQ, QQQM, DIA; MDY, IJH, IWR, VO; IWM, IJR, VB (SPYM replaced SPLG,
+which the 2026-10-15 Alpaca asset snapshot does not list). A native card on a segment benchmark is a
+market-timing bet, and the desk's yardstick is SPY at beta 1, so such a card's excess return is zero by
+construction or a known size or growth spread, never a setup-specific edge. Sector, style, factor, dividend,
+thematic, international, bond and commodity ETFs stay eligible. An empty list turns the rule off.
+
+This is a card-selection rule in `run_scan`, not an entry-risk rule: it lives outside
+`agentic_trader/risk`, and admission never sees it. It is the first check in the send loop, before every
+budget refusal, so the outcome never depends on how much budget is left. The candidate gets the fixed
+outcome `broad_index_excluded` (`RankedOutcome.BROAD_INDEX_EXCLUDED`) and becomes a runner-up with reason
+`broad index ETF: excluded from native cards (scan.broad_index_etfs)`. It spends no LLM, card or group
+budget, is dropped from news fetching and scoring and from the book-sizing candidates, and the next rank is
+considered. Such a name is still collected, ranked, given a dynamic slot when the screener supplies it, and
+journaled in `scan_candidates_ranked`, so it is a runner-up refused by a selection rule and `cards outcomes`
+keeps labelling it like any other. The end-of-session digest counts it among the runners-up but keeps it out
+of the "top:" list (a listed index is scanned every session and would fill it) and reports them as
+"N broad-index ETF(s) excluded".
+
+Unaffected: a restricted scan (`/scan SPY`, `copilot scan --symbols SPY`) and Re-evaluate, which still card
+these names so operator trades stay possible; PEAD drift and catalog cards; and policy-locked alpha and probe
+cards. A journal-only scan never reaches the send loop, so its candidates keep the outcome `journal_only`.
 
 ## Card validity
 
@@ -282,6 +410,65 @@ Only its alignment and tone buckets are mature-row-only (and leave out rows with
 counts cover every row with a block (populations in [news context](news-context.md#attribution)). It
 never feeds `card_policy` or `card_stats`.
 
+## Filing veto
+
+The `filing_veto` entry rule ([risk policy](risk-policy.md)) is measured, never gated, by this block. Each
+`scan_candidates_ranked` candidate carries `filings`: `{status, would_block, category, would_refuse, exempt}` for a long
+equity candidate judged while `filing_veto.entry_block` is `preview` or `enforce`, and `null` for a short, a
+non-equity, a veto that is off or a scan without a lookup. `status` is the evidence status (`ok`, `stale`,
+`unavailable`, `uncovered`); `would_block`, `category`, `would_refuse` and `exempt` are set only when it is `ok`. It is
+classified from the scan's in-memory lookup by the one shared helper (`agent/filing_veto.py:filing_veto_evidence`,
+the same one the evaluator gate and tap gate use, no I/O), independently of the evaluator's result, so every
+ranked long equity candidate carries it, including one that left before the veto gate.
+
+`would_block` and `category` label the newest qualifying filing of any category; `would_refuse` is true
+when a filing of an enforced category (`filing_veto.enforce_categories`, shipped `late_filing` and
+`adverse_8k`) qualifies and the card is not exempt. Catalog (`pead`, `insider_watch`), paper-probe and
+alpha-versioned cards are exempt at the evaluator and tap gates: they carry a `filings` block with
+`exempt: true` and `would_refuse: false`. Under `enforce` a refused native candidate leaves the scan
+journal and counts in `funnel.rejected_by_rule.filing_veto`, so the candidate `filings` counts below describe
+the survivors; an unenforced match (an `offering`) stays in the journal and its sent card shows
+`🗂 Filing (not enforced)`.
+
+`cards outcomes` adds `filing_veto` beside `supply` (`filing_veto_summary(events, frame)`), from the events
+for the candidate part and from the frame's `filings_would_block` column for the cards:
+
+- `candidates`: `n` journaled candidates with a `filings` block (the ranked long equity candidates of scans
+  judged while the veto was on), their `by_status` and `coverage` (the share whose status is `ok`; `null` with
+  none);
+- `would_block`: `total` ok-status candidates the rule would refuse, `by_category` and `rate` (over ok-status
+  candidates; `null` with none), and `would_refuse`, the count an enforced category would refuse;
+- `by_universe`: the same counts side by side for `static` names and `dynamic` ones (a candidate journaled with
+  `dynamic: true`): `n`, `by_status`, `coverage`, `would_block` (the count), `by_category` and `rate`. The
+  filings capture covers the universe, held equities and `corporate_actions.extra_symbols` only, so in v1
+  dynamic-universe names are uncovered by design: they journal `uncovered`, are never refused, and their rate is
+  reported apart rather than diluting the static one;
+- `cards`: `n_would_block` sent cards the rule would have refused, `n_matured` of them and their
+  `mean_net_excess_r` (beta-matched net excess; `null` with none matured).
+
+A pre-deploy event has no `filings` and reads as absent. Nothing in `risk/`, `card_policy`, `card_stats` or
+admission reads this block.
+
+## Release exit
+
+The release exit ([production](production.md#release-exit)) is measured, never gated, by this block.
+`cards outcomes` adds `release_exit` from the `release-exit` journal (`release_exit_summary`), keeping the passes
+and close results of New York trading days inside the `--days` window:
+
+- `passes` and `positions`: the journaled passes and their position entries;
+- `by_status`: entries by status (`would_close`, `close`, `none`, `unknown`, `exempt`); `by_scope`: by scope
+  (`native` or the exempt kind: `pead`, `insider_watch`, `probe`, `alpha`);
+- `exempt_through_report`: exempt positions whose decision was `exit`, held through a report by design;
+- `by_date`: each trading day's `mode`, `by_status` and `exempt_through_report`;
+- `closes`: the `enforce` close results, `n` and `by_outcome` (`submitted`, `refused`, `failed`, `error`,
+  `already_exiting`).
+
+Gaps a day's journal can hold (a missing pass, `unknown` native positions, `release_exit_close` events with
+`notified: false` and a `refused`, `failed` or `error` outcome, and owed closes never attempted) are also listed in the next morning's operations summary
+([operational monitoring](operational-monitoring.md)).
+
+Nothing in `risk/`, `card_policy`, `card_stats` or admission reads this block.
+
 ## Regime and recurrence context
 
 Spec: [regime and recurrence](superpowers/specs/2026-10-14-regime-recurrence-design.md). Two more
@@ -293,10 +480,27 @@ ranking; there is no card line.
 **Journaled regime.** Every `scan_candidates_ranked` event carries one top-level `regime` block
 (`agent/regime.py:regime_journal_block`; keys `REGIME_BLOCK_KEYS`): `vix`, `vix_regime`
 (`COMPRESSED`/`NORMAL`/`ELEVATED`/`EXTREME`), `breakout_allowed`, `risk_multiplier`,
-`min_rr_threshold`, `macro_stress` (`LOW`/`MODERATE`/`HIGH`/`EXTREME`, null without a macro report) and
-`observed_at` — the snapshot observed at the start of the scan (the evaluator may refresh it during a long scan),
-which cannot be rebuilt from bars later. Every card's
-`decision_provenance["regime"]` carries the same block. Events before 2026-10-14 have none.
+`min_rr_threshold`, `macro_stress` (`LOW`/`MODERATE`/`HIGH`/`EXTREME`, or `UNKNOWN` when a decision
+input is missing; null when yield-curve enrichment is disabled) and `observed_at` — the snapshot
+observed at the start of the scan (the evaluator may refresh it during a long scan), which cannot be
+rebuilt from bars later. Since the Phase 0 fail-safes it also carries the raw inputs:
+
+- `macro_enabled`: `macro_stress` is not null (false under `regime.yield_curve_enabled: false`);
+- `inputs`: every input read, `{name: {value, source, observed_on, decision, error}}`. With the
+  yield curve enabled that is all ten: the decision inputs `vix`, `3m`, `2y`, `10y`, `hy_oas`
+  (`decision: true`) and the context inputs `5y`, `30y`, `dxy`, `t10yie`, `t5yie` (`decision: false`);
+  VIX-only reads `vix`, `10y` and `dxy`. `source` is `yfinance:^VIX` or `fred:DGS2` style,
+  `observed_on` the last bar's or observation's date, and `error` a type name, `no_observation` or
+  `unexpected_payload`;
+- `missing` (every missing input) and `missing_decision` (those with `decision: true`; with
+  `macro_enabled` they are what forced `UNKNOWN`), in canonical order;
+- `clock_regime`: `EDT` or `EST`, New York's clock at `observed_at`.
+
+`UNKNOWN` sizes at `regime.unknown_risk_multiplier` (0.5) with breakouts per
+`regime.unknown_breakout_allowed` (off), capped at `EXTREME`'s limits (0.25, `regime.extreme_min_rr`,
+breakouts off) when the present VIX or HY OAS already forces `EXTREME`; `cards outcomes` buckets it
+like any other `macro_stress` value. Every card's `decision_provenance["regime"]` carries the same block. Events before 2026-10-14
+have none, and events before the Phase 0 fail-safes have only the first seven keys.
 
 **Derived tape.** The report fetches SPY daily bars once (raw, 400 calendar days before the earliest
 decision, after the hourly fetches) and computes, per decision session, from completed sessions
@@ -355,12 +559,236 @@ Descriptive only: never a gate, and not read by `risk/`, `card_policy`, `card_st
 decisive test is the frozen study (`alpha bracket-counterfactual`,
 [spec](superpowers/specs/2026-10-18-bracket-counterfactual-design.md)).
 
+## Outcome classes and scan supply
+
+`cards outcomes` splits the labelled candidates into three classes, in `counts`, `base_rates` and
+`market_exposure` alike:
+
+- `sent`: the outcome `sent`.
+- `journal_only`: the outcome `journal_only` (`RankedOutcome.JOURNAL_ONLY`), every native candidate a
+  swing scan ranked. It never competed for a card, so it is not a runner-up.
+- `runner_up`: every other candidate, which competed for a card and lost: a free-text refusal such as
+  `per-scan budget spent`, `llm_vetoed`, `card_policy_withheld`, and `broad_index_excluded` (refused by a
+  selection rule like a budget refusal).
+
+`counts` holds `mature`, `immature` and `fetch_failed` per class; `base_rates` and `market_exposure` hold
+the mature statistics, null for an empty class. The empty report carries the same three keys. The split
+changes nothing else: the labelled rows, `selection`, `triggers`, `card_stats` and `card_policy` read the
+same candidates as before.
+
+The `supply` block counts the scans themselves, per trigger (`suggestion_scan`, `swing_scan`,
+`operator_scan`, or `unknown` for an event without one). It reads the `scan_candidates_ranked` events, not
+the labelled rows, so a completed scan that ranked nothing and a gated scan are counted:
+
+- `scans`, and `by_status`: `completed`, `macro_lockout` or `regime_unavailable`. An event without `status`
+  counts as `completed`.
+- `zero_candidate`: completed scans with no candidates.
+- `sent`: candidates with the outcome `sent`, whatever their scan's status.
+- `funnel`: each integer field of the scans' funnels summed, and each `{name: n}` field
+  (`raw_setups_by_strategy`, `rejected_by_rule`, `errors`) summed per name. Gated scans carry no funnel and
+  add nothing.
+- `funnel_unknown`: completed events whose `funnel` is missing or null, which is every event journaled
+  before the funnel existed. A gated event is not unknown: `by_status` counts it.
+
+```json
+"supply": {
+  "suggestion_scan": {
+    "scans": 3,
+    "by_status": {"completed": 2, "macro_lockout": 1},
+    "zero_candidate": 1,
+    "sent": 1,
+    "funnel": {"selected": 200, "scanned": 189, "raw_setups": 8, "admitted": 3,
+               "rejected_by_rule": {"concurrent_positions": 3, "unclassified": 1}},
+    "funnel_unknown": 0
+  },
+  "unknown": {"scans": 1, "by_status": {"completed": 1}, "zero_candidate": 0, "sent": 1,
+              "funnel": {}, "funnel_unknown": 1}
+}
+```
+
+(The funnel is abbreviated here; the report prints every field.) When no candidate was journaled in the
+window the report prints `No journaled candidates in N day(s) (M scan events).`, so a window of
+zero-candidate or gated scans reads differently from an empty journal. Descriptive only: not read by
+`risk/`, `card_policy`, `card_stats` or admission.
+
+### Beta-matched and buy-and-hold controls
+
+Beside the SPY-matched `excess_r`, `cards outcomes` reports two further descriptive controls. Neither is a
+gate, and nothing in `risk/`, `card_policy`, `card_stats` or admission reads them. The daemon's `card_stats`
+labelling run skips the beta fetch entirely.
+
+- **Beta-matched excess.** `beta` is a past-only trailing beta of the candidate against SPY: 120 sessions
+  ending the session before the decision, on adjusted daily bars, with at least 100 paired returns. Rows
+  with fewer paired returns, or a failed daily fetch, carry `beta_reason` (`short_history`,
+  `fetch_failed: ...`) and no beta. `beta_market_r` is `beta` times `market_r`, and `beta_excess_r` is
+  `r_cost` minus `beta_market_r`. Each counterfactual arm also reports `mean_beta_excess_r`
+  (`r_cost - beta * arm_market_r`).
+- **Buy-and-hold.** `hold_r` is the candidate's own buy-and-hold return over the bracket's full horizon: from
+  the open of the entry bar to the close of the last regular bar of the `max_hold_sessions`-th session counted
+  from the entry session (the bracket's own timeout exit), signed by direction, in the bracket's R units,
+  uncosted. It is `None` until that session has closed and when bars are missing. A stop or target exit does
+  not shorten it, so `timing_r` is `r_cost - hold_r`: the value the bracket's stop and target added over simply
+  holding for the full horizon.
+- **Net excess (`net_excess_r_v1`).** `net_excess_r` is the one cost-adjusted, beta-matched unit shared by
+  the labeller and `card_stats`: `clip(clip(r - cost_r, ±10) - beta * market_r, ±10)` with
+  `cost_r = 2 * c / 1e4 * fill / risk_unit`, `fill` the entry-bar open and `risk_unit` the planned
+  `|entry - stop|`. The per-name cost `c` is a 5 bp floor plus a square-root impact term from the name's
+  past 20-session volatility and median dollar volume for a $1,000-risk order, capped at 200 bp; with fewer
+  than 15 past returns, no bars or a failed fetch it is the floor and `cost_reason` says why
+  (`short_history`, `no_daily_bars`, `fetch_failed: ...`). Beta and cost inputs come from SIP adjusted daily
+  bars in every caller (`build_daily_bar_source`, whose reads end `SIP_HISTORY_DELAY`, 16 minutes, before now);
+  hourly labelling keeps the scan-bar feed (`market_data.bars_feed`). Abdi-Ranaldo
+  and Corwin-Schultz daily high-low spread estimators were rejected because on this liquid universe they are
+  dominated by estimator error (spec §4.2). `beta_excess_r` keeps its unclipped flat-cost definition.
+- **Summaries.** Each `market_exposure` class adds `n_beta`, `mean_beta`, `mean_beta_market_r`,
+  `mean_beta_excess_r`, `mean_excess_r_same_rows` (the beta-one excess over exactly the rows that carry a
+  `beta_excess_r`), `beta_reasons` (a count per missing-beta reason) and `mean_hold_r` / `mean_timing_r`. The
+  hold and timing means, and `beta_reasons`, cover every mature row with a finite value, whether or not SPY
+  bars exist for it; the other means cover the SPY-controlled rows (`n`).
+- **`by_asset_class`.** Mature rows grouped by `etf_equity`, `rates_credit`, `metals`, `single_stock` (from
+  the configured universe groups and sectors) or `unclassified`, with `n`, `mean_r_cost`, `mean_excess_r`
+  and `mean_beta_excess_r`. A symbol outside the configured universe falls back to the research ETF cohorts (so a removed BIL or SHY is
+  `rates_credit`); any other dynamic name is `unclassified`.
+
+### Insider watch outcomes
+
+`cards outcomes` appends an `insider_watch` block after the PEAD probe when the window holds
+`insider_watch_decision` events ([watch cards](apriori-alphas.md#watch-cards)). It is descriptive and read-only:
+nothing in `risk/`, `card_policy`, `card_stats` or admission reads it, and a watch card is unvalidated.
+
+- **Events.** Every journaled event that carries a measured ATR (so it passed the frozen eligibility rule):
+  those sent as cards and those eligible but unsent (owned, over the card or position cap, late, and so on).
+  Ineligible and incomplete-filing events are journaled but not labelled. An event journaled by more than one
+  decision scan (a rerun) counts once by its event ID, as the scan that sent it when one did.
+- **Labels.** The frozen cube bracket (decision-bar close, 2 x ATR14 stop, 3R target, 20-session time exit, 15 bp
+  decisive cost) walked on hourly bars with `label_bracket` from the 10:35 decision, the way the PEAD forward
+  record is labelled, on SIP with adjusted prices (the feed the study, the card's +0.087R line and the PEAD
+  record use; never the configured feed). Without the SIP subscription a read must end at least 15 minutes
+  ago, so every SIP read of the PEAD and watch blocks ends 16 minutes before now, and an hourly bar that had
+  not closed by then never matures a label. `n` counts mature rows only; the rest are in
+  `unlabelled` by reason (`no_hourly_bars`, `no_decision_price`, `degenerate_levels`, `immature`).
+- **Blocks.** `all`, `sent_events` and `unsent_events`, each with `n`, `mean_r_cost` and `mean_beta_excess_r`:
+  `r_cost` minus the past-only trailing beta (the controls above) times SPY's return over the same holding
+  window in R units. A row without a beta (`short_history`, a failed daily read) is left out of the excess mean.
+- **Taps, auto entries and fills.** From `insider_watch_long` signals in the window: `taps` counts signals whose
+  entry work item is a tap (a signal with no entry item counts when it left the card, any status but pending,
+  dismissed or expired, with no auto-entry marker),
+  `auto_entries` those whose entry work item carries `entry_trigger: auto`
+  ([catalog auto-entry](paper-auto-entry.md#catalog-sources)), and `fills` those with an `executed_at`.
+  `bar_failures` names symbols whose bars could not be read. With the source auto-entered the tap count falls
+  toward zero, so the sent-versus-unsent comparison below no longer measures discretion; read it as a record of
+  the frozen rule. The PEAD probe's forward record never read the trigger and is unchanged.
+- **Reading it.** The sent-versus-unsent comparison is the only view of whether the discretionary tap helps or
+  hurts; both are small, censored samples, so read them as a record, never as a gate or an edge estimate.
+
+## Weekly scorecard
+
+`research/setups/scorecard.py` (`build_scorecard`, model `LaneScorecard`) and `presentation/scorecard.py`
+(`format_scorecard`) produce the weekly lane scorecard that the daemon sends once per ISO week
+([runbook](production.md#weekly-scorecard)) and `copilot cards scorecard [--days 7]` previews without sending.
+It is descriptive and read-only: nothing in `risk/`, admission, `card_policy` or `card_stats` reads it. The
+`cards outcomes` producers (native labelling, the PEAD probe record, the watch block) live in the same module and
+print unchanged. One row per lane (native, PEAD probe, insider watch):
+
+- **Activity (last `activity_days`, 7, New York days).** Cards sent, entries *attempted* (split into auto and tap),
+  `unfilled`, fills, closes and the sum of realized R. An attempt is not a fill: `unfilled` counts attempts that
+  ended with no fill (signal status `FAILED` with no fill). That is an admission refusal or rejected order, but also
+  an entry that rested and expired unfilled at the session close, so it does not say why. It is counted over the same
+  attempted signals as `attempted` and never exceeds it; `attempted - unfilled` is not `filled` row by row (an entry
+  can still be pending or resting). Auto-entry journal events are not read; the signal status is the evidence.
+- **Realized record (trailing `record_days`, 90).** Closed trades, mean realized R (`realized_pnl / risk_dollars`,
+  the formula of the probe's forward record; a closed row with unknown pnl or risk is not counted) and open
+  positions.
+- **Counterfactual record (same trailing window).** `N of M matured so far`: matured labels over those plus the
+  events still inside their label window (the labellers' own immature counts; for PEAD the LONG-leg immature
+  misses), their mean `r_cost`, and the beta-matched SPY excess where the lane has one (native and watch; PEAD shows
+  `n/a`). While `N < M` the line carries "(early exits; stop-heavy until windows complete)": early exits are mostly
+  stops, so the mean is biased negative until the windows finish. A bar-fetch failure still renders `n/a`.
+- **Account.** Adjusted equity at the window's start and end, from ledger checkpoints, or `n/a`.
+
+Measurement notes:
+
+- The signal filter matches the probe record: only signals of this environment and execution mode, never a
+  quarantined one, so an unknown-execution-mode row is not counted.
+- Closes and realized R count by exit time. Cards sent and entries count by signal time. A trade can therefore
+  be closed this week against a card sent in an earlier one, and the two columns do not reconcile row by row.
+- Counterfactual labels assume study-price fills (the labeller's proxy bracket, not the entry the desk got), and
+  no lane has validated edge: the footer says both. Read the realized and counterfactual records side by side as a
+  record, never as a gate or an edge estimate.
+- A lane whose bars cannot be read shows `n/a` and a type-name note; the message is still sent.
+
+## LLM gate identity and outages
+
+Every native candidate the LLM evaluated carries an `llm` block in its `scan_candidates_ranked` entry, and
+a sent card's `decision_provenance["llm_verdict"]` is the same block. It has nine keys: `approved`,
+`rejection_reason`, `stop_loss`, `take_profit`, `applied`, `model` (the provider's returned snapshot, null on
+error), `prompt_sha256` (SHA-256 of the rendered system prompt plus the user template, without per-card
+values; the hash is the prompt's identity), `error` (an exception type name such as `Timeout`, never its
+text) and `malformed` (true for a veto whose reply was malformed). Rows journaled before this change was deployed
+have only the first five.
+
+An LLM error never approves. A native card is journaled with the fixed outcome `llm_unavailable`
+(`RankedOutcome.LLM_UNAVAILABLE`, a runner-up class like `llm_vetoed`), records no signal and sends no card; its
+block is `{"error": <TypeName>, "applied": true, "approved": false, "model": null, "prompt_sha256": ...}`. A
+malformed veto is `llm_vetoed` with `malformed: true`; a well-formed veto without a reason reads "veto without a
+reason". Only the JSON boolean `true` approves.
+
+In `cards outcomes`, rows gain `llm_model`, `llm_prompt_sha256` and `llm_error`. An error row has `llm_ran`
+false: it is excluded from approved/vetoed attribution and counted in `llm_gate.llm_errors`, which, like `ran`,
+`vetoed` and `approved`, counts mature rows only (an immature or fetch-failed error row keeps its `llm_error`
+column but is not counted), so the mature rows that reached the gate are `ran + llm_errors`. `llm_gate` also
+carries `by_identity`, the same statistics (`ran`, `vetoed`, `approved`, mean R and bracket-edit fields)
+grouped by `"{model}|{prompt_sha256}"`, with rows that predate identity under `"null|null"`, so a prompt or
+model change is never averaged into the older sample. Both are descriptive, never a gate.
+
+## Operator outcomes
+
+`cards outcomes` records what was done with each sent card, now that native suggestion cards are entered on
+the paper account by [auto-entry](paper-auto-entry.md). All of it is descriptive; nothing in `risk/`,
+`card_policy` or admission reads it.
+
+- **`entry_trigger`** per card row: `auto` (the sweep's entry), `tap` (an operator tap or the CLI) or `none`
+  (no entry item). `summarize_execution` reports `taps` and `auto_entries` apart; `mean_tap_age_seconds`
+  averages taps only.
+- **`operator_action`** per card row, the first matching rule: `cancelled` (an operator-cause entry cancel; a
+  deadline cancel is not an operator act), `auto_entered`, `auto_refused` (the sweep's attempt was `refused`,
+  including a card its tap check expired or re-priced, or the auto entry was rejected without a fill), `tapped` (a tap-trigger entry exists, including a marked
+  card the sweep refused or abandoned and the operator then tapped), `dismissed`, `abandoned` (the sweep never
+  got to it), `expired`, else `none`. Cards recorded without the `auto_entry` marker use only `cancelled`,
+  `tapped`, `dismissed`, `expired` and `none`.
+- **`operator` block** of `summarize()`: counts of sent, tapped, auto-entered, dismissed, cancelled and
+  expired cards `by_slot` (`10:35`, `14:35`), `by_trigger` and `by_strategy`; `tap_latency` (median, p90 and
+  `n`, taps only); `kept_vs_vetoed`; and `tap_era`.
+- **`kept_vs_vetoed`** reads auto-marked cards only, so its count starts at the deploy. `kept` is
+  `auto_entered`, `vetoed` is `dismissed` (before placement) or `cancelled` by the operator; each side
+  reports `n` and `mean_excess_r` (the beta-matched excess R, one row per resolved setup on a session), with
+  `difference`, a session-block bootstrap `ci90` and `status`: `insufficient` below 30 distinct resolved
+  setups in total or below 10 on either side (no interval then). `excluded` counts `auto_refused` and
+  `abandoned` cards, which are on neither side.
+- **`tap_era`** compares unmarked cards that were tapped with those that were not (`tapped`, `untapped`,
+  `difference`). It is not part of the rule: before auto-entry "untapped" mostly meant the operator was not
+  looking.
+
+The predeclared reading, recorded in [paper auto-entry](paper-auto-entry.md#measurement) and not enforced in
+code: once `kept_vs_vetoed` is sufficient, keep human selection as a gate only if the kept-minus-vetoed CI is
+above zero.
+
 ## Limits
 
 - **Proxy bracket.** Labels use the journaled deterministic COLLECT bracket (not the LLM-edited bracket
   that was sent), enter at the open of the first regular hourly bar at or after the scan's `decided_at`
-  (not the limit price, not the tap), cost a fixed 5 bp per side, and use the configured feed (IEX in
-  production, with its hourly gaps). The record is the setup's, not this card's own win rate.
+  (not the limit price, not the tap), cost a fixed 5 bp per side, and use the scan-bar feed (delayed SIP
+  in production since 2026-11-07; IEX, with its hourly gaps, before). The record is the setup's, not this
+  card's own win rate.
+- **The SIP relabel.** Every snapshot relabels its whole `stats_window_days` window on the current scan-bar
+  feed, so the first snapshot after the 2026-11-07 switch labels on delayed SIP the candidates that were
+  selected on IEX before it. SIP labels are closer to the consolidated tape and match the SIP prior, but a
+  key's posterior can move with no new card, and the caveat reads "live record (sip)". To tell the relabel
+  from new evidence, compare the first SIP snapshot's per-key `card_policy` decisions with the last IEX
+  snapshot's: on the day the first SIP snapshot lands, `copilot db events --stream card_stats --limit 2`
+  returns both (`feed: sip`, then `feed: iex`); apply the [send policy](#send-policy) to each key in both. A key that flips is the relabel,
+  not new evidence ([production](production.md#scan-bars-on-delayed-sip)). The scan journal's `bars` block
+  marks the same boundary on the scan side.
 - **Partial snapshot.** A key's `n_fetch_failed` counts candidates whose bars could not be read; they
   are excluded from its rates. Only a run in which every fetch fails writes nothing: a run with some
   failures is recorded as that New York date's snapshot, and because the key `card_stats/{et_date}` is
@@ -369,15 +797,59 @@ decisive test is the frozen study (`alpha bracket-counterfactual`,
   `would_withhold`).
 - **Censoring bias.** A label stays immature until the stop or target hits or 20 regular sessions pass,
   so early samples over-represent fast resolutions. The sample floor does not remove this.
-- **Coverage.** Every full-universe scan (suggestion, swing, unrestricted `/scan`) journals
-  `scan_candidates_ranked` with its `trigger`. The journal condition is: no symbols, no timeframe, a
-  budget, not a dry run; a CLI `copilot scan` with `--strategy`, `--strategy-mode`, `--asset-class`
-  or `--bypass-session-filter` (no `--symbols`, no `--timeframe`) therefore still journals with
-  `"scope": "universe"`. Intraday, `/scan SYMBOL`, Re-evaluate cards and an unrestricted
-  `copilot scan --no-budget` (budget NONE; it sends cards) show evidence and obey the policy but are
-  not journaled. Cards sent by swing or operator scans before 2026-10-09 (PR A.1) were
-  never journaled and stay unlabelled; the record under-covers sent cards before that date (18 of the 22
-  cards sent since 2026-09-24 were in that position on 2026-10-08).
+- **Coverage.** Every eligible scan journals exactly one `scan_candidates_ranked` event (key
+  `scan_candidates_ranked/{scan_id}`) with its `trigger`: suggestion, swing and unrestricted `/scan`
+  alike. A scan is eligible when it has no symbols, no timeframe, a budget (not `NONE`), is not a dry
+  run and passed the idle check. A zero-candidate scan journals (`candidates: []`), and so do a
+  lockout-gated scan (`status: macro_lockout`) and a scan whose regime read failed. Halted,
+  closed-session and idle scans never journal: they evaluated no slot, and a halt keeps its own skipped
+  `pead_decision`, as a lockout-gated scan does beside its journaled event.
+  Dry runs, intraday, `/scan SYMBOL`, Re-evaluate cards and an unrestricted `copilot scan --no-budget`
+  (budget `NONE`; it sends cards) never journal either; they show evidence and obey the policy. A CLI
+  `copilot scan` with `--strategy`, `--strategy-mode`, `--asset-class` or `--bypass-session-filter`
+  (no `--symbols`, no `--timeframe`) still journals with `"scope": "universe"`. Each event carries:
+  - `status`: `completed`, `macro_lockout` or `regime_unavailable`. A reader treats an event without
+    `status` (one written before this field existed) as `completed`.
+  - `gate`: null when completed; `{rule: "macro_lockout", reason}` with the rule's text; or
+    `{rule: "regime_unavailable", missing, errors}` with input names and exception type names.
+  - `calendar` on every status; `regime` null when the lockout gated the scan before the read;
+    `scheduled_time_et` for a scheduled slot, null otherwise.
+  - `bars` on every status: the scan-bar source, `{feed: "alpaca:sip", end_delay_minutes: 16}` under
+    `market_data.scan_bars: sip_delayed` (shipped since 2026-11-07), `{feed: "alpaca:<alpaca_feed>",
+    end_delay_minutes: null}` under `configured`. An event without it was read on the configured feed
+    undelayed (IEX in production), so the block makes the IEX-to-SIP boundary explicit in the evidence.
+  - `funnel`: a completed scan's collect funnel, null when gated; an event without it has an unknown
+    funnel. Contract counts: `selected`, `scanned`, `fetch_failed`, `insufficient`,
+    `coverage_excluded`, `dynamic_excluded`. These do not partition `selected`: a contract that
+    raises after scanning counts in both `scanned` and `errors`. Native setup counts: `raw_setups` (and
+    `raw_setups_by_strategy`), `duplicates`, `account_risk_unavailable`, `rejected_by_rule` (by
+    `RiskRule` id; `unclassified` when no shared rule refused: sizing, the bracket check or the
+    statistical correlation check),
+    `errors` (by exception type name, from the per-contract guard), `setups_lost_to_errors` (the
+    setups a contract had iterated but not yet classified when its guard fired) and `admitted` (the
+    ranked native count, so `len(candidates)`). They satisfy `raw_setups = duplicates +
+    account_risk_unavailable + Σ rejected_by_rule + admitted + setups_lost_to_errors`. The funnel holds
+    rule ids and type names only, never reason text; PEAD drift candidates are counted in their own
+    `pead_decision`, not here.
+
+  `card_stats`' `events_considered` counts the scan events it considered, zero-candidate and gated
+  events included; it is not a count of scans with candidates. The labelled rows are unchanged, because
+  an empty `candidates` list labels nothing. Cards sent by swing or operator scans before 2026-10-09
+  (PR A.1) were never journaled and stay unlabelled. Of the 22 cards sent from 2026-09-24 to 2026-10-08,
+  11 were never journaled and 7 more were journaled before the candidate's `signal_id` existed (#106,
+  2026-10-05), so those 7 match their card only by contract and time.
+- **Journal-only scans.** The daemon's swing job (`trigger=swing_scan`, including its run at daemon
+  start) and, when enabled, the intraday job run with `ScanBudget.JOURNAL_ONLY` (`budget: "journal_only"`
+  in the event). They collect and rank like any budgeted scan, with `use_llm=False`, then journal every
+  native candidate with the fixed outcome `journal_only` (`RankedOutcome.JOURNAL_ONLY`). They read no
+  shadow ranker, book, `card_stats` snapshot, card policy, news or card budget, and call no LLM, so a
+  `journal_only` candidate has `signal_id`, `llm`, `news`, `shadow` and a decision-free `card_policy`
+  and `book_sizing` all null, and was never sent or withheld. It is labelled like any other journaled
+  candidate and `cards outcomes` reports it as its own `journal_only` class
+  ([below](#outcome-classes-and-scan-supply)), but **swing candidates stay in the `card_stats` denominator
+  until `card_stats` v2** separates them, as the repeated-setups note below says. No PEAD drift runs in
+  such a scan.
+  `ScanBudget.NONE` is unchanged: no limits, and it still sends (dry runs, `--no-budget`, Re-evaluate).
 - **Repeated setups.** The same `(contract, strategy, direction)` setup can now be journaled several
   times per session (swing runs, each in-session daemon start, back-to-back scans). Each journaled
   candidate counts once in `n_mature`, so correlated repeats inflate the sample and the

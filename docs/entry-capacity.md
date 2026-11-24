@@ -23,8 +23,8 @@ Quote/trade age and market-session limits also apply after lock waits.
 
 Risk capital is the lesser of the configured mandate and observed equity. Scans
 use ledger equity; final admission also includes both fresh account observations.
-There is no artificial $1,000 capital floor. The account-risk fingerprint, claim
-lease, current approved signal and current reservations are checked under the
+There is no artificial $1,000 capital floor. The fresh account-risk observation (re-read, with capacity re-assessed on it; a refresh
+after preflight is recorded, not refused), claim lease, current approved signal and current reservations are checked under the
 existing trading → ledger lock order. Fill/status and quarantine writers participate
 in the trading lock, so a concurrent capacity change cannot bypass the final check.
 Queue and signal age are rechecked after lock waits, independently of claim lifetime.
@@ -56,8 +56,13 @@ asset model requires the deprecated `easy_to_borrow` field and cannot preserve t
 replacement field. There is no legacy flag fallback or old PDT/$25,000 gate.
 
 The configured quote feed is retained explicitly. IEX quotes are venue observations,
-not consolidated NBBO; no feed fallback or relabeling occurs. These are conservative
-local budget checks, not a promise that Alpaca will accept the order. Broker prices,
+not consolidated NBBO; no feed fallback or relabeling occurs. The last IEX trade is sparse on
+mid caps, so it has a 300 s age limit (`entry_trade_max_age_seconds`). The IEX quote is the
+liveness evidence and has 120 s (`entry_quote_max_age_seconds`), and the broker session clock
+keeps 60 s (`entry_clock_max_age_seconds`). The preflight drift check compares the last trade,
+and the whole IEX quote, with the approved limit: it refuses only when the whole quote lies
+outside the drift band, because an IEX quote is not the NBBO and the market lies within it. These are conservative local
+budget checks, not a promise that Alpaca will accept the order. Broker prices,
 funding and stock availability can change after observation. POST remains authoritative
 and is never automatically retried after an ambiguous response.
 
@@ -72,15 +77,25 @@ stop-loss budget, not a guaranteed maximum loss, hard volatility constraint or
 portfolio CVaR limit. The other shared rules (`same_symbol`, `asset_class_notional`,
 `portfolio_notional`, `concurrent_positions`, `correlation_group` and the per-trade
 rules) judge the same book through `admission_gates`. Capacity passes the larger of
-the approved limit, observed ask and last trade as the current price, so proposed
-notional uses that larger price and an older approved price cannot understate
-observed exposure. Existing holdings retain the larger recorded/broker-mark exposure.
+the approved limit and the last trade as the current price, so proposed notional uses
+that larger price and an older approved price cannot understate observed exposure. The
+IEX ask is not a price for exposure: it is a venue quote, not the NBBO, and on a thin
+book it can sit percent above the market (DHR on 2026-11-19 quoted 229.56/239.17 against
+a 229.59 trade, which priced a card sized at 98% of the per-trade cap above it). A short
+also counts the bid, because a sell limit fills there. Funding above still uses the ask;
+at the account's current buying-power headroom that overstatement refuses nothing, but the
+code does not guarantee it.
+Existing holdings retain the larger recorded/broker-mark exposure.
 These observations are snapshots, not a bound on subsequent price moves.
 
 An order is a protective exit only through exact parent/replacement identity.
 Symbol and opposite side are insufficient. Pending entries must retain their
 exact approved bracket. Filled entries require matching inventory and confirmed
-entry cost basis, plus one exact stop of the correct side and full quantity in
+entry cost basis (within `BROKER_COST_BASIS_TOLERANCE`, $0.0001: Alpaca rounds an
+order's average fill and a position's average entry independently to six decimals,
+so DIS's four-price fill on 2026-11-17 read 121.140322 against 121.140323 and
+refused every new entry until this tolerance; the close path uses the same
+tolerance), plus one exact stop of the correct side and full quantity in
 status `new` or `held`: Alpaca holds a filled bracket's stop leg of its OCO exit
 pair in `held`, and that is still real, broker-triggered protection, not a
 missing one. Accepted, pending or partially filled exits, or any other status,

@@ -1,5 +1,6 @@
 """Both card renderers: the SETUP header and the measured-record block inside the plain card."""
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -8,10 +9,11 @@ import pytest
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.config import load_config
 from agentic_trader.constants import AssetClass
+from agentic_trader.execution.card_evidence import format_evidence_lines, lookup, parse_card_evidence
 from agentic_trader.execution.durable import WorkKind, WorkStatus
 from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_alert_card, format_terminal_card
-from tests.execution.card_stats_fixtures import EVIDENCE
+from tests.execution.card_stats_fixtures import EVIDENCE, key_stats, make_snapshot
 from tests.notifier.test_drift_card import DRIFT
 
 
@@ -47,16 +49,16 @@ def test_both_cards_say_setup_not_trade_signal(eval_res):
 
 def test_the_block_sits_between_the_target_and_the_thesis_in_both_renderers(eval_res):
     card = format_alert_card(eval_res, "TREND_PULLBACK", card_evidence=EVIDENCE)
-    assert card.index("<b>Target (2.0:1):</b>") < card.index("Measured record") < card.index("Implied EV")
+    assert card.index("<b>Target (2.0:1):</b>") < card.index("Expected excess") < card.index("replay 2021")
     assert card.index("Not validated alpha") < card.index("Risk &amp; Portfolio Context") < card.index("Thesis")
     term = format_terminal_card(eval_res, "TREND_PULLBACK", card_evidence=EVIDENCE)
-    assert term.index("• Target:") < term.index("• Measured record (") < term.index("Not validated alpha")
+    assert term.index("• Target:") < term.index("• Expected excess (") < term.index("Not validated alpha")
     assert term.index("Not validated alpha") < term.index("Risk & Portfolio Context") < term.index("Thesis")
 
 
 def test_a_card_without_evidence_renders_no_block(eval_res):
     card = format_alert_card(eval_res, "TREND_PULLBACK")
-    assert "Measured record" not in card and "Not validated alpha" not in card
+    assert "Expected excess" not in card and "Not validated alpha" not in card
     assert "(+8.00 pts | +$200.00)\n\n🛡️" in card  # the old layout, byte for byte around the gap
 
 
@@ -98,16 +100,43 @@ async def _dispatch(temp_db, eval_res, notification_extra):
 async def test_a_queued_card_without_evidence_delivers_unchanged(temp_db, eval_res):
     item, text = await _dispatch(temp_db, eval_res, {})
     assert item.status == WorkStatus.DELIVERED
-    assert "📋 <b>SETUP:" in text and "Measured record" not in text
+    assert "📋 <b>SETUP:" in text and "Expected excess" not in text
 
 
 async def test_a_card_with_evidence_delivers_its_block(temp_db, eval_res):
     item, text = await _dispatch(temp_db, eval_res, {"card_evidence": EVIDENCE})
     assert item.status == WorkStatus.DELIVERED
-    assert "• <b>Implied EV at 2.0:1:</b> -0.25R" in text
+    assert "• <b>Expected excess</b> (TREND_PULLBACK 4h, LONG): -0.06R ± 0.10 vs beta-matched SPY after cost" in text
 
 
 async def test_malformed_evidence_delivers_as_no_statistics(temp_db, eval_res):
     item, text = await _dispatch(temp_db, eval_res, {"card_evidence": {"status": "bogus"}})
     assert item.status == WorkStatus.DELIVERED
     assert "• <b>Measured record:</b> no statistics in this scope" in text
+
+
+def _prior_line(**overrides):
+    now = datetime(2026, 10, 8, 14, 35, tzinfo=UTC)
+    snapshot = make_snapshot(keys=[key_stats(n_mature=17, **overrides)], computed_at=now)
+    evidence = lookup(snapshot, "TREND_PULLBACK", "4h", "LONG", now=now, max_age=timedelta(days=4), min_mature=20)
+    return format_evidence_lines(evidence, html=True)[1]
+
+
+def test_prior_line_shows_shrunk_from():
+    line = _prior_line(prior_mean=0.074, prior_replay_mean=0.1315, prior_n_rows=114)
+    assert line.startswith("  replay 2021\u201326: +0.07R (shrunk from +0.13R) over 114 setups")
+
+
+@pytest.mark.parametrize("replay", [None, 0.072, 0.0765])
+def test_prior_line_unchanged_when_not_shrunk(replay):
+    line = _prior_line(prior_mean=0.074, prior_replay_mean=replay, prior_n_rows=114)
+    assert line.startswith("  replay 2021\u201326: +0.07R over 114 setups")
+
+
+def test_v1_era_evidence_payload_renders_as_before():
+    payload = {k: v for k, v in EVIDENCE.items() if k != "prior_replay_mean"}
+    evidence = parse_card_evidence(payload, strategy="TREND_PULLBACK", direction="LONG")
+    assert evidence is not None and evidence.prior_replay_mean is None
+    golden = parse_card_evidence(EVIDENCE, strategy="TREND_PULLBACK", direction="LONG")
+    assert format_evidence_lines(evidence, html=True) == format_evidence_lines(golden, html=True)
+    assert "shrunk from" not in "".join(format_evidence_lines(evidence, html=True))

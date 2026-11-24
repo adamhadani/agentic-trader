@@ -32,7 +32,7 @@ in what they observed.
 
 | Type | Module | What it is |
 | --- | --- | --- |
-| `RiskLimits` | `limits.py` | A frozen snapshot of every limit the rules read, built by `RiskLimits.from_config(config)`. It holds cash, the four drawdown-policy fields (`drawdown_policy` returns them as a frozen `DrawdownPolicy`), the per-trade risk/notional/quantity caps, the aggregate stop-risk percentage, the portfolio and asset-class notional caps, the concurrent and correlated position limits, the normalised correlation groups, the minimum reward/risk, the lockout minutes, the earnings blackout days and `enforce_rth`. A class without a configured cap (FX, or a cap set to `None`) has no entry in `asset_class_caps` and is uncapped. `from_config` raises `ValueError`, naming the config field, when a cap is not finite and non-negative or a ratio (the minimum reward/risk, a drawdown-policy value) is not finite. |
+| `RiskLimits` | `limits.py` | A frozen snapshot of every limit the rules read, built by `RiskLimits.from_config(config)`. It holds cash, the four drawdown-policy fields (`drawdown_policy` returns them as a frozen `DrawdownPolicy`), the per-trade risk/notional/quantity caps, the aggregate stop-risk percentage, the portfolio and asset-class notional caps, the concurrent and correlated position limits, the normalised correlation groups, the minimum reward/risk, the lockout minutes, the unknown-calendar policy (`macro_calendar_unknown`, from `risk.macro_calendar_unknown`), the earnings blackout days, the earnings unknown-calendar policy (`earnings_calendar_unknown`) and `enforce_rth`. A class without a configured cap (FX, or a cap set to `None`) has no entry in `asset_class_caps` and is uncapped. `from_config` raises `ValueError`, naming the config field, when a cap is not finite and non-negative or a ratio (the minimum reward/risk, a drawdown-policy value) is not finite. |
 | `BookPosition`, `Book` | `book.py` | What the desk already holds. `Book.from_signal_rows(rows, reservations=…)` reads `signals` rows (`contract` or `symbol`, `direction`, `asset_class`, `notional_value`, `risk_dollars`, `status`). With `reservations=True`, a `SUBMITTING` row is a reservation. A missing, non-numeric, non-finite or negative `notional_value` or `risk_dollars` makes the position invalid (`Book.invalid`); it is never coerced to zero. |
 | `EntryIntent` | `rules.py` | What is about to be risked: symbol, direction, asset class, quantity, entry, stop, target, multiplier, and an optional current price (the strategy is not part of it: `regime_breakout` takes the strategy separately). The constructor is the validation boundary. Direction must be LONG or SHORT (any case). Quantity, prices, multiplier and a known current price must be finite and positive, otherwise `ValueError`. An inverted bracket is a valid intent; `reward_risk` refuses it. Derived values: the normalised `key`, `risk_distance`, `reward_distance`, `risk_dollars`, `exposure_price` (`max(entry, current_price)`, or the entry when no current price is known) and `notional`. |
 | `RiskBudget` | `capital.py` | The per-trade budget: `capital`, `drawdown_pct`, `drawdown_factor`, `macro_factor` and `dollars`. |
@@ -57,8 +57,19 @@ only place this product is computed.
   `sizing.drawdown_min_risk_multiplier` and is 0 at `sizing.max_drawdown_stop_pct`. It
   is always 1 when `sizing.drawdown_gating_enabled` is false.
 - The macro factor (`macro_risk_factor`) is the regime's `risk_multiplier` clamped to
-  `[0.10, 1.0]`, so it only ever scales risk down.
-- A non-finite multiplier, equity or drawdown raises `ValueError`. It is never read as 1.0.
+  `[0.10, 1.0]`, so it only ever scales risk down. It is the measured macro stress's
+  multiplier (`LOW` 1.0, `MODERATE` 0.8, `HIGH` 0.5, `EXTREME` 0.25), or `UNKNOWN` when a
+  decision input (3m, 2y, 10y, HY OAS) is missing: `regime.unknown_risk_multiplier` (0.5,
+  validated `0.10 ≤ m < 1.0`), with squeeze breakouts per `regime.unknown_breakout_allowed`
+  (false) and the VIX-derived reward/risk. When the inputs that are present already force
+  `EXTREME` (VIX above `regime.vix_extreme_threshold`, or HY OAS `CRITICAL`), `UNKNOWN`
+  keeps its label but applies `EXTREME`'s limits: the smaller of the two multipliers, the
+  larger reward/risk (`regime.extreme_min_rr`) and breakouts off. Missing context inputs
+  (5y, 30y, DXY, breakevens) never move it. Only an explicit VIX-only policy
+  (`regime.yield_curve_enabled: false`) makes no stress assessment, so the multiplier is
+  1.0 whatever the macro inputs.
+- A non-finite multiplier, equity or drawdown raises `ValueError`. It is never read as 1.0,
+  and a missing decision input is `UNKNOWN` at 0.5× or less, never 1.0.
 
 Each layer passes what it observed:
 
@@ -93,7 +104,7 @@ paths are under `tests/`.
 | `exposure_unknown` | `Book` | `book_gates`, first | — | `admission_gates`, first | `Existing exposure is unknown or invalid; reconcile it before new risk.` | `risk/test_rules.py`, `risk/test_adversarial.py`, `agent/test_evaluator_risk_policy.py` |
 | `drawdown_halt` | `RiskBudget.drawdown_factor` | `book_gates` (sizing already blocks a zero factor) | — | yes | `Account drawdown {pct:.1%} reaches the configured sizing halt; new entries blocked.` | `risk/test_rules.py`, `execution/test_drawdown_policy.py` |
 | `per_trade_risk` | `EntryIntent.risk_dollars`, `RiskBudget.dollars` | sizing caps every tier at the budget, including tiers re-sized at an LLM-widened stop; the post-LLM final-bracket check re-checks the re-sized max tier | regime gate; re-pricing caps the replacement quantity at the same budget | yes, and in the preflight regime gate | `Order exceeds the configured per-trade risk cap.` When the drawdown or macro factor is below 1: `Order exceeds the drawdown- and macro-adjusted per-trade risk cap; request a fresh scan for smaller sizing.` | `risk/test_rules.py`, `risk/test_capital.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_tap_risk_policy.py`, `execution/test_position_sizing.py` |
-| `per_trade_notional` | notional at `max(entry, current_price)`, `max_trade_notional_cap` | sizing caps the quantity | re-pricing caps the replacement quantity | yes; capacity passes `max(limit, ask, last trade)` as the current price | `Order exceeds the configured per-trade notional cap.` | `risk/test_rules.py`, `execution/test_entry_capacity.py`, `workflows/test_entries.py` |
+| `per_trade_notional` | notional at `max(entry, current_price)`, `max_trade_notional_cap` | sizing caps the quantity | re-pricing caps the replacement quantity | yes; capacity passes `max(limit, last trade)` as the current price, plus the bid for a short (never the IEX ask) | `Order exceeds the configured per-trade notional cap.` | `risk/test_rules.py`, `execution/test_entry_capacity.py`, `workflows/test_entries.py` |
 | `quantity_cap` | quantity, asset class, `max_shares_per_trade` / `max_contracts_per_trade` | sizing caps the quantity | re-pricing caps the replacement quantity | yes | `Order exceeds the configured quantity cap.` | `risk/test_rules.py`, `workflows/test_entries.py` |
 | `reward_risk` | bracket, `required_reward_risk(limits, regime.min_rr_threshold)` | the deterministic target is built at the required ratio; the regime gate checks the bracket at that ratio, which only a versioned alpha-policy bracket can fail; the LLM's target is clamped to it, and the final-bracket check runs | regime gate at the cached regime's ratio; re-pricing judges the current price at the same ratio | `admission_gates` at the configured minimum; the preflight regime gate at the refreshed regime's ratio | `Reward/risk {rr:.2f} is below the required {required:.2f}.` | `risk/test_rules.py`, `risk/test_consistency.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_tap_risk_policy.py`, `agent/test_risk_policy_integration.py`, `execution/test_entry_capacity.py` |
 | `aggregate_stop_risk` | book planned risk plus the intent's, `RiskBudget`, `max_stop_risk_pct` | `book_gates` (default tier); the post-LLM final-bracket check on a re-sized max tier | — | yes | `Order would breach the aggregate planned stop-risk budget.` | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `execution/test_entry_capacity.py` |
@@ -102,9 +113,10 @@ paths are under `tests/`.
 | `portfolio_notional` | book notional plus the intent's, `max_notional_exposure` | `book_gates` | — | yes | `Portfolio notional would reach ${total:,.0f}, above the ${cap:,.0f} ceiling.` | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `workflows/test_entries.py` |
 | `asset_class_notional` | the class's book notional plus the intent's, the class cap | `book_gates` | — | yes | `{ASSET_CLASS} notional would reach ${total:,.0f}, above the ${cap:,.0f} ceiling.` | `risk/test_rules.py`, `execution/test_risk_budgeting.py`, `execution/test_entry_capacity.py` |
 | `correlation_group` | normalised groups, same-direction book positions, `max_correlated_positions` | `book_gates` | — | yes | `Correlation group '{group}' already has {n} {DIRECTION} position(s) ({symbols}); max {max}.` | `risk/test_rules.py`, `risk/test_limits.py`, `risk/test_consistency.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_risk_policy_integration.py` |
-| `macro_lockout` | the calendar's tier-1 event (title, timezone-aware time), now, `risk.lockout_pre_event_minutes` / `lockout_post_event_minutes` | evaluator gate | tap gate | preflight macro check, on both broker branches | `Macro event lockout: {title} at {HH:MM} UTC.` An untitled event prints `scheduled release`. | `risk/test_rules.py`, `agent/test_tap_risk_policy.py`, `workflows/test_entries_macro.py`, `agent/test_risk_policy_integration.py` |
+| `macro_lockout` | one `CalendarCheck` from the union tier-1 calendar (`agent/calendar.py:UnionTier1Calendar.check`: the digest-pinned static calendar's events when it is verified, plus live ForexFactory tier-1 events with no static match) giving the tier-1 event (title, timezone-aware time), now, `calendar_verified` (the static calendar's status is `ok`) and that status; `risk.lockout_pre_event_minutes` / `lockout_post_event_minutes`; `risk.macro_calendar_unknown` | whole-scan check and evaluator gate | tap gate | preflight macro check, on both broker branches | `Macro event lockout: {title} at {HH:MM} UTC.` An untitled event prints `scheduled release`. Under `risk.macro_calendar_unknown: closed`, an unverified static calendar refuses before the window test: `Macro calendar unverified: the static tier-1 calendar is {expired \| invalid}; new entries refused (risk.macro_calendar_unknown: closed).` Under `open` (the default) it never refuses; the prompt says `Lockout UNVERIFIED` and the card `Macro Check: Unverified — {note}`. | `risk/test_rules.py`, `agent/test_calendar.py`, `agent/test_macro_lockout_sites.py`, `agent/test_tap_risk_policy.py`, `workflows/test_entries_macro.py`, `agent/test_risk_policy_integration.py`, `agent/test_shipped_calendar.py` |
 | `earnings_blackout` | next earnings date, the New York date, `risk.earnings_blackout_days` (predicate `earnings_days_out`) | evaluator gate, equities | tap gate, equities | — | `Earnings Blackout: {SYMBOL} reports {YYYY-MM-DD} {before open \| after close \| timing unspecified} (in {n} day(s)) — within {days}-day blackout` (the prefix `Earnings Blackout: ` is added by the caller) | `risk/test_rules.py`, `agent/test_earnings.py`, `agent/test_evaluator.py`, `agent/test_card_freshness_tap.py` |
 | `corporate_action` | the latest fresh corporate-action capture and the symbols it covers, the New York date, `corporate_actions.pre_days` / `post_days` (predicate `blocking_corporate_action`) | evaluator gate, equities; preview annotates, enforce refuses; stale, missing or uncovered evidence never refuses | tap gate, equities, enforce only | — | `Corporate action: {SYMBOL} {describe} effective {YYYY-MM-DD} ({in n day(s) \| n day(s) ago \| today}) — within the {pre}/{post}-day blackout.` | `risk/test_rules.py`, `agent/test_evaluator.py`, `agent/test_card_freshness_tap.py` |
+| `filing_veto` | the latest fresh filings-capture pass (`data/filings_capture.py`) and the symbols it covered, the New York date, the category windows `filing_veto.late_filing_days` / `adverse_8k_days` / `offering_days` (predicate `blocking_filing`: the newest filing with `0 ≤ today − filing_date ≤ window`) | evaluator gate, long equities only (a short never evaluates it); preview annotates, enforce refuses for `filing_veto.enforce_categories` only (shipped `late_filing`, `adverse_8k`; `offering` stays journal-only; code default all three); catalog, paper-probe and alpha cards are exempt; stale, missing or uncovered evidence never refuses | tap gate, long equities, enforce only, same categories and exemption | — | `Filing veto: {SYMBOL} filed {form}[ Items {items}] on {YYYY-MM-DD} ({n day(s) ago \| today}) — within the {N}-day {category} window.` | `risk/test_rules.py`, `agent/test_evaluator.py`, `agent/test_card_freshness_tap.py`, `notifier/test_filing_veto_line.py` |
 | `session_closed` | the session's `is_open`, the provider's detail | evaluator gate | tap, re-evaluate, `/scan`, card validity, expired-card reply | — | `Market session closed: {detail}.` (`Market session closed.` without detail) | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_tap_risk_policy.py` |
 | `session_not_rth` | the session's `is_rth`, `session.enforce_rth` | evaluator gate | as `session_closed` | — | `Outside regular trading hours.` | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_tap_risk_policy.py`, `agent/test_risk_policy_integration.py` |
 | `regime_breakout` | strategy, `regime.breakout_allowed` | evaluator gate | tap regime gate | preflight regime gate, on both broker branches | `Volatility/macro policy suppresses breakout entries.` | `risk/test_rules.py`, `agent/test_tap_risk_policy.py`, `agent/test_evaluator.py` |
@@ -116,8 +128,17 @@ It never raises size. See [book-aware sizing](card-evidence.md#book-aware-sizing
 
 The earnings rule has no `Rejection` function: `earnings_days_out` is the shared
 predicate, and `agent/earnings.py:earnings_blackout_reason` formats the text for both
-the scan and the tap. A failed earnings lookup fails open at both layers; the card's
-earnings note then reads "Unverified — earnings calendar unavailable".
+the scan and the tap, and `agent/earnings.py:resolve_earnings` gives both one verdict, in
+this order: the live Nasdaq lookup (a found report always blocks; a verified answer is
+authoritative); else the latest journaled [earnings calendar
+capture](production.md#earnings-calendar-capture) when it is fresh and covers the
+window (the card note then ends "(calendar capture YYYY-MM-DD)"); else unverified.
+`risk.earnings_calendar_unknown` (code default `open`, `config/config.yaml` ships
+`closed`; it mirrors the shape of the macro policy `macro_calendar_unknown`, which ships `open`) decides the unverified case: `open` adds
+only the note "Unverified — earnings calendar unavailable"; `closed` refuses with
+`Earnings Blackout: {SYMBOL}: earnings calendar unavailable and no fresh capture covers
+the next {days} days (policy closed)`. A 0-day blackout, a non-equity, and a desk with
+no live calendar skip the gate. The fallback reads the journal only (no provider call).
 
 `required_reward_risk(limits, regime_min_rr)` is `max(risk.min_risk_reward_ratio,
 regime_min_rr)`, or the configured minimum when the regime threshold is unknown or
@@ -130,7 +151,8 @@ own approval, so float noise never refuses a card approved at "2.00".
 Most layers show the rule's text unchanged. Some layers wrap it:
 
 - **Scan.** A send-phase refusal is a runner-up, `rejected: {text}`. A collect-phase
-  refusal is logged only (see below).
+  refusal is logged and counted per rule in the scan journal's `funnel` (see below); it is
+  not a runner-up.
 - **Tap.** A gate refusal turns the card `MISSED` with the rule's text, for example
   "⌛ Reward/risk 2.00 is below the required 2.20.". A session refusal turns it `EXPIRED`
   with "Card expired: its session has ended." plus the next regular open. Re-pricing's
@@ -157,15 +179,27 @@ Most layers show the rule's text unchanged. Some layers wrap it:
    `portfolio_notional`, `asset_class_notional`, `correlation_group`. The first
    rejection decides.
 4. The statistical return-correlation check, which is not a shared rule (see below).
-5. `macro_lockout`. The calendar finds the event on the evaluator's own clock, and the
-   rule judges the same instant.
+5. `macro_lockout`. One check of the union tier-1 calendar (the static calendar's union
+   with the live feed) on the evaluator's own clock finds the event, and the rule judges
+   the same instant. The same check renders the prompt's Economic Calendar Status and,
+   when the static calendar is unverified, the card's macro note.
 6. The earnings blackout (equities).
 7. The corporate-action rule (equities; `corporate_actions.entry_block`: `off` skips it, `preview` annotates, `enforce` refuses; stale, missing or uncovered evidence never refuses).
-8. The regime rules: `regime_breakout`, then `reward_risk` on the bracket at the
+8. The filing veto (long equities; a short never evaluates it; `filing_veto.entry_block`: `off` skips it and
+   reads nothing, `preview` annotates, `enforce` refuses; stale, missing or uncovered evidence never refuses).
+   Shipped `enforce` since 2026-11-16 for `late_filing` and `adverse_8k` (`filing_veto.enforce_categories`);
+   an `offering` match is labelled, not refused. Catalog (`pead`, `insider_watch`), paper-probe and
+   alpha-versioned cards are exempt (the block records `exempt: true`, `would_refuse: false`). Its block is
+   `decision_provenance["filings"]`: the newest qualifying filing's label (`would_block`, `category`, …) plus
+   `would_refuse` (an enforced-category filing qualifies and the card is not exempt); the refusal names the
+   enforced filing. A preview block that would block adds the card line `🗂 Filing veto (preview): … — card
+   unchanged`; under `enforce` a sent card with `would_block` and not `would_refuse` shows
+   `🗂 Filing (not enforced): … — card unchanged`.
+9. The regime rules: `regime_breakout`, then `reward_risk` on the bracket at the
    required ratio (the tap-time regime gate's order and text). A native target is built
    at that ratio and always passes; a versioned alpha-policy bracket can fail it.
-9. `entry_session_open` (`session_closed`, `session_not_rth`).
-10. The LLM, when enabled, then the final-bracket check.
+10. `entry_session_open` (`session_closed`, `session_not_rth`).
+11. The LLM, when enabled, then the final-bracket check.
 
 A refusal by a shared rule sets `LLMTradeEvaluation.rejection_reason` to the rule's text
 and `rejection_rule` to its id. Sizing, the bracket check, the statistical check and an
@@ -175,10 +209,16 @@ LLM veto carry no rule id, and the evaluator ignores any rule id in the LLM's an
 against the book at the start of the scan. The **send** phase re-evaluates the winners,
 with the LLM when enabled, against that book plus the cards already sent in this scan.
 A collect-phase refusal is logged as `candidate_rejected` with `phase: collect`, the
-reason and `rejection_rule`. It does not appear in the runner-up list or the digest. A
-send-phase refusal is a runner-up and is logged with the same fields and `phase: send`.
-Separately, a scan that starts inside a lockout window is skipped as a whole
-and logged as `macro_lockout_active`.
+reason and `rejection_rule`. The scan journal's `funnel` counts it under
+`rejected_by_rule` by that rule id (`unclassified` when no shared rule refused), beside the
+duplicate, account-risk and error counts ([card evidence](card-evidence.md#limits)). It does
+not appear in the runner-up list or the digest. A send-phase refusal is a runner-up and is
+logged with the same fields and `phase: send`.
+Separately, the whole-scan check applies `macro_lockout` at scan start from one check of
+the union calendar (the static calendar's union with the live feed). A refusal (a lockout
+window, or an unverified static calendar under `closed`) skips the scan as a whole, records
+the scan observation `Macro gate checked: {reason}; entry alerts paused` and logs
+`macro_lockout_active`.
 
 ### Tap and re-pricing
 
@@ -192,7 +232,8 @@ and logged as `macro_lockout_active`.
    (`regime_breakout`; `reward_risk` at `required_reward_risk` for the cached regime;
    `per_trade_risk` against the budget on configured cash with the regime multiplier),
    then the earnings blackout for equities, then the `corporate_action` rule for equities
-   (`enforce` only). A refusal makes the card `MISSED`.
+   (`enforce` only), then the `filing_veto` rule for long equities (`enforce` only, `enforce_categories` only, non-native cards exempt; it reads the
+   latest filings-capture pass at tap time). A refusal makes the card `MISSED`.
 4. Freshness: `EXECUTE` within the fresh bounds; past them, `REPRICE` when the current
    price still meets the required ratio (`meets_min_reward_risk`), otherwise `MISSED`.
 5. The re-priced quantity (`_capped_replacement_quantity`) is the smallest of the tapped
@@ -315,8 +356,9 @@ came with them. Everything else that decides an entry is unchanged.
 5. **Scan-time book checks (decision 5, 2026-10-06).** The scan runs
    `concurrent_positions` and `aggregate_stop_risk` against its book before sending a
    card, so a full book or an exhausted stop-risk budget stops the card at scan time. A
-   refusal in the collect phase is in the log and in the evaluation's `rejection_rule`,
-   not in the Telegram runner-up list (backlog below).
+   refusal in the collect phase is in the log, in the evaluation's `rejection_rule` and
+   counted by that rule in the scan journal's `funnel`, not in the Telegram runner-up list
+   (backlog below).
    *Extension (2026-10-06):* the scan also runs `same_symbol` (after
    `concurrent_positions`), so a card on a symbol the book already holds is refused at
    scan time instead of at Execute. The scan's book includes the cards this scan already
@@ -328,9 +370,13 @@ came with them. Everything else that decides an entry is unchanged.
    and the refusal of unsupported broker evidence. Consequences:
    - simulator entries can be refused by the regime rules (breakout suppression, the
      regime's reward/risk, the macro-scaled budget);
-   - the regime half fails closed when VIX or macro data is unavailable ("Admission
-     evidence unavailable (…)"), while the lockout half fails open when the economic
-     calendar is down;
+   - the regime half fails closed only when VIX is unavailable (`RegimeUnavailable`,
+     "Admission evidence unavailable (…)"). A missing decision input is `UNKNOWN`: the
+     halved budget refuses a max-tier tap sized under a measured `LOW` with the existing
+     "request a fresh scan for smaller sizing" text, and breakouts are off. The lockout half reads the union calendar, whose static
+     tier-1 calendar is authoritative: a live-feed failure loses only unscheduled releases.
+     An unverified (expired or invalid) static calendar is labelled under
+     `risk.macro_calendar_unknown: open` and refuses every entry under `closed`;
    - the preflight makes provider calls (calendar, regime) inside the 60 s preflight
      lease (`execution.entry_preflight_lease_seconds`);
    - `get_regime(force_refresh=True)` refreshes the shared regime cache on every
@@ -445,9 +491,9 @@ These decide or bound entries, but they are not entry-risk rules and stay where 
 - **Scan scheduling:** `is_session_active` decides when scans run, not whether a card may
   enter.
 - **The card policy:** `card_policy` ([card evidence](card-evidence.md#send-policy)). In `enforce`
-  mode it withholds a native card only on complete measured evidence (status `measured`, at least
-  `min_mature_cards` mature labels, no fetch failures in the key, mean R after cost below
-  `min_measured_ev`); insufficient, stale, unavailable or partial evidence never withholds, and a
+  mode it withholds a native card only on complete, time-matured evidence (status `measured`, at
+  least `min_mature_cards` mature labels, no fetch failure or unresolved label in the key, and a
+  posterior expected excess in `net_excess_r_v1` below `min_measured_ev`); insufficient, stale, unavailable or partial evidence never withholds, and a
   policy-locked card (versioned alpha or paper probe, whose liveness stays `probe_block_reason`) is
   outside it. It is a switch on measured outcomes, not a fail-closed rule,
   and it never reads or changes the book, admission, the FIFO or the broker.
@@ -455,7 +501,8 @@ These decide or bound entries, but they are not entry-risk rules and stay where 
 ## Not done here
 
 - Surface collect-phase book refusals in the scan summary and the end-of-session digest.
-  They are only logged today, because changing the runner-up counts was not approved.
+  They are logged and counted per rule in the scan journal's `funnel` today, but not shown
+  there, because changing the runner-up counts was not approved.
 - Some test fixtures still carry their own per-desk regime stubs instead of the shared
   `calm_regime`/`calm_macro` fixtures: `tests/agent/conftest.py`,
   `test_account_risk.py`, `test_timeframe_dedup.py`, `test_async_responsiveness.py`, and

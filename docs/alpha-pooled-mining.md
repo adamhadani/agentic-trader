@@ -1025,17 +1025,247 @@ and C pass.
 
 The checks and the campaign outcome are written up in [alpha-pooled-checks-v4-2026-10-07.md](alpha-pooled-checks-v4-2026-10-07.md): A and C passed, the approved campaign found no finalists (seven of eight formulas have a negative discovery edge, best t 0.76), nothing froze, the confirmation window is still unused, and the lane is closed on this window as pre-registered.
 
-## Commands
+## Short-volume lane (`short_fields_v1`)
 
-Every command accepts any protocol id (`pooled-campaign`, `pooled-intraday-campaign` or `pooled-events-campaign`).
+`ShortVolumeCampaignProtocol` (`id: pooled-short-volume-campaign`, [design](superpowers/specs/2026-10-20-pooled-short-volume-design.md))
+scores daily bars read at `D-1` together with four dimensionless short-sale fields on the same cohort
+cubes, windows, selection, gates, bootstrap, power and null-check parameters as the matching events
+protocol (cohort v2 cube identity `f1c835a3d3364d2b…`, so the cached cube is reused). `score_inputs` is
+`daily` and `short_inputs` is part of this subclass's dump and of every frozen formula identity, so a
+short-volume formula never shares an identity with the same text under another protocol. Earlier protocol
+hashes are unchanged. v1 is a fixed set (`search_mode: fixed_set`, formula budget 8); a genetic search on
+these fields needs check B and its own spec. Research only: no registry, broker, Telegram or promotion.
+
+**Source and caveats.** FINRA's Daily Short Sale Volume Files (Consolidated NMS,
+`CNMSshvolYYYYMMDD.txt`) cover **off-exchange volume only** (trades reported to the TRFs and ADF): the
+file's `TotalVolume` is not consolidated volume, and `offex_share` is an off-exchange share measure, not a
+short-interest figure. Each file is published the same day by 18:00 ET, so a field at `T` is read by
+decision session `T+1` with at least 16 hours of slack. Files exist from 2018-08-01 and are taken **as
+served** at acquisition time (a later corrected re-post is not tracked). The acquisition and the cube
+build share Alpaca's exchange calendar, so ad-hoc closures (the national days of mourning on 2018-12-05 and
+2025-01-09) are simply not sessions; the offline calendar is not used because it lacks such closures. The
+window 2018-08-01 to 2026-09-01 holds 2,032 sessions, none absent: `--allow-absent` exists only for a
+session FINRA genuinely did not post, and is recorded in the manifest and bound by the digest.
+
+**Acquisition.** Outside the scan windows, once for both protocols:
 
 ```bash
+copilot alpha short-volume --from 2018-08-01 --through 2026-09-01 --cache DIR --output DIR
+```
+
+One paced GET per session of Alpaca's exchange calendar (read with the desk's Alpaca credentials, the same
+calendar the cube build reads; timeout 20 s, 8 MiB per file). The files go directly into `--cache DIR`: `DIR/{YYYY-MM-DD}.txt` and
+`DIR/{YYYY-MM-DD}.meta.json` (`requested_at`, `received_at`, `status`, `bytes`, `sha256`, `rows`); an `absent`
+session has the meta file only. A cached session is never refetched; a file must end with FINRA's integer
+row-count trailer (a file without one is a truncated download and fails); an unallowed `absent` session fails
+the acquisition closed, and an `--allow-absent` date that is not a session inside `[--from, --through]` is
+refused. `output/manifest.json` records the window, sessions requested/present/absent, the calendar
+(`"alpaca"`), the allowed absences as given, the command line and the **files digest**: the SHA-256 of the
+sorted lines `<date>:<sha256>` for the present sessions and `<date>:absent` for the absent ones, so a protocol
+pins exactly which sessions may be absent. Over the 2,032 present sessions and no absences it is
+`838521ef4aedd1dcd43530c9be4e3ec440ff273f505861d95b1ba59f096e191b`, which both protocols pin as
+`short_inputs.short_volume.files_sha256`. No database, broker or Telegram.
+
+**Fields.** Per symbol, indexed by trading day `T`; `S_T`, `V_T` are the file's `ShortVolume` and
+`TotalVolume`, `B_T` the raw bar volume. A FINRA `/` maps to Alpaca's `.`; preferreds and warrants never
+match. Fields are `NaN` before a symbol's latest `name_change` identity break (the events lane's rule, shared
+code), and a missing row is `NaN`, never carried forward.
+
+| Field | Definition at trading day T |
+| --- | --- |
+| `short_ratio` | `S_T / V_T`; `NaN` when the row is missing or `V_T < 10,000` shares |
+| `short_ratio_z` | `(short_ratio_T - mean) / std` over the baseline: the last 20 finite prior values of `short_ratio` (strictly before T) lying within the 40 sessions `T-40 ... T-1`; `NaN` with fewer than 20 or at zero std |
+| `short_volume_rel` | `S_T` over the mean of the same kind of baseline of the short-volume series; `NaN` with fewer than 20 finite priors in the span, or a zero mean; a forward or reverse split restarts this baseline (pre- and post-split share counts never mix), so it is `NaN` on the split session and the 19 after it |
+| `offex_share` | `V_T / B_T`; `NaN` when either is missing or `B_T = 0`; above 1.5 is `NaN` and counted |
+
+**Protocol block.**
+
+```json
+"short_inputs": {
+  "fields_version": "short_fields_v1",
+  "short_volume": {"source": "finra-regsho-cnms", "files_sha256": "<files digest>",
+                   "files_from": "2018-08-01", "files_through": "2026-09-01",
+                   "z_window": 20, "min_total_volume": 10000, "max_offex_share": 1.5},
+  "corporate_actions": {"source": "alpaca", "content_sha256": "<cohort acquisition>",
+                        "window": ["2016-01-01", "2027-03-31"], "trailing_sessions": 252}
+}
+```
+
+The runner verifies both digests against the caches on disk before any bar read or evaluation, and the
+campaign command, which also reads every cached body in the files window against its meta file, before the
+ledger reserves anything. `excluded_families` is `cohort3-events-v1`'s list plus
+the eight events-v1 families.
+
+**Frozen fixed set (eight formulas, each signed to select names the hypothesis says outperform).** The two
+windowed formulas divide by their 0/1 condition, so an out-of-window name is `NaN` (ineligible) and the
+decile is taken among in-window names only.
+
+| Family | Expression | Hypothesis |
+| --- | --- | --- |
+| `light_shorting` | `-short_ratio` | lowest share of short-sale volume outperforms the heavily shorted (Boehmer, Jones and Zhang 2008; Diether, Lee and Werner 2009) |
+| `light_shorting_week` | `-ts_mean(short_ratio, 5)` | the same over one week of flow |
+| `shorts_retreat` | `-short_ratio_z` | shorting below its own recent norm: informed sellers stepping back |
+| `shorts_retreat_week` | `-ts_mean(short_ratio_z, 5)` | the same, smoothed over a week |
+| `shorts_retreat_volume` | `-short_volume_rel` | short volume below its recent mean, independent of the day's total |
+| `unopposed_strength` | `-short_ratio_z / (ts_sum(returns, 5) > 0)` | shorts are contrarian after rises; a rise they do not oppose continues |
+| `squeeze` | `short_ratio_z / (ts_sum(returns, 5) < 0)` | the declared opposite sign: abnormal shorting into a falling week reverses |
+| `quiet_tape` | `-offex_share` | a low off-exchange (retail/internalised) share: outside the retail-attention tape (Boehmer, Jones, Zhang and Zhang 2021) |
+
+**Checks and campaigns.** A fixed set runs checks A (power; it must replay the matching events protocol's
+result on the same cube) and C (real-formula false acceptance, `errors_total: 0`) only, per protocol, from a
+clean worktree at the merged revision and outside scan windows. The fields start on 2018-08-01, so the first
+of the four equal-session discovery blocks (2016-08-01 to about 2017-12-05) carries no short-volume score and
+the second (to about 2019-04-17) is scored only from August 2018: the discovery gate's "3 of 4 positive
+blocks" is effectively 3 of 3, and check A, which plants its edge over the full window, slightly overstates
+this lane's power for small edges. Each campaign runs only with the operator's
+explicit approval (`--journal-scope production/alpaca:paper`), charges every formula to the pooled ledger
+before scoring and consumes the lane-wide confirmation window only for finalists.
+
+**Pre-registered closure.** `no_finalists` on both cubes closes the short-volume fixed set on this window;
+nothing promotes, and a finalist only becomes eligible for a separately specified capped paper probe, which
+would also need its own live feed contract (a daily fetch of yesterday's file).
+
+**Result (2026-10-20).** Checks A and C passed for both protocols at `08a98ba` and the two approved campaigns
+ran the same day ([results](alpha-pooled-short-v1-2026-10-20.md)). Cohort v2: `no_finalists` (eight edges
+within ±0.022R, best |t| 1.18). Cohort v3: `no_confirmation_candidates` — `shorts_retreat` (`-short_ratio_z`)
+passed discovery (+0.020R, t +3.40, 836 sessions) and was not kept at selection (+0.006R, t +0.88 on 498
+sessions, below half its discovery edge), so nothing froze and the confirmation window was not read. The
+short-volume fixed set is **closed** on this window; the mid-cap `shorts_retreat` discovery result is a
+hypothesis only, and a second look needs its own frozen protocol and operator approval.
+
+**Frozen files** (SHA-256 prefixes pinned in `tests/research/pooled/test_short_v1.py`):
+
+| File | Cohort and cost | SHA-256 prefix |
+| --- | --- | --- |
+| `config/research/pooled/short-v1.json` | cohort v2, 5 bp, static-percentile universe | `4be5bf3a` |
+| `config/research/pooled/cohort3-short-v1.json` | cohort v3, 15 bp, $5M median dollar-volume floor | `81707624` |
+
+## Insider lane (`insider_fields_v1`)
+
+`InsiderCampaignProtocol` (`id: pooled-insider-campaign`, [design](superpowers/specs/2026-10-20-pooled-insider-design.md))
+scores daily bars read at `D-1` together with six dimensionless insider-trading fields on the same cohort
+cubes, windows, selection, gates, bootstrap, power and null-check parameters as the matching short-volume
+protocol (cohort v2 cube identity `f1c835a3d3364d2b…`, so the cached cube is reused). `score_inputs` is
+`daily` and `insider_inputs` is part of this subclass's dump and of every frozen formula identity, so an
+insider formula never shares an identity with the same text under another protocol. Earlier protocol
+hashes are unchanged. v1 is a fixed set (`search_mode: fixed_set`, formula budget 8); a genetic search on
+these fields needs check B and its own spec. Research only: no registry, broker, Telegram or promotion.
+
+**Source and caveats.** The SEC's Insider Transactions Data Sets (`{YYYY}q{N}_form345.zip`, every Form 3/4/5
+filed on EDGAR, normalised by the SEC). Only original Form 4 non-derivative open-market purchases (`P`) and
+sales (`S`) count; amendments, Form 3/5, option exercises, awards, tax withholding and gifts are excluded.
+A filing counts when a reporting owner is an `Officer` or `Director`. Visibility is the EDGAR **filing
+date**: a filing dated `F` is public by 17:30 ET on `F`, so a field at `T` is read by decision session
+`T+1` at 10:35 ET with at least 17 hours of slack, and a filing dated on a non-session is visible from the
+next session. **Rule 10b5-1 plan trades are kept in v1** (`exclude_10b5_1: false`): the `AFF10B5ONE` flag
+exists only in filings from April 2023, so excluding plan trades would change the sell-side fields'
+meaning mid-sample; about four in five recent cohort-v2 sales are plan trades, which is why sales are the
+weaker side, and a second look may flip the parameter. Cohort symbols map to issuer CIKs through the SEC's
+`company_tickers.json` (the current mapping; share classes of one issuer each receive the issuer's
+activity). Purchases are sparse on large caps, so the buy-side formulas condition on a purchase being
+present. The archives are taken as served at acquisition time.
+
+**Acquisition.** Outside the scan windows, once for both protocols. The SEC's fair-access policy requires a
+declared contact, which the command reads from the environment and refuses to start without; the manifest
+records only that it was set:
+
+```bash
+EDGAR_USER_AGENT="Name email@domain" copilot alpha insider-filings --from 2015q1 --through 2026q3 --cache DIR --output DIR
+```
+
+The 47 quarterly archives plus `company_tickers.json` go directly into `--cache DIR`
+(`DIR/{YYYYqN}_form345.zip` and `.meta.json`); a cached archive is never refetched, and each is validated
+on acquisition. `output/manifest.json` records the window, per-archive digest lines and the **files
+digest**: the SHA-256 of the sorted lines `<quarter>:<sha256>` plus `tickers:<sha256>`. The 2026-10-21
+acquisition is
+`67a262c0aa9acca12f4d1c67db1236d41771fda793cccabcb6eb185925cd66d9`, which both protocols pin as
+`insider_inputs.insider_filings.files_sha256`. No database, broker or Telegram.
+
+**Fields.** Per symbol, indexed by trading day `T`, holding the state known by the end of `T`; `P$(w)`/`S$(w)`
+are purchase/sale dollars over filings in the last `w` sessions inclusive of `T`, `DV_T` the 20-session
+median raw dollar volume ending at `T`. A covered name with no activity holds a real zero; a name never
+covered by a qualifying filing is `NaN`; a `name_change` identity break hides the pre-break history; a trade
+above `max_trade_rel` (10) times `DV` at its filing session is dropped as an entry error.
+
+| Field | Definition at T | Unit |
+| --- | --- | --- |
+| `insider_net_ratio` | `(P$(126) − S$(126)) / (P$(126) + S$(126))`; `NaN` when the denominator is 0 or before coverage | dimensionless, in [−1, 1] |
+| `insider_buy_rel` | `P$(63) / DV_T`; `0` when covered with no purchase in the window; `NaN` before coverage or when `DV_T` is missing or 0 | dimensionless |
+| `insider_sell_rel` | `S$(63) / DV_T`; the same rules | dimensionless |
+| `insider_buyers` | distinct owners with a purchase filed in the last 63 sessions; `0` when covered with none; `NaN` before coverage | count |
+| `insider_buy_age` | sessions since the most recent filing date with a purchase (`0` on that session); `NaN` when no purchase has been filed yet | sessions |
+| `insider_opp_buy_rel` | `P$(63) / DV_T` over opportunistic purchases only (routine = the same owner bought in the same issuer in the same calendar month of the previous year; Cohen, Malloy and Pomorski 2012); `0`/`NaN` as `insider_buy_rel` | dimensionless |
+
+Filings dated before the first session of the calendar (2015q1 precedes `bars_from`) cover the symbol from
+the first session and count in the routine rule, but a window reaching before the calendar is `NaN` on the
+side where such a filing exists.
+
+**Protocol block.**
+
+```json
+"insider_inputs": {
+  "fields_version": "insider_fields_v1",
+  "insider_filings": {
+    "source": "sec-form345-datasets", "files_sha256": "<files digest>",
+    "quarters_from": "2015q1", "quarters_through": "2026q3",
+    "buy_window": 63, "net_window": 126,
+    "owner_roles": ["Officer", "Director"], "exclude_10b5_1": false, "max_trade_rel": 10
+  },
+  "corporate_actions": { "source": "alpaca", "content_sha256": "<cohort acquisition>", "window": ["2016-01-01", "2027-03-31"], "trailing_sessions": 252 }
+}
+```
+
+The validator refuses quarters that do not span the bar window (`quarters_from` after `bars_from`, or
+`quarters_through` ending before the confirmation window's last day): the loader takes no calendar, so an
+unloaded month would read as a real zero. `excluded_families` is `cohort3-short-v1`'s list plus the eight
+short-volume families.
+
+**Frozen set `insider-v1`** (eight formulas, all dimensionless; the decile is taken among in-condition names
+only, because `x / (cond)` is `NaN` out of the condition):
+
+| Family | Expression | Hypothesis |
+| --- | --- | --- |
+| `net_buying` | `insider_net_ratio` | Lakonishok and Lee's net purchase ratio: net-buying issuers outperform over six months |
+| `buy_pressure` | `insider_buy_rel / (insider_buy_rel > 0)` | among names with a purchase this quarter, the largest buying relative to turnover |
+| `opportunistic_buying` | `insider_opp_buy_rel / (insider_opp_buy_rel > 0)` | non-routine purchases carry the information (Cohen, Malloy and Pomorski) |
+| `cluster_buying` | `insider_buy_rel / (insider_buyers > 1)` | two or more insiders buying in one quarter (Alldredge and Blank) |
+| `fresh_purchase` | `-insider_buy_age` | the most recently filed purchase first |
+| `recent_buy_pressure` | `insider_buy_rel / (insider_buy_age <= 10)` | buying relative to turnover, only where a purchase was filed within two weeks |
+| `buying_into_weakness` | `insider_buy_rel / (ts_sum(returns, 20) < 0)` | contrarian purchases after a decline (Jeng, Metrick and Zeckhauser) |
+| `light_selling` | `-insider_sell_rel / (insider_sell_rel > 0)` | the declared weak prior: among names with sales, the lightest relative to turnover |
+
+**Checks and campaigns.** A fixed set runs checks A (power; it must replay the matching short-volume
+protocol's result on the same cube) and C (real-formula false acceptance, `errors_total: 0`) only, per
+protocol, from a clean worktree at the merged revision and outside scan windows. Each campaign runs only
+with the operator's explicit approval (`--journal-scope production/alpaca:paper`), charges every formula to
+the pooled ledger before scoring and consumes the lane-wide confirmation window only for finalists.
+
+**Pre-registered closure.** `no_finalists` **or** `no_confirmation_candidates` (a discovery survivor that
+fails selection, the short-volume lane's cohort-v3 outcome) on both cubes closes the insider fixed set on
+this window; nothing promotes, and a finalist only becomes eligible for a separately specified capped paper
+probe, which would also need its own live feed contract. Results go in
+`docs/alpha-pooled-insider-v1-<date>.md` with the coverage block, drop counts and first-finite sessions.
+
+**Frozen files** (SHA-256 prefixes pinned in `tests/research/pooled/test_insider_v1.py`; campaigns pending):
+
+| File | Cohort and cost | SHA-256 prefix |
+| --- | --- | --- |
+| `config/research/pooled/insider-v1.json` | cohort v2, 5 bp, static-percentile universe | `9c487573` |
+| `config/research/pooled/cohort3-insider-v1.json` | cohort v3, 15 bp, $5M median dollar-volume floor | `969fc5df` |
+
+## Commands
+
+Every command accepts any protocol id (`pooled-campaign`, `pooled-intraday-campaign`, `pooled-events-campaign`, `pooled-short-volume-campaign` or `pooled-insider-campaign`).
+
+```bash
+copilot alpha short-volume --from DATE --through DATE --cache DIR --output DIR [--allow-absent DATE ...]
+EDGAR_USER_AGENT="Name email@domain" copilot alpha insider-filings --from YYYYqN --through YYYYqN --cache DIR --output DIR
 copilot alpha pooled screen RULE --snapshot SNAPSHOT --output DIR --cache DIR
-copilot alpha pooled power PROTOCOL --output DIR --cache DIR [--workers N] [--earnings-pages DIR --corporate-actions ACTIONS_JSON]
+copilot alpha pooled power PROTOCOL --output DIR --cache DIR [--workers N] [--earnings-pages DIR | --short-volume DIR | --insider-filings DIR] [--corporate-actions ACTIONS_JSON]
 copilot alpha pooled study ENTRY --power POWER_DIR --output DIR --cache DIR
 copilot alpha pooled search-power PROTOCOL --power A_DIR --output DIR --cache DIR
-copilot alpha pooled null-check PROTOCOL --power A_DIR --output DIR --cache DIR [--workers N] [--earnings-pages DIR --corporate-actions ACTIONS_JSON]
-copilot alpha pooled campaign PROTOCOL --power A_DIR [--search-power B_DIR] --null-check C_DIR --output DIR --cache DIR --journal-scope SCOPE [--recover] [--earnings-pages DIR --corporate-actions ACTIONS_JSON]
+copilot alpha pooled null-check PROTOCOL --power A_DIR --output DIR --cache DIR [--workers N] [--earnings-pages DIR | --short-volume DIR | --insider-filings DIR] [--corporate-actions ACTIONS_JSON]
+copilot alpha pooled campaign PROTOCOL --power A_DIR [--search-power B_DIR] --null-check C_DIR --output DIR --cache DIR --journal-scope SCOPE [--recover] [--earnings-pages DIR | --short-volume DIR | --insider-filings DIR] [--corporate-actions ACTIONS_JSON]
 ```
 
 - `PROTOCOL` is `config/research/pooled/campaign-v1.json` for `study` and the literature
@@ -1047,6 +1277,8 @@ copilot alpha pooled campaign PROTOCOL --power A_DIR [--search-power B_DIR] --nu
 - `screen` takes `config/research/pooled/screen-v3.json` for cohort v3 (a snapshot with a different hash is refused). For `cohort3-events-v1`, `--earnings-pages` is the Nasdaq page cache and `--corporate-actions` is the cohort-v3 acquisition's `actions.json`.
 - `--earnings-pages DIR` is the offline Nasdaq calendar page cache; it is required for an events
   protocol and refused for any other, and its digest must equal the protocol's `pages_sha256`.
+- `--short-volume DIR` is the directory `alpha short-volume --cache DIR` filled (`DIR/{YYYY-MM-DD}.txt` and `.meta.json`); it is required together with `--corporate-actions` for a short-volume protocol and refused for any other, `--earnings-pages` is refused for it, and the cache's files digest must equal the protocol's `files_sha256`.
+- `--insider-filings DIR` is the directory `alpha insider-filings --cache DIR` filled; it is required together with `--corporate-actions` for an insider protocol and refused for any other, `--earnings-pages` and `--short-volume` are refused for it, and the cache's files digest must equal the protocol's `files_sha256`.
 - `--corporate-actions ACTIONS_JSON` is the cohort-v2 (cohort-v3 for the cohort3 protocols) corporate-actions acquisition's
   `actions.json`; it is required for an events protocol and refused for any other, and its
   content digest must equal the protocol's `content_sha256`. `campaign` verifies both inputs

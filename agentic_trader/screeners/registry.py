@@ -10,6 +10,8 @@ from agentic_trader.screeners.formulaic import FormulaicAlphaStrategy
 
 
 if TYPE_CHECKING:
+    from datetime import timedelta
+
     from agentic_trader.config import AppConfig
 
 logger = logging.getLogger(__name__)
@@ -116,14 +118,23 @@ class StrategyRegistry:
     def __init__(self) -> None:
         self._strategies: dict[str, BaseStrategy] = {}
 
-    def install_alphas(self, definitions: tuple[AlphaDefinition, ...], probes: tuple[AlphaDefinition, ...] = ()) -> int:
-        """Build then atomically swap one complete registry snapshot between scans."""
+    def install_alphas(
+        self,
+        definitions: tuple[AlphaDefinition, ...],
+        probes: tuple[AlphaDefinition, ...] = (),
+        *,
+        bars_end_delay: timedelta | None = None,
+    ) -> int:
+        """Build then atomically swap one complete registry snapshot between scans.
+
+        ``bars_end_delay`` is the scan bars' request-end delay, so no alpha judges a truncated bar complete.
+        """
         strategies = {sid: s for sid, s in self._strategies.items() if not isinstance(s, FormulaicAlphaStrategy)}
         for definition in definitions:
-            strategy = FormulaicAlphaStrategy(definition)
+            strategy = FormulaicAlphaStrategy(definition, bars_end_delay=bars_end_delay)
             strategies[strategy.strategy_id] = strategy
         for definition in probes:
-            strategy = FormulaicAlphaStrategy(definition, probe=True)
+            strategy = FormulaicAlphaStrategy(definition, probe=True, bars_end_delay=bars_end_delay)
             strategies[strategy.strategy_id] = strategy
         self._strategies = strategies
         return len(definitions) + len(probes)

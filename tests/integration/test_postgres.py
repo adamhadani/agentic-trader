@@ -1,6 +1,7 @@
 """Explicitly opted-in integration tests against a disposable test_ PostgreSQL database."""
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -11,12 +12,14 @@ import psycopg2
 import pytest
 from sqlalchemy import update
 
+from agentic_trader.agent.scan_journal import append_scan_journal, regime_unavailable_notice
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.constants import CloseRequestStatus
-from agentic_trader.diagnostics.incidents import IncidentPhase
-from agentic_trader.execution.durable import EventKind, NotificationKind, WorkKind, WorkStatus
+from agentic_trader.diagnostics.incidents import ComponentTally, IncidentPhase
+from agentic_trader.execution.durable import EventKind, NotificationKind, ScanTrigger, WorkKind, WorkStatus
+from agentic_trader.market.session import ET_TZ
 from agentic_trader.storage.db import SignalDatabase
-from agentic_trader.storage.ledger import LedgerStore
+from agentic_trader.storage.ledger import LEDGER_STREAM, LedgerStore
 from agentic_trader.storage.maintenance import RetentionService
 from agentic_trader.storage.migrations import (
     downgrade_migrations,
@@ -24,7 +27,7 @@ from agentic_trader.storage.migrations import (
     run_migrations_head,
     to_sync_url,
 )
-from agentic_trader.storage.models import SignalRecord
+from agentic_trader.storage.models import DomainEventRecord, SignalRecord
 from agentic_trader.storage.operations import OperationsStore
 from agentic_trader.storage.workflow import WorkflowStore
 
@@ -427,6 +430,33 @@ async def test_postgres_account_ledger_fences_independent_importers(postgres_tes
         await second.engine.dispose()
 
 
+async def test_postgres_ledger_adjusted_equity_at_reads_checkpoint_events(postgres_test_db):
+    db = SignalDatabase(db_url=postgres_test_db)
+    try:
+        ledger = LedgerStore(db.workflows)
+        async with db.session_factory() as session, session.begin():
+            for key, day, risk in (
+                ("a", 7, {"adjusted_equity": "100000.50"}),
+                ("b", 10, None),
+                ("c", 13, {"adjusted_equity": "102500.25"}),
+            ):
+                session.add(
+                    DomainEventRecord(
+                        scope=ledger.scope,
+                        event_key=f"equity-{key}",
+                        stream=LEDGER_STREAM,
+                        kind=EventKind.LEDGER_CHECKPOINT,
+                        payload=json.dumps({"risk": risk}),
+                        recorded_at=datetime(2026, 11, day, 14, tzinfo=UTC),
+                    )
+                )
+        assert await ledger.adjusted_equity_at(datetime(2026, 11, 6, tzinfo=UTC)) is None
+        assert await ledger.adjusted_equity_at(datetime(2026, 11, 11, tzinfo=UTC)) == pytest.approx(100000.50)
+        assert await ledger.adjusted_equity_at(datetime(2026, 11, 14, tzinfo=UTC)) == pytest.approx(102500.25)
+    finally:
+        await db.engine.dispose()
+
+
 async def test_postgres_ledger_transaction_does_not_block_entry_admission_lock(postgres_test_db):
     db = SignalDatabase(db_url=postgres_test_db)
     try:
@@ -469,6 +499,114 @@ async def test_postgres_incidents_and_retention_between_independent_clients(post
     finally:
         await first.engine.dispose()
         await second.engine.dispose()
+
+
+async def test_postgres_quiet_summary_is_decided_once_between_independent_clients(postgres_test_db, app_config):
+    first = SignalDatabase(db_url=postgres_test_db)
+    second = SignalDatabase(db_url=postgres_test_db)
+    try:
+        await first.init_db()
+        a, b = OperationsStore(first.workflows), OperationsStore(second.workflows)
+        policy = app_config.operations
+        end = datetime.now(UTC).replace(microsecond=0)
+        start = end - timedelta(hours=2)
+        opened = start + timedelta(minutes=30)
+        for seconds in (0, policy.failure_seconds):
+            await a.observe(
+                "scan",
+                ready=False,
+                observed_at=opened + timedelta(seconds=seconds),
+                detail="",
+                policy=policy,
+                muted=True,
+            )
+        kwargs = {
+            "period_start": start,
+            "period_end": end,
+            "observed_at": end,
+            "details": {"scan": "stale"},
+            "ready_now": (),
+            "policy": policy,
+        }
+        summaries = await asyncio.gather(*(store.queue_quiet_summary(**kwargs) for store in (a, b, a, b)))
+        assert sum(summary is not None for summary in summaries) == 1
+        winner = next(summary for summary in summaries if summary is not None)
+        assert winner.tallies == [ComponentTally(component="scan", opened=1, recovered=0)]
+        assert [i.component for i in winner.open_incidents] == ["scan"]
+        items = await first.workflows.list_work(WorkKind.NOTIFICATION)
+        assert [item.payload["kind"] for item in items] == [NotificationKind.OPERATIONS_SUMMARY]
+        decisions = await second.workflows.events("operations/summary")
+        assert [event["payload"]["queued"] for event in decisions] == [True]
+        assert await b.summary_decided_at(end) == end
+    finally:
+        await first.engine.dispose()
+        await second.engine.dispose()
+
+
+async def test_postgres_quiet_summary_reports_release_exit_gaps(postgres_test_db, app_config):
+    """The release-exit gap reader's ``LIKE``/``IN`` query and per-event JSON reads run on PostgreSQL."""
+    db = SignalDatabase(db_url=postgres_test_db)
+    try:
+        await db.init_db()
+        store = OperationsStore(db.workflows)
+        day = "2026-11-06"  # a Friday: the Monday-morning window's period_start is Friday 16:30 ET
+        start = datetime(2026, 11, 6, 21, 30, tzinfo=UTC)
+        end = datetime(2026, 11, 9, 14, 15, tzinfo=UTC)
+
+        def entry(signal_id, symbol, status):
+            return {"signal_id": signal_id, "symbol": symbol, "direction": "long", "scope": "native", "status": status}
+
+        async with db.session_factory() as session, session.begin():
+            await db.workflows.lock(session)
+            await db.workflows.append(
+                session,
+                stream="release-exit",
+                kind=EventKind.RELEASE_EXIT_PASS,
+                key=f"release-exit/{day}",
+                payload={
+                    "mode": "enforce",
+                    "trading_day": day,
+                    "positions": [
+                        entry(1, "AAA", "unknown"),
+                        entry(2, "BBB", "close"),
+                        entry(3, "CCC", "close"),
+                        entry(4, "DDD", "close"),
+                    ],
+                },
+            )
+            for signal_id, symbol, outcome, notified in ((2, "BBB", "submitted", False), (3, "CCC", "refused", False)):
+                await db.workflows.append(
+                    session,
+                    stream="release-exit",
+                    kind=EventKind.RELEASE_EXIT_CLOSE,
+                    key=f"release-exit/{day}/{signal_id}",
+                    payload={
+                        "trading_day": day,
+                        "signal_id": signal_id,
+                        "symbol": symbol,
+                        "outcome": outcome,
+                        "notified": notified,
+                    },
+                )
+        summary = await store.queue_quiet_summary(
+            period_start=start,
+            period_end=end,
+            observed_at=end,
+            details={},
+            ready_now=(),
+            policy=app_config.operations,
+            release_exit_mode="enforce",
+        )
+        assert summary is not None and summary.release_exit is not None
+        gaps = summary.release_exit
+        assert gaps.trading_day.isoformat() == day and not gaps.missing_pass
+        assert [(g.symbol, g.signal_id) for g in gaps.unknown] == [("AAA", "1")]
+        assert [(g.symbol, g.signal_id, g.outcome) for g in gaps.unnotified_closes] == [("CCC", "3", "refused")]
+        assert [(g.symbol, g.signal_id) for g in gaps.unattempted_closes] == [("DDD", "4")]
+        items = await db.workflows.list_work(WorkKind.NOTIFICATION)
+        assert [item.payload["kind"] for item in items] == [NotificationKind.OPERATIONS_SUMMARY]
+    finally:
+        await db.engine.dispose()
 
 
 async def test_postgres_expire_stale_signals_sweeps_only_stale_pending_cards(postgres_test_db):
@@ -550,5 +688,77 @@ async def test_postgres_recent_events_reads_one_kind_from_named_streams_in_scope
 
         assert [e["payload"]["n"] for e in events] == [3, 1]
         assert await db.workflows.recent_events(EventKind.DYNAMIC_UNIVERSE_BUILT, streams=[]) == []
+    finally:
+        await db.engine.dispose()
+
+
+async def test_postgres_scan_journal_event_and_notice_commit_together(postgres_test_db, monkeypatch):
+    """A regime-unavailable scan event and its once-per-date notice are one asyncpg transaction."""
+    db = SignalDatabase(db_url=postgres_test_db)
+    at = datetime(2026, 10, 28, 14, 35, tzinfo=ET_TZ)
+    notice = regime_unavailable_notice(
+        {"vix": "ReadTimeout"}, at=at, trigger=ScanTrigger.SUGGESTION_SCAN, pead_skipped=False
+    )
+    try:
+        await db.init_db()
+        await append_scan_journal(
+            db, et_date="2026-10-28", scan_id="first", payload={"status": "regime_unavailable"}, notice=notice
+        )
+
+        async def refuse(*args, **kwargs):
+            raise RuntimeError("outbox down")
+
+        monkeypatch.setattr(db.workflows, "add_notification", refuse)
+        with pytest.raises(RuntimeError):
+            await append_scan_journal(
+                db, et_date="2026-10-29", scan_id="second", payload={"status": "regime_unavailable"}, notice=notice
+            )
+
+        ranked = [e for e in await db.workflows.events() if e["kind"] == EventKind.SCAN_CANDIDATES_RANKED]
+        assert [(e["stream"], e["payload"]["status"]) for e in ranked] == [("scan/2026-10-28", "regime_unavailable")]
+        [item] = await db.workflows.list_work(WorkKind.NOTIFICATION)
+        assert item.payload["kind"] == NotificationKind.MESSAGE
+        assert item.payload["arguments"] == {"text": notice.text, "formatted": False}
+    finally:
+        await db.engine.dispose()
+
+
+async def test_postgres_non_native_capacity_counts_open_and_in_flight_entries(postgres_test_db, app_config):
+    """The O3 cap against real PostgreSQL: EXECUTED plus SUBMITTING non-native signals count, a native one never does."""
+    db = SignalDatabase(db_url=postgres_test_db)
+    try:
+
+        async def signal(contract: str, status: str, *, strategy: str = "pead_long", policy: dict | None = None) -> int:
+            return await db.record_signal(
+                contract=contract,
+                strategy=strategy,
+                direction="LONG",
+                entry_price=100.0,
+                stop_loss=95.0,
+                take_profit=110.0,
+                risk_dollars=5.0,
+                asset_class="EQUITY",
+                quantity=1,
+                status=status,
+                alpha_policy={"kind": "bracket"} if policy is None and strategy == "pead_long" else policy,
+            )
+
+        await signal("OPEN1", "EXECUTED")
+        await signal("OPEN2", "EXECUTED")
+        await signal("FLY1", "SUBMITTING")
+        await signal("NATV", "EXECUTED", strategy="TREND_PULLBACK")  # native: never counted
+        pending = await signal("NEXT", "PENDING")
+        native = await signal("NATN", "PENDING", strategy="TREND_PULLBACK")
+
+        async def judge(signal_id: int, cap: int | None) -> str | None:
+            app_config.portfolio.max_non_native_positions = cap
+            async with db.session_factory() as session, session.begin():
+                row = await session.get(SignalRecord, signal_id)
+                return await db.workflows._non_native_capacity_rejection(session, row, app_config)
+
+        assert (await judge(pending, 3)).startswith("non_native_capacity")  # 3 counted + itself > 3
+        assert await judge(pending, 4) is None
+        assert await judge(native, 3) is None
+        assert await judge(pending, None) is None
     finally:
         await db.engine.dispose()

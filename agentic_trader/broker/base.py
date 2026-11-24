@@ -322,6 +322,11 @@ class BaseBroker(ABC):
         """Fetch current cash balance and portfolio value if supported by broker."""
         return {}
 
+    @property
+    def supports_entry_cancellation(self) -> bool:
+        """Whether ``read_entry_group`` and ``cancel_order`` give an exact-order cancel contract."""
+        return False
+
     async def read_entry_group(self, order_id: str, known_ids: tuple[str, ...] = ()) -> list[OrderObservation]:
         """Exact current entry/protection observations; no replacement following."""
         raise NotImplementedError("This broker has no entry-group lifecycle contract")

@@ -6,20 +6,23 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from agentic_trader.accounting.ledger import LedgerReport
-from agentic_trader.agent.macro import CreditStressRegime, MacroStressLevel, YieldCurveRegime
+from agentic_trader.agent.macro import CreditStressRegime, MacroStressLevel, YieldCurveRegime, missing_input_names
 from agentic_trader.constants import (
     APP_DISPLAY_NAME,
     DEFAULT_BACKTEST_LOOKBACK,
     DEFAULT_RESEARCH_SYMBOL,
     ExecutionMode,
+    SignalStatus,
     VolatilityRegime,
 )
+from agentic_trader.execution.durable import WorkStatus
 
 
 if TYPE_CHECKING:
     from agentic_trader.agent.macro import MacroIntelligenceReport
     from agentic_trader.agent.regime import RegimeSnapshot
     from agentic_trader.backtest.models import BacktestResult
+    from agentic_trader.execution.lifetimes import RestingCancelResult
     from agentic_trader.research.alpha.models import AlphaCandidate, RegistrySnapshot
 
 
@@ -97,6 +100,7 @@ class PortfolioStatusReport:
     recent_signals: list[dict[str, Any]] = field(default_factory=list)
 
     execution_mode: str = ExecutionMode.PAPER
+    auto_entry: str = ""  # the ready-made status line; empty renders nothing
 
 
 @dataclass
@@ -207,6 +211,7 @@ class TerminalFormatter:
             f"Active Position Count:{report.active_contract_count} positions",
             f"Telegram Configured:  {report.telegram_configured}",
             f"LLM Model Configured: {report.llm_model}",
+            *([report.auto_entry] if report.auto_entry else []),
             sub_sep,
             "Macro Calendar Context:",
             report.macro_summary,
@@ -294,7 +299,8 @@ class TelegramHtmlFormatter:
                 f"• <b>Active Exposure:</b> <code>${report.current_exposure:,.2f}</code> "
                 f"({report.effective_leverage:.2f}x leverage)"
             ),
-            f"• <b>Active Positions:</b> {report.active_contract_count} positions\n",
+            f"• <b>Active Positions:</b> {report.active_contract_count} positions"
+            + (f"\n• {html.escape(report.auto_entry)}\n" if report.auto_entry else "\n"),
             "<b>Market Context:</b>",
             f"• Volatility: <b>{report.vix_regime}</b> (VIX: {report.vix_value:.2f})",
         ]
@@ -341,6 +347,56 @@ class TelegramHtmlFormatter:
                 f"• <b>Error:</b> {html.escape(view.error_message or 'Unknown error')}"
             )
 
+    # Operator-cancel refusal tokens; anything else renders its token alone.
+    RESTING_CANCEL_REFUSALS: ClassVar[dict[str, str]] = {
+        "unknown_signal": "No signal #{id} exists.",
+        "filled_before_cancel": "Entry {symbol} (signal #{id}) filled before the cancel and opened with its protective exits.",
+        "not_resting": "Signal #{id} is not a resting entry (filled, closed or failed).",
+        "cancel_in_progress": "An entry cancel for signal #{id} already exists (cancelling or cancelled).",
+        "close_active": "A close is active for {symbol}.",
+        "incomplete_or_changed_bracket_group": "The bracket group for signal #{id} is incomplete or changed; inspect the broker orders.",
+        "broker_cannot_cancel": "This broker has no exact-order cancel.",
+        "no_durable_entry": "Signal #{id} has no durable desk entry for its broker order.",
+        "entry_group_unavailable": "The broker entry group for signal #{id} could not be read.",
+    }
+
+    @classmethod
+    def format_resting_cancel_html(cls, result: RestingCancelResult) -> str:
+        """One operator-cancel reply (Telegram and CLI); tokens and type names only."""
+        symbol = html.escape(result.symbol or "")
+        sid = result.signal_id
+        if result.status == "preview":
+            return (
+                f"<b>Cancel the resting entry {symbol} (signal #{sid})?</b>\n"
+                "One broker cancel is sent and never retried. The entry stays reserved until the broker "
+                "confirms no fills. If it partially fills before the cancel arrives, new entries halt until reviewed."
+            )
+        if result.status == "refused":
+            token = result.reason or "refused"
+            detail = cls.RESTING_CANCEL_REFUSALS.get(token.split(":", 1)[0])
+            if token == "not_resting" and result.signal_status == SignalStatus.PENDING:
+                detail = "Signal #{id} is not submitted yet (an untapped card); there is no broker entry to cancel."
+            elif token == "not_resting" and result.signal_status in (SignalStatus.DISMISSED, SignalStatus.EXPIRED):
+                detail = f"Signal #{{id}} was never entered ({result.signal_status}); there is nothing to cancel."
+            elif token == "not_resting" and result.signal_status == SignalStatus.SUBMITTING:
+                detail = "Signal #{id} is still being submitted; try again in a minute."
+            explanation = f" {detail.format(id=sid, symbol=symbol)}" if detail else ""
+            if token == "cancel_in_progress" and result.work_status:
+                explanation += f" ({html.escape(result.work_status)})"
+            return f"❌ Entry cancel refused (<code>{html.escape(token)}</code>).{explanation} Nothing was cancelled."
+        if result.work_status == WorkStatus.ACCEPTED:
+            return f"✅ Entry {symbol} (signal #{sid}) cancelled. The broker confirms no fills."
+        if result.work_status == WorkStatus.REJECTED:
+            return (
+                f"Entry {symbol} (signal #{sid}) filled before the cancel arrived; the position is open and protected."
+            )
+        if result.work_status == WorkStatus.UNKNOWN:
+            return (
+                f"⚠️ Cancel for {symbol} (signal #{sid}) is unconfirmed. New risk halted; inspect exact broker "
+                "fills and protective orders. No automatic retry."
+            )
+        return f"Cancel for {symbol} (signal #{sid}) sent; awaiting broker confirmation."
+
     @staticmethod
     def format_manual_close_html(view: ManualCloseResultView) -> str:
         if not view.success:
@@ -353,6 +409,11 @@ class TelegramHtmlFormatter:
             f"• Realized P&amp;L: <b>{pnl_sign}${abs(view.realized_pnl):,.2f}</b>\n"
             f"• Notional capacity released."
         )
+
+    @staticmethod
+    def format_regime_unavailable_html(errors_text: str) -> str:
+        """The ``/macro`` reply when no regime can be read: ``errors_text`` is ``"vix: ReadTimeout"`` (type names)."""
+        return html.escape(f"Market regime unavailable ({errors_text}); scans skip until VIX is readable.")
 
     @staticmethod
     def format_macro_dashboard_html(regime: RegimeSnapshot, *, required_rr: float) -> str:
@@ -381,6 +442,15 @@ class TelegramHtmlFormatter:
         )
         if regime.macro_report is not None:
             return text + TelegramHtmlFormatter._format_macro_indicators_html(regime.macro_report)
+        stress = regime.macro_stress
+        if stress is not None and stress.level is MacroStressLevel.UNKNOWN:
+            missing = ", ".join(missing_input_names(regime.macro_inputs, decision_only=True))
+            breakouts = "allowed" if stress.squeeze_breakout_allowed else "suppressed"
+            return text + (
+                f"⚪ <b>Macro Stress: UNKNOWN</b> (missing {html.escape(missing)})\n"
+                f"<i>Policy above applies the UNKNOWN macro policy: risk ×{stress.risk_multiplier:.2f}, "
+                f"squeeze breakouts {breakouts}, until every decision input is observed.</i>"
+            )
         reason = regime.macro_unavailable_reason or "No macro observations available"
         return (
             text
@@ -400,6 +470,7 @@ class TelegramHtmlFormatter:
             MacroStressLevel.MODERATE: "🟡 MODERATE STRESS",
             MacroStressLevel.HIGH: "🟠 HIGH STRESS",
             MacroStressLevel.EXTREME: "🔴 EXTREME STRESS",
+            MacroStressLevel.UNKNOWN: "⚪ UNKNOWN STRESS",
         }[s.level]
 
         curve_color = (
@@ -418,20 +489,27 @@ class TelegramHtmlFormatter:
             source_note += f" ({dates})"
 
         drivers_text = ", ".join(s.key_drivers) if s.key_drivers else "Benign conditions"
+        yield_5y = f"{y.yield_5y:.2f}%" if y.yield_5y is not None else "N/A"
+        yield_30y = f"{y.yield_30y:.2f}%" if y.yield_30y is not None else "N/A"
+        curvature = f"{sp.curvature_butterfly_bps:+.1f} bps" if sp.curvature_butterfly_bps is not None else "N/A"
+        breakeven_10y = (
+            f"<code>{inf.breakeven_10y:.2f}%</code> ({inf.regime.value})" if inf is not None else "<code>N/A</code>"
+        )
+        breakeven_5y = f"{inf.breakeven_5y:.2f}%" if inf is not None else "N/A"
 
         return (
             "🏛️ <b>MACRO INTELLIGENCE & YIELD CURVE</b>\n\n"
             f"<b>Macro Stress:</b> {stress_badge}\n<i>{html.escape(source_note)}</i>\n\n"
             f"📈 <b>US Treasury Term Structure:</b> {curve_color} <code>{sp.regime.value}</code>\n"
-            f"• <b>3M:</b> <code>{y.yield_3m:.2f}%</code> | <b>2Y:</b> <code>{y.yield_2y:.2f}%</code> | <b>5Y:</b> <code>{y.yield_5y:.2f}%</code>\n"
-            f"• <b>10Y:</b> <code>{y.yield_10y:.2f}%</code> | <b>30Y:</b> <code>{y.yield_30y:.2f}%</code>\n"
+            f"• <b>3M:</b> <code>{y.yield_3m:.2f}%</code> | <b>2Y:</b> <code>{y.yield_2y:.2f}%</code> | <b>5Y:</b> <code>{yield_5y}</code>\n"
+            f"• <b>10Y:</b> <code>{y.yield_10y:.2f}%</code> | <b>30Y:</b> <code>{yield_30y}</code>\n"
             f"• <b>10Y-2Y Slope:</b> <code>{sp.slope_10y_2y_bps:+.1f} bps</code>\n"
             f"• <b>10Y-3M Slope:</b> <code>{sp.slope_10y_3m_bps:+.1f} bps</code>\n"
-            f"• <b>Butterfly Curvature:</b> <code>{sp.curvature_butterfly_bps:+.1f} bps</code>\n\n"
+            f"• <b>Butterfly Curvature:</b> <code>{curvature}</code>\n\n"
             f"💳 <b>Credit Risk & Inflation Expectations:</b>\n"
             f"• <b>High Yield OAS:</b> {credit_color} <code>{c.high_yield_oas_bps:.0f} bps</code> ({c.high_yield_oas_pct:.2f}%) | <b>{c.regime.value}</b>\n"
-            f"• <b>10Y Breakeven Inflation:</b> <code>{inf.breakeven_10y:.2f}%</code> ({inf.regime.value})\n"
-            f"• <b>5Y Breakeven Inflation:</b> <code>{inf.breakeven_5y:.2f}%</code>\n\n"
+            f"• <b>10Y Breakeven Inflation:</b> {breakeven_10y}\n"
+            f"• <b>5Y Breakeven Inflation:</b> <code>{breakeven_5y}</code>\n\n"
             f"• <b>Key Drivers:</b> <i>{html.escape(drivers_text)}</i>"
         )
 

@@ -47,6 +47,7 @@ from agentic_trader.storage.artifacts import save_json_report
 
 
 __all__ = [
+    "LABEL_SPAN",
     "PeadInputs",
     "decision_price",
     "evaluate_leg",
@@ -61,7 +62,7 @@ __all__ = [
 _DIRECTIONS = ("LONG", "SHORT")
 # Hourly bars are trimmed to this span around each decision before labelling; the
 # secondary hold (60 sessions) fits well inside it.
-_LABEL_SPAN = timedelta(days=130)
+LABEL_SPAN = timedelta(days=130)
 
 
 @dataclass(frozen=True)
@@ -134,7 +135,7 @@ def label_events(
             continue
         when = event["decision_at"]
         index = utc_index(bars)
-        window = bars.loc[(index >= when - timedelta(days=1)) & (index <= when + _LABEL_SPAN)]
+        window = bars.loc[(index >= when - timedelta(days=1)) & (index <= when + LABEL_SPAN)]
         price = decision_price(window, when)
         if price is None:
             miss("no_decision_price", event)

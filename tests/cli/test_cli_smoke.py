@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
@@ -9,11 +10,13 @@ import pytest
 from click.testing import CliRunner
 
 import agentic_trader.cli.commands.cards as cards_module
+import agentic_trader.research.setups.scorecard as scorecard_module
 from agentic_trader.cli.main import cli
 from agentic_trader.config import ScanBudget, load_config
 from agentic_trader.diagnostics.doctor import ComponentHealth, DiagnosticReport
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.presentation.formatters import PanicReportView
+from agentic_trader.research.setups import sources
 from agentic_trader.storage.db import SignalDatabase
 
 
@@ -264,11 +267,13 @@ def test_cli_resume_smoke(runner: CliRunner):
 
 
 def test_cli_explain_macro_smoke(runner: CliRunner):
-    """Verify copilot explain-macro invokes macro_engine.get_macro_report and formats explanation."""
+    """Verify copilot explain-macro invokes macro_engine.evaluate and formats explanation."""
     with patch("agentic_trader.cli.commands.trade.get_copilot_and_config") as mock_get:
         mock_copilot = MagicMock()
         mock_report = MagicMock()
-        mock_copilot.regime_detector.macro_engine.get_macro_report = AsyncMock(return_value=mock_report)
+        mock_copilot.regime_detector.macro_engine.evaluate = AsyncMock(
+            return_value=SimpleNamespace(report=mock_report, missing_decision=())
+        )
         mock_get.return_value = (mock_copilot, MagicMock())
 
         with patch(
@@ -279,6 +284,24 @@ def test_cli_explain_macro_smoke(runner: CliRunner):
             assert result.exit_code == 0
             assert "Evaluating institutional macro indicators" in result.output
             assert "Tutorial: Yield curve is NORMAL_STEEP." in result.output
+            assert mock_explain.await_args.args[0] is mock_report
+
+
+def test_cli_explain_macro_without_a_report_names_the_missing_decision_inputs(runner: CliRunner):
+    with patch("agentic_trader.cli.commands.trade.get_copilot_and_config") as mock_get:
+        mock_copilot = MagicMock()
+        mock_copilot.regime_detector.macro_engine.evaluate = AsyncMock(
+            return_value=SimpleNamespace(report=None, missing_decision=("2y", "hy_oas"))
+        )
+        mock_get.return_value = (mock_copilot, MagicMock())
+
+        with patch(
+            "agentic_trader.agent.macro_explainer.MacroExplainer.explain", new_callable=AsyncMock
+        ) as mock_explain:
+            result = runner.invoke(cli, ["explain-macro"])
+            assert result.exit_code == 0
+            assert "Macro report unavailable: missing decision inputs: 2y, hy_oas" in result.output
+            mock_explain.assert_not_awaited()
 
 
 class _FakeBarSource:
@@ -391,6 +414,294 @@ def test_cli_outputs_table_with_fake_sources(runner: CliRunner):
     assert "telegram" not in result.output.lower()
 
 
+def test_cards_outcomes_prints_supply_and_the_empty_line(runner: CliRunner):
+    """A window whose only scan ranked nothing still reports it: `supply` counts scans, and the empty line says so."""
+    decided_at = datetime(2026, 3, 3, 15, 0, tzinfo=UTC)
+    event = {
+        "id": 1,
+        "stream": "scan/2026-03-03",
+        "kind": EventKind.SCAN_CANDIDATES_RANKED,
+        "payload": {
+            "scan_id": "empty-scan",
+            "decided_at": decided_at.isoformat(),
+            "scope": "universe",
+            "trigger": "suggestion_scan",
+            "status": "completed",
+            "candidates": [],
+            "funnel": {"selected": 100, "scanned": 100, "raw_setups": 0, "admitted": 0, "errors": {}},
+        },
+    }
+    fake_bars = _FakeBarSource(pd.DataFrame())
+
+    with (
+        patch.object(cards_module, "scan_ranked_events", AsyncMock(return_value=[event])),
+        patch.object(cards_module, "build_bar_source", return_value=fake_bars),
+    ):
+        result = runner.invoke(cli, ["cards", "outcomes"])
+
+    assert result.exit_code == 0, result.output
+    assert not fake_bars.calls
+    assert '"supply"' in result.output
+    assert '"suggestion_scan"' in result.output and '"zero_candidate": 1' in result.output
+    assert "No journaled candidates in 30 day(s) (1 scan events)." in result.output
+
+
+def test_cards_outcomes_prints_operator_block(runner: CliRunner):
+    """The summary carries the descriptive `operator` block (an empty window is `insufficient`, never a gate)."""
+    with (
+        patch.object(cards_module, "scan_ranked_events", AsyncMock(return_value=[])),
+        patch.object(cards_module, "build_bar_source", return_value=_FakeBarSource(pd.DataFrame())),
+    ):
+        result = runner.invoke(cli, ["cards", "outcomes"])
+
+    assert result.exit_code == 0, result.output
+    for key in ('"operator"', '"by_slot"', '"tap_latency"', '"kept_vs_vetoed"', '"tap_era"'):
+        assert key in result.output
+    assert '"status": "insufficient"' in result.output
+
+
+def test_cards_outcomes_daily_source_reads_sip_through_its_delayed_bound(runner: CliRunner):
+    """The beta and per-name cost reads are SIP: each ends at least 15 minutes before now (an end of now is a 403)."""
+    fixed_now = datetime(2026, 3, 3, 20, 0, tzinfo=UTC)
+    decided_at = datetime(2026, 3, 3, 15, 0, tzinfo=UTC)
+    candidate = {
+        "contract": "AAPL",
+        "strategy": "BREAKOUT",
+        "timeframe": "1h",
+        "direction": "LONG",
+        "entry": 100.0,
+        "stop": 99.0,
+        "target": 102.0,
+        "rank": 1,
+        "outcome": "sent",
+    }
+    event = {
+        "id": 1,
+        "stream": "scan/2026-03-03",
+        "kind": EventKind.SCAN_CANDIDATES_RANKED,
+        "payload": {
+            "scan_id": "daily-bound",
+            "decided_at": decided_at.isoformat(),
+            "scope": "universe",
+            "trigger": "suggestion_scan",
+            "candidates": [candidate],
+        },
+    }
+    hourly = pd.DataFrame(
+        {"Open": [100.5], "High": [100.8], "Low": [100.2], "Close": [100.6]},
+        index=pd.DatetimeIndex([pd.Timestamp("2026-03-03T15:00:00+00:00")], tz="UTC"),
+    )
+    daily, feeds = _FakeBarSource(pd.DataFrame()), []
+
+    def build(config, *, feed=None):
+        feeds.append(feed)
+        return daily
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+
+    with (
+        patch.object(cards_module, "datetime", _FrozenDateTime),
+        patch.object(cards_module, "scan_ranked_events", AsyncMock(return_value=[event])),
+        patch.object(cards_module, "build_bar_source", return_value=_FakeBarSource(hourly)),
+        patch.object(sources, "build_bar_source", build),
+    ):
+        result = runner.invoke(cli, ["cards", "outcomes", "--days", "1"])
+
+    assert result.exit_code == 0, result.output
+    daily_reads = [call for call in daily.calls if call[1] == "1d"]
+    assert feeds == ["sip"] and {call[0] for call in daily_reads} == {"AAPL", "SPY"}
+    assert all(call[3] <= fixed_now - timedelta(minutes=15) for call in daily_reads)
+
+
+def test_cards_outcomes_days_reach_the_card_statistics_window(runner: CliRunner):
+    """`--days` accepts up to 180 days, the shipped `card_policy.stats_window_days`, and no more."""
+    with (
+        patch.object(cards_module, "scan_ranked_events", AsyncMock(return_value=[])) as events,
+        patch.object(cards_module, "build_bar_source", return_value=_FakeBarSource(pd.DataFrame())),
+    ):
+        assert runner.invoke(cli, ["cards", "outcomes", "--days", "180"]).exit_code == 0
+        assert events.await_args.args[1] == 180
+        assert runner.invoke(cli, ["cards", "outcomes", "--days", "181"]).exit_code != 0
+
+
 def test_db_queue_default_kind_is_a_valid_choice(runner: CliRunner):
     result = runner.invoke(cli, ["db", "queue"])
     assert "is not one of" not in result.output, result.output
+
+
+def test_cards_outcomes_reports_the_insider_watch_block(runner: CliRunner):
+    """Journaled `insider_watch_decision` events are labelled with the frozen bracket; read-only and descriptive."""
+    fixed_now = datetime(2026, 10, 12, 20, 0, tzinfo=UTC)
+    session = "2026-10-05"
+    decision = datetime(2026, 10, 5, 14, 35, tzinfo=UTC)
+    hours = [datetime(2026, 10, 5, h, tzinfo=UTC) for h in (13, 14, 15, 16, 17)]  # 09:00..13:00 ET (EDT)
+    prices = [100.0, 100.0, 100.0, 112.0, 112.0]
+    hourly = pd.DataFrame(
+        {"Open": prices, "High": prices, "Low": prices, "Close": prices, "Volume": 1.0},
+        index=pd.DatetimeIndex(hours),
+    )
+    event = {
+        "event_id": "AAA-1",
+        "symbol": "AAA",
+        "session": session,
+        "decision_at": decision.isoformat(),
+        "atr": 2.0,
+        "buyers": 3,
+        "opp_dollars": 900_000.0,
+        "outcome": "sent",
+    }
+    payload = {"scan_id": "watch-scan", "session": session, "status": "completed", "events": [event]}
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+
+    async def decision_events(db, days, *, now, kind):
+        return [payload] if kind == EventKind.INSIDER_WATCH_DECISION else []
+
+    configured = _FakeBarSource(pd.DataFrame())  # the configured (IEX) feed: never read by the watch block
+    sip = _FakeBarSource(hourly)
+    providers: list[dict] = []
+
+    def provider(**kwargs):
+        providers.append(kwargs)
+        return sip
+
+    with (
+        patch.object(cards_module, "datetime", _FrozenDateTime),
+        patch.object(cards_module, "scan_ranked_events", AsyncMock(return_value=[])),
+        patch.object(cards_module, "build_bar_source", return_value=configured),
+        patch.object(scorecard_module, "AlpacaDataProvider", provider),
+        patch.object(scorecard_module, "watch_signals", AsyncMock(return_value=[])),
+        patch.object(cards_module, "decision_events", decision_events),
+    ):
+        result = runner.invoke(cli, ["cards", "outcomes", "--days", "10"])
+
+    assert result.exit_code == 0, result.output
+    assert "Insider watch:" in result.output and '"insider_watch"' in result.output
+    assert '"sent_events"' in result.output and '"taps": 0' in result.output and '"n": 1' in result.output
+    # The study, its +0.087R line and the PEAD record are all SIP: the watch block labels on SIP too.
+    assert [p["feed"] for p in providers] == ["sip"]
+    assert {call[0] for call in sip.calls} >= {"AAA", "SPY"} and configured.calls == []
+    assert all(call[4] == "all" for call in sip.calls if call[0] == "AAA")
+
+
+def test_cards_outcomes_reads_sip_only_through_its_delayed_bound(runner: CliRunner):
+    """SIP history ending later than 15 minutes ago is a 403 for this account: every SIP read of the PEAD and
+    watch blocks ends at least 15 minutes before now, and the bars after that bound never mature a label."""
+    fixed_now = datetime(2026, 10, 5, 17, 30, tzinfo=UTC)  # 13:30 New York, mid-session
+    bound = fixed_now - pd.Timedelta(minutes=16)
+    session = "2026-10-05"
+    decision = datetime(2026, 10, 5, 14, 35, tzinfo=UTC)
+    hours = [datetime(2026, 10, 5, h, tzinfo=UTC) for h in (13, 14, 15, 16, 17)]  # 17:00 UTC is still forming
+    prices = [100.0, 100.0, 100.0, 100.0, 112.0]
+    hourly = pd.DataFrame(
+        {"Open": prices, "High": prices, "Low": prices, "Close": prices, "Volume": 1.0},
+        index=pd.DatetimeIndex(hours),
+    )
+    watch_event = {
+        "event_id": "AAA-1",
+        "symbol": "AAA",
+        "session": session,
+        "decision_at": decision.isoformat(),
+        "atr": 2.0,
+        "buyers": 3,
+        "opp_dollars": 900_000.0,
+        "outcome": "sent",
+    }
+    pead_event = {
+        "symbol": "PPP",
+        "report_date": "2026-10-02",
+        "session": session,
+        "decision_at": decision.isoformat(),
+        "atr": 2.0,
+        "leg": "LONG",
+        "outcome": "sent",
+    }
+    payloads = {
+        EventKind.INSIDER_WATCH_DECISION: [
+            {"scan_id": "w", "session": session, "status": "completed", "events": [watch_event]}
+        ],
+        EventKind.PEAD_DECISION: [{"scan_id": "p", "session": session, "status": "ok", "events": [pead_event]}],
+    }
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+
+    async def decision_events(db, days, *, now, kind):
+        return payloads.get(kind, [])
+
+    sip = _FakeBarSource(hourly)
+    pead_hourly: list[dict] = []
+
+    def label_events(events, frames, entry):
+        pead_hourly.append(dict(frames))
+        return pd.DataFrame(), {}
+
+    with (
+        patch.object(cards_module, "datetime", _FrozenDateTime),
+        patch.object(cards_module, "scan_ranked_events", AsyncMock(return_value=[])),
+        patch.object(cards_module, "build_bar_source", return_value=_FakeBarSource(pd.DataFrame())),
+        patch.object(scorecard_module, "AlpacaDataProvider", lambda **kwargs: sip),
+        patch.object(scorecard_module, "label_events", label_events),
+        patch.object(scorecard_module, "probe_signals", AsyncMock(return_value=[])),
+        patch.object(scorecard_module, "watch_signals", AsyncMock(return_value=[])),
+        patch.object(cards_module, "decision_events", decision_events),
+    ):
+        result = runner.invoke(cli, ["cards", "outcomes", "--days", "1"])
+
+    assert result.exit_code == 0, result.output
+    assert {call[0] for call in sip.calls} >= {"AAA", "PPP", "SPY"}
+    assert all(call[3] <= fixed_now - pd.Timedelta(minutes=15) for call in sip.calls)
+    # The bar still forming at the bound (17:00 UTC, the +12 jump) is not part of either label.
+    [frames] = pead_hourly
+    assert frames["PPP"].index.max() < bound - pd.Timedelta(hours=1) + pd.Timedelta(seconds=1)
+    assert '"immature": 1' in result.output and '"sent_events"' in result.output
+
+
+def test_cards_scorecard_prints_the_formatted_card_and_sends_nothing(runner: CliRunner):
+    """`copilot cards scorecard` builds the card with the requested activity window and prints its text."""
+    card = scorecard_module.LaneScorecard(
+        window_start=datetime(2026, 11, 12, 5, 0, tzinfo=UTC),
+        window_end=datetime(2026, 11, 14, 14, 0, tzinfo=UTC),
+        lanes=tuple(
+            scorecard_module.LaneRow(
+                lane=lane,
+                sent=0,
+                attempted_auto=0,
+                attempted_tap=0,
+                unfilled=0,
+                filled=0,
+                closed=0,
+                realized_r_sum=0.0,
+                record_closed=0,
+                record_mean_r=None,
+                open_positions=0,
+                cf_mature=0,
+                cf_total=0,
+                cf_mean_r=None,
+                cf_mean_excess_r=None,
+            )
+            for lane in ("native", "pead", "insider_watch")
+        ),
+        account=None,
+    )
+    build = AsyncMock(return_value=card)
+    with (
+        patch.object(cards_module, "build_scorecard", build),
+        patch.object(cards_module, "build_bar_source", return_value=_FakeBarSource(pd.DataFrame())),
+    ):
+        result = runner.invoke(cli, ["cards", "scorecard", "--days", "3"])
+
+    assert result.exit_code == 0, result.output
+    assert build.await_args.kwargs["activity_days"] == 3
+    assert "Weekly lane scorecard" in result.output and "PEAD paper probe" in result.output
+    assert result.output.rstrip().endswith(
+        "Counterfactual labels assume study-price fills; no lane has validated edge."
+    )

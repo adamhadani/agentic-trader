@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Collection
 from dataclasses import asdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -25,10 +26,18 @@ from agentic_trader.accounting.risk import AccountRiskSnapshot, require_risk_che
 from agentic_trader.broker.base import BrokerEntryContext, OrderRequest
 from agentic_trader.constants import ACTIVE_CLOSE_STATUSES, AuditEventType, ExecutionMode, SignalStatus, SystemStateKey
 from agentic_trader.execution.admission import authorization_expiry, reservation_rejection
+from agentic_trader.execution.auto_entry import (
+    AUTO_ENTRY_KEY,
+    AUTO_ENTRY_MARKER,
+    AutoEntryAttempt,
+    AutoEntryDigestRow,
+    ExpiredCard,
+)
 from agentic_trader.execution.capacity import assess_entry_capacity
 from agentic_trader.execution.durable import (
     ENTRY_BLOCKING,
     LEDGER_LOCK,
+    EntryTrigger,
     EventKind,
     NotificationKind,
     OrderObservation,
@@ -36,12 +45,15 @@ from agentic_trader.execution.durable import (
     WorkKind,
     WorkStatus,
 )
+from agentic_trader.execution.scope import is_non_native
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.alpha.validation import ValidationPolicy
 from agentic_trader.research.apriori.probe import CATALOG_KIND, CATALOG_STRATEGY_IDS
+from agentic_trader.research.apriori.watch_contract import INSIDER_WATCH_STRATEGY_ID, frozen_watch_contract
 from agentic_trader.risk import drawdown_risk_factor, requires_account_risk
 from agentic_trader.storage.models import (
     AlphaProjectionRecord,
+    AuditEventRecord,
     CloseRequestRecord,
     DomainEventRecord,
     LedgerCheckpointRecord,
@@ -51,13 +63,16 @@ from agentic_trader.storage.models import (
     WorkflowLockRecord,
     WorkItemRecord,
 )
-from agentic_trader.storage.probe_state import probe_block_reason
+from agentic_trader.storage.probe_state import CLOSED_STATUSES, probe_block_reason
 
 
 if TYPE_CHECKING:
     from agentic_trader.broker.base import OrderResult
     from agentic_trader.config import AppConfig
     from agentic_trader.storage.db import SignalDatabase
+
+
+logger = logging.getLogger(__name__)
 
 
 def encode(value: Any) -> str:
@@ -73,6 +88,14 @@ def _event_view(row: DomainEventRecord) -> dict[str, Any]:
         "recorded_at": row.recorded_at.isoformat(),
         "payload": json.loads(row.payload),
     }
+
+
+# The decision_provenance key of an insider watch card's event (InsiderWatchSource.provenance_key).
+WATCH_PROVENANCE_KEY = "insider_watch"
+
+# The refusal of a non-native entry (catalog, watch, probe or alpha) while portfolio.max_non_native_positions of them
+# are open or in flight. A capacity refusal like the per-source caps: no halt, nothing reserved.
+NON_NATIVE_CAPACITY_REASON = "non_native_capacity"
 
 
 def _catalog_signal_rejection(signal: SignalRecord, definition: dict) -> str | None:
@@ -95,6 +118,31 @@ def _catalog_signal_rejection(signal: SignalRecord, definition: dict) -> str | N
     return None
 
 
+def _watch_signal_rejection(signal: SignalRecord) -> str | None:
+    """An insider watch card has no registry entry: its signal must carry the frozen cube bracket byte
+    for byte and a same-session event of the frozen entry naming its own contract."""
+    try:
+        contract = frozen_watch_contract()
+    except Exception as exc:
+        return f"Insider watch contract unavailable: {type(exc).__name__}."
+    provenance = json.loads(signal.decision_provenance or "{}")
+    event = provenance.get(WATCH_PROVENANCE_KEY) if isinstance(provenance, dict) else None
+    session = signal.timestamp.astimezone(ET_TZ).date().isoformat()
+    if (
+        signal.alpha_version
+        or signal.timeframe != "1d"
+        or str(signal.direction).upper() != "LONG"
+        or not signal.alpha_policy
+        or encode(json.loads(signal.alpha_policy)) != encode(contract.policy)
+        or not isinstance(event, dict)
+        or event.get("entry_sha256") != contract.entry_sha256
+        or event.get("symbol") != signal.contract.upper()
+        or event.get("session") != session
+    ):
+        return "Insider watch signal differs from its frozen contract."
+    return None
+
+
 def work_item(row: WorkItemRecord) -> WorkItem:
     return WorkItem(
         row.id,
@@ -106,6 +154,54 @@ def work_item(row: WorkItemRecord) -> WorkItem:
         row.attempts,
         row.created_at,
     )
+
+
+# The broker's unfilled terminal order statuses that fail a resting entry (and the only ones a digest renders).
+BROKER_TERMINAL_STATUSES = frozenset({"canceled", "rejected", "expired"})
+
+
+def _digest_row(
+    signal: SignalRecord,
+    attempt: dict[str, Any] | None,
+    entry: WorkItemRecord | None,
+    cancel: WorkItemRecord | None,
+    terminal: str | None,
+) -> AutoEntryDigestRow:
+    """The digest outcome of one marked card from its signal, attempt event and entry/cancel work items.
+
+    Details are desk-authored: the attempt's reason, a fixed phrase, or the broker's terminal order status
+    (one of canceled, rejected, expired). A work item's error text is never rendered.
+    """
+    status = SignalStatus(signal.status)
+    symbol = signal.contract
+    if signal.executed_at is not None or status in CLOSED_STATUSES:
+        state = "open" if status == SignalStatus.EXECUTED else "closed"
+        return AutoEntryDigestRow(
+            signal.id, symbol, "filled", f"{signal.quantity or 0:g} @ ${signal.entry_price:.2f} ({state})"
+        )
+    if cancel is not None:
+        operator = json.loads(cancel.payload).get("cause", "deadline") == "operator"
+        if cancel.status == WorkStatus.ACCEPTED:
+            return AutoEntryDigestRow(signal.id, symbol, "cancelled_by_operator" if operator else "cancelled_unfilled")
+        return AutoEntryDigestRow(signal.id, symbol, "still_resting")
+    if status == SignalStatus.DISMISSED:
+        return AutoEntryDigestRow(signal.id, symbol, "dismissed")
+    if status in (SignalStatus.SUBMITTING, SignalStatus.EXECUTED):
+        return AutoEntryDigestRow(signal.id, symbol, "still_resting")
+    if attempt is not None and attempt.get("outcome") == "refused":
+        reason = attempt.get("reason")
+        if attempt.get("expiry_kind") == "expired":
+            # The sweep's own tap assessment expired the card: say so beside its reason.
+            reason = f"expired ({reason})" if reason else "expired"
+        return AutoEntryDigestRow(signal.id, symbol, "refused", reason)
+    if status == SignalStatus.FAILED and entry is not None:
+        if entry.status == WorkStatus.REJECTED:
+            return AutoEntryDigestRow(signal.id, symbol, "refused", "rejected after it was queued")
+        ended = (
+            f"broker ended the order {terminal} without fills" if terminal else "broker ended the order without fills"
+        )
+        return AutoEntryDigestRow(signal.id, symbol, "refused", ended)
+    return AutoEntryDigestRow(signal.id, symbol, "abandoned")
 
 
 class WorkflowStore:
@@ -206,6 +302,209 @@ class WorkflowStore:
             )
             return True
 
+    async def pending_auto_entries(self, et_date: date) -> list[dict[str, Any]]:
+        """The marked cards of New York date ``et_date`` still awaiting their one auto-entry attempt.
+
+        This scope's ``PENDING`` signals whose ``auto_entry`` marker is exactly ``AUTO_ENTRY_MARKER``,
+        with no ``auto-entry/{id}`` event, ordered by recording time, then rank. A card whose entry was
+        queued is ``SUBMITTING``, so a crash after queueing never selects it again.
+        """
+        start = datetime.combine(et_date, time.min, tzinfo=ET_TZ)
+        end = datetime.combine(et_date + timedelta(days=1), time.min, tzinfo=ET_TZ)
+        async with self.db.session_factory() as session:
+            rows = (
+                await session.scalars(
+                    select(SignalRecord).where(
+                        *self.db._scope(),
+                        SignalRecord.status == SignalStatus.PENDING,
+                        SignalRecord.timestamp >= start,
+                        SignalRecord.timestamp < end,
+                    )
+                )
+            ).all()
+            marked: list[tuple[SignalRecord, Any]] = []
+            for row in rows:
+                provenance = json.loads(row.decision_provenance or "{}")
+                if isinstance(provenance, dict) and provenance.get(AUTO_ENTRY_KEY) == AUTO_ENTRY_MARKER:
+                    marked.append((row, provenance.get("rank")))
+            keys = [f"auto-entry/{row.id}" for row, _ in marked]
+            attempted = (
+                set(
+                    await session.scalars(
+                        select(DomainEventRecord.event_key).where(
+                            DomainEventRecord.scope == self.scope, DomainEventRecord.event_key.in_(keys)
+                        )
+                    )
+                )
+                if keys
+                else set()
+            )
+        selected = [(row, rank) for row, rank in marked if f"auto-entry/{row.id}" not in attempted]
+        selected.sort(key=lambda pair: (pair[0].timestamp, pair[1] if isinstance(pair[1], int) else float("inf")))
+        return [row.to_dict() for row, _ in selected]
+
+    async def auto_entry_digest_rows(self, et_date: date) -> list[AutoEntryDigestRow]:
+        """One digest row per marked card of New York date ``et_date``, in rank order.
+
+        Reads only the signals table, the ``auto_entry_attempted`` events and the entry/cancel work items.
+        A fill wins; then an operator-cause cancel (``still_resting`` until the broker confirms it); then
+        the signal's own state, with a later broker rejection reported as the refusal.
+        """
+        start = datetime.combine(et_date, time.min, tzinfo=ET_TZ)
+        end = datetime.combine(et_date + timedelta(days=1), time.min, tzinfo=ET_TZ)
+        async with self.db.session_factory() as session:
+            signals = (
+                await session.scalars(
+                    select(SignalRecord).where(
+                        *self.db._scope(), SignalRecord.timestamp >= start, SignalRecord.timestamp < end
+                    )
+                )
+            ).all()
+            marked: list[tuple[SignalRecord, Any]] = []
+            for row in signals:
+                provenance = json.loads(row.decision_provenance or "{}")
+                if isinstance(provenance, dict) and provenance.get(AUTO_ENTRY_KEY) == AUTO_ENTRY_MARKER:
+                    marked.append((row, provenance.get("rank")))
+            if not marked:
+                return []
+            ids = [str(row.id) for row, _ in marked]
+            attempts = {
+                event.event_key: json.loads(event.payload)
+                for event in await session.scalars(
+                    select(DomainEventRecord).where(
+                        DomainEventRecord.scope == self.scope,
+                        DomainEventRecord.event_key.in_([f"auto-entry/{i}" for i in ids]),
+                    )
+                )
+            }
+            entries = {
+                item.dedup_key: item
+                for item in await session.scalars(
+                    select(WorkItemRecord).where(
+                        WorkItemRecord.scope == self.scope,
+                        WorkItemRecord.kind == WorkKind.ENTRY,
+                        WorkItemRecord.dedup_key.in_(ids),
+                    )
+                )
+            }
+            cancels: dict[str, WorkItemRecord] = {}
+            for item in await session.scalars(
+                select(WorkItemRecord)
+                .where(
+                    WorkItemRecord.scope == self.scope,
+                    WorkItemRecord.kind == WorkKind.ENTRY_CANCEL,
+                    WorkItemRecord.dedup_key.in_(ids),
+                )
+                .order_by(WorkItemRecord.created_at, WorkItemRecord.id)
+            ):
+                cancels[item.dedup_key] = item
+            terminals: dict[int, str] = {}
+            for audit in await session.scalars(
+                select(AuditEventRecord)
+                .where(
+                    AuditEventRecord.event_type == AuditEventType.ENTRY_EXECUTION_UPDATED,
+                    AuditEventRecord.signal_id.in_([row.id for row, _ in marked]),
+                )
+                .order_by(AuditEventRecord.id)
+            ):
+                evidence = json.loads(audit.payload)
+                if evidence.get("filled_quantity") == "0" and evidence.get("status") in BROKER_TERMINAL_STATUSES:
+                    terminals[int(audit.signal_id or 0)] = evidence["status"]
+        marked.sort(key=lambda pair: (pair[0].timestamp, pair[1] if isinstance(pair[1], int) else float("inf")))
+        return [
+            _digest_row(
+                row,
+                attempts.get(f"auto-entry/{row.id}"),
+                entries.get(str(row.id)),
+                cancels.get(str(row.id)),
+                terminals.get(row.id),
+            )
+            for row, _ in marked
+        ]
+
+    async def record_auto_entry_attempt(
+        self,
+        attempt: AutoEntryAttempt,
+        *,
+        recard: dict[str, Any] | None,
+        entered: bool,
+        expired: ExpiredCard | None = None,
+    ) -> None:
+        """Journal one auto-entry attempt and queue its follow-up in one transaction (delivery contract).
+
+        The ``auto_entry_attempted`` event (stream ``card/{id}``, key ``auto-entry/{id}``) is written
+        once: a later call for the same card writes nothing. ``entered`` queues the
+        ``CARD_AUTO_ENTERED`` button swap. ``expired`` (a card the attempt left ``EXPIRED``) queues, only
+        while the signal is ``EXPIRED`` under the lock, the card-expiry sweep's own ``CARD_EXPIRED`` strike
+        (key ``signal/{id}/expired``, payload ``signal_id``, ``contract``, ``reevaluable``) and the
+        ``signal/{id}/auto-not-placed`` notice, so the card stops saying it was entered. ``recard`` (its
+        ``auto_entry`` and raw ``auto_refusal``) queues a fresh card: the original card's payload from its
+        ``signal/{id}/created`` outbox row with those fields, only while the signal is still ``PENDING``
+        under the lock. Without that row there is nothing to re-send: the attempt is still journaled and a
+        warning is logged.
+        """
+        signal_id = attempt.signal_id
+        key = f"auto-entry/{signal_id}"
+        async with self.db.session_factory() as session, session.begin():
+            await self.lock(session)
+            journaled = await session.scalar(
+                select(DomainEventRecord.id).where(
+                    DomainEventRecord.scope == self.scope, DomainEventRecord.event_key == key
+                )
+            )
+            if journaled is not None:
+                return
+            await self.append(
+                session,
+                stream=f"card/{signal_id}",
+                kind=EventKind.AUTO_ENTRY_ATTEMPTED,
+                payload=attempt.payload(),
+                key=key,
+            )
+            signal = await session.scalar(select(SignalRecord).where(*self.db._scope(), SignalRecord.id == signal_id))
+            if signal is None:
+                return
+            if entered:
+                await self.add_notification(
+                    session,
+                    f"signal/{signal_id}/auto-entered",
+                    NotificationKind.CARD_AUTO_ENTERED,
+                    {"signal_id": signal_id, "contract": signal.contract},
+                )
+            if expired is not None and signal.status == SignalStatus.EXPIRED:
+                # The original card's message id is untouched on this path (a re-priced card is a new
+                # signal), so the strike reaches the card that says "no tap needed".
+                await self.add_notification(
+                    session,
+                    f"signal/{signal_id}/expired",
+                    NotificationKind.CARD_EXPIRED,
+                    {"signal_id": signal_id, "contract": signal.contract, "reevaluable": expired.reevaluable},
+                )
+                await self.add_notification(
+                    session, f"signal/{signal_id}/auto-not-placed", NotificationKind.MESSAGE, {"text": expired.notice}
+                )
+            if recard is not None and signal.status == SignalStatus.PENDING:
+                original = await session.scalar(
+                    select(WorkItemRecord.payload).where(
+                        WorkItemRecord.scope == self.scope,
+                        WorkItemRecord.kind == WorkKind.NOTIFICATION,
+                        WorkItemRecord.dedup_key == f"signal/{signal_id}/created",
+                    )
+                )
+                if original is None:
+                    logger.warning(
+                        "Auto-entry re-card for card #%d skipped: its original card notification is missing",
+                        signal_id,
+                        extra={"event": "auto_entry_recard_missing", "signal_id": signal_id},
+                    )
+                    return
+                await self.add_notification(
+                    session,
+                    f"signal/{signal_id}/auto-refused",
+                    NotificationKind.SIGNAL,
+                    {**json.loads(original)["arguments"], **recard},
+                )
+
     async def events(self, stream: str | None = None, *, limit: int | None = None) -> list[dict[str, Any]]:
         async with self.db.session_factory() as session:
             stmt = select(DomainEventRecord).where(DomainEventRecord.scope == self.scope)
@@ -303,6 +602,48 @@ class WorkflowStore:
             )
             return {keys[dedup_key]: item_id for dedup_key, item_id in rows}
 
+    async def entry_work_states(self, signal_ids: Collection[int]) -> dict[int, tuple[str, EntryTrigger]]:
+        """``(work status, entry trigger)`` of each signal's entry item, for journal readers.
+
+        A signal with no entry item is absent; an item that predates the trigger key reads as a tap.
+        """
+        if not signal_ids:
+            return {}
+        keys = {str(int(signal_id)): int(signal_id) for signal_id in signal_ids}
+        async with self.db.session_factory() as session:
+            rows = await session.execute(
+                select(WorkItemRecord.dedup_key, WorkItemRecord.status, WorkItemRecord.payload).where(
+                    WorkItemRecord.scope == self.scope,
+                    WorkItemRecord.kind == WorkKind.ENTRY,
+                    WorkItemRecord.dedup_key.in_(list(keys)),
+                )
+            )
+            return {
+                keys[dedup_key]: (str(status), EntryTrigger(json.loads(payload).get("entry_trigger", EntryTrigger.TAP)))
+                for dedup_key, status, payload in rows
+            }
+
+    async def entry_cancel_causes(self, signal_ids: Collection[int]) -> dict[int, set[str]]:
+        """The causes (``deadline`` or ``operator``) of each signal's entry-cancel items, for journal readers.
+
+        Items claimed before causes were recorded were all deadline cancels.
+        """
+        if not signal_ids:
+            return {}
+        keys = {str(int(signal_id)): int(signal_id) for signal_id in signal_ids}
+        causes: dict[int, set[str]] = {}
+        async with self.db.session_factory() as session:
+            rows = await session.execute(
+                select(WorkItemRecord.dedup_key, WorkItemRecord.payload).where(
+                    WorkItemRecord.scope == self.scope,
+                    WorkItemRecord.kind == WorkKind.ENTRY_CANCEL,
+                    WorkItemRecord.dedup_key.in_(list(keys)),
+                )
+            )
+            for dedup_key, payload in rows:
+                causes.setdefault(keys[dedup_key], set()).add(str(json.loads(payload).get("cause", "deadline")))
+        return causes
+
     async def unresolved_cancellation(self, session: AsyncSession, *, symbol: str | None = None) -> bool:
         query = select(WorkItemRecord.id).where(
             WorkItemRecord.scope == self.scope,
@@ -331,7 +672,77 @@ class WorkflowStore:
             raise ValueError("Observed account equity is nonpositive; new entries blocked")
         return risk
 
-    async def enqueue_entry(self, request: OrderRequest, config: AppConfig) -> tuple[WorkItem | None, str]:
+    async def _entry_payload(self, session: AsyncSession, signal_id: int) -> str | None:
+        return await session.scalar(
+            select(WorkItemRecord.payload).where(
+                WorkItemRecord.scope == self.scope,
+                WorkItemRecord.kind == WorkKind.ENTRY,
+                WorkItemRecord.dedup_key == str(signal_id),
+            )
+        )
+
+    async def entry_trigger_of(self, session: AsyncSession, signal_id: int) -> EntryTrigger | None:
+        """The trigger of a signal's entry work item; None without one, a tap when it predates the key.
+
+        Strict: an unknown stored value raises ``ValueError``. A display-only caller inside a fact
+        transaction uses ``display_entry_trigger`` instead.
+        """
+        raw = await self._entry_payload(session, signal_id)
+        if raw is None:
+            return None
+        return EntryTrigger(json.loads(raw).get("entry_trigger", EntryTrigger.TAP))
+
+    async def display_entry_trigger(self, session: AsyncSession, signal_id: int) -> EntryTrigger | None:
+        """``entry_trigger_of`` for the fold and fill-notice decisions inside a fact transaction: never raises
+        on the stored value. An unknown or unreadable value reads as ``TAP`` (never folds, no fill notice),
+        with a warning naming only its error's type; the database read itself still raises."""
+        raw = await self._entry_payload(session, signal_id)
+        if raw is None:
+            return None
+        try:
+            return EntryTrigger(json.loads(raw).get("entry_trigger", EntryTrigger.TAP))
+        except (ValueError, TypeError, AttributeError) as exc:
+            logger.warning(
+                "Entry trigger of signal #%d is unreadable (%s); notices treat it as a tap",
+                signal_id,
+                type(exc).__name__,
+                extra={"event": "entry_trigger_unreadable", "signal_id": signal_id, "reason": type(exc).__name__},
+            )
+            return EntryTrigger.TAP
+
+    async def folds_into_auto_digest(self, session: AsyncSession, signal_id: int) -> bool:
+        """Whether a routine notice of this signal's entry is folded into the daily auto-entry digest.
+
+        Only an auto entry folds, and only while the digest can still report it: never once the digest of
+        the signal's New York creation date is queued, nor when that date is before today (New York).
+        """
+        if await self.display_entry_trigger(session, signal_id) != EntryTrigger.AUTO:
+            return False
+        created = await session.scalar(
+            select(SignalRecord.timestamp).where(*self.db._scope(), SignalRecord.id == signal_id)
+        )
+        if created is None:
+            return False
+        et_date = created.astimezone(ET_TZ).date()
+        if et_date < datetime.now(UTC).astimezone(ET_TZ).date():
+            return False
+        queued = await session.scalar(
+            select(WorkItemRecord.id).where(
+                WorkItemRecord.scope == self.scope,
+                WorkItemRecord.kind == WorkKind.NOTIFICATION,
+                WorkItemRecord.dedup_key == f"auto-entry-digest/{et_date.isoformat()}",
+            )
+        )
+        return queued is None
+
+    async def entry_trigger(self, signal_id: int) -> EntryTrigger | None:
+        """``entry_trigger_of`` in its own session, for a caller outside a workflow transaction."""
+        async with self.db.session_factory() as session:
+            return await self.entry_trigger_of(session, signal_id)
+
+    async def enqueue_entry(
+        self, request: OrderRequest, config: AppConfig, *, trigger: EntryTrigger = EntryTrigger.TAP
+    ) -> tuple[WorkItem | None, str]:
 
         async with self.db.session_factory() as session, session.begin():
             await self.lock(session)
@@ -367,6 +778,15 @@ class WorkflowStore:
             if not signal or signal.status != SignalStatus.PENDING:
                 return None, "Signal is not pending."
             if reason := await self._alpha_entry_rejection(session, signal):
+                return None, reason
+            if reason := await self._non_native_capacity_rejection(session, signal, config):
+                session.add(
+                    self.db._audit(
+                        AuditEventType.ENTRY_ADMISSION_REJECTED,
+                        request.signal_id,
+                        {"reason": reason, "request": request.model_dump(mode="json")},
+                    )
+                )
                 return None, reason
             try:
                 risk = await self._entry_risk(session, config)
@@ -412,7 +832,7 @@ class WorkflowStore:
             command_id = f"entry-{uuid4().hex}"
             request = request.model_copy(update={"client_order_id": command_id})
             now = datetime.now(UTC)
-            payload = request.model_dump(mode="json")
+            payload = {**request.model_dump(mode="json"), "entry_trigger": str(trigger)}
             row = WorkItemRecord(
                 id=command_id,
                 scope=self.scope,
@@ -476,6 +896,9 @@ class WorkflowStore:
             return work_item(row)
 
     async def _alpha_entry_rejection(self, session: AsyncSession, signal: SignalRecord) -> str | None:
+        if signal.strategy == INSIDER_WATCH_STRATEGY_ID:
+            # Not a registry alpha: its contract is the frozen entry and cube bracket, never the registry.
+            return _watch_signal_rejection(signal)
         strategy = signal.strategy.lower()
         if not signal.alpha_version and not strategy.startswith("alpha_") and strategy not in CATALOG_STRATEGY_IDS:
             return None
@@ -524,15 +947,68 @@ class WorkflowStore:
             return "Alpha signal differs from its immutable strategy contract."
         return None
 
+    async def _non_native_capacity_rejection(
+        self, session: AsyncSession, signal: SignalRecord, config: AppConfig
+    ) -> str | None:
+        """Refuse a non-native entry when the non-native slots are full (operator decision O3).
+
+        Counts the scope's other non-native signals that are open (``EXECUTED``) or in flight (``SUBMITTING``, a
+        durable entry work item not yet resolved), plus this entry. A capacity/admission rule beside the
+        per-source ``max_open_*`` caps, not an entry-risk rule: it reads no prices or exposure. A native signal and
+        a ``None`` cap are never judged. Runs under the trading lock, then the alpha lock (the registry's order).
+        """
+        cap = config.portfolio.max_non_native_positions
+        if cap is None or not is_non_native(
+            strategy=signal.strategy,
+            alpha_version=signal.alpha_version,
+            alpha_policy=json.loads(signal.alpha_policy) if signal.alpha_policy else None,
+            provenance=json.loads(signal.decision_provenance) if signal.decision_provenance else None,
+        ):
+            return None
+        await self.lock(session, resource="alpha")
+        rows = (
+            await session.scalars(
+                select(SignalRecord).where(
+                    *self.db._scope(),
+                    SignalRecord.status.in_((SignalStatus.SUBMITTING, SignalStatus.EXECUTED)),
+                    SignalRecord.id != signal.id,
+                )
+            )
+        ).all()
+        others = sum(
+            1
+            for row in rows
+            if is_non_native(
+                strategy=row.strategy,
+                alpha_version=row.alpha_version,
+                alpha_policy=json.loads(row.alpha_policy) if row.alpha_policy else None,
+                provenance=json.loads(row.decision_provenance) if row.decision_provenance else None,
+            )
+        )
+        if others + 1 > cap:
+            return (
+                f"{NON_NATIVE_CAPACITY_REASON}: {others} of {cap} non-native slots are open or in flight "
+                "(catalog, watch, probe and alpha positions); a native entry is unaffected."
+            )
+        return None
+
     async def begin_submission(
         self,
         item: WorkItem,
         config: AppConfig,
         *,
-        risk_fingerprint: str | None = None,
+        preflight_risk_fingerprint: str | None = None,
         broker_context: BrokerEntryContext | None = None,
     ) -> str | None:
-        """Commit submission authority, or return a concrete refusal reason."""
+        """Commit submission authority, or return a concrete refusal reason.
+
+        Account risk is re-read under the trading -> ledger lock and capacity is
+        re-assessed on that fresh observation. A refreshed observation (a periodic
+        checkpoint between preflight and here) is recorded, not refused; a worse one
+        refuses only through the risk read's validity checks and the capacity
+        re-assessment. Risk with no preflight fingerprint is refused because preflight
+        never observed it.
+        """
         async with self.db.session_factory() as session, session.begin():
             await self.lock(session)
             halted = await session.get(SystemStateRecord, SystemStateKey.TRADING_HALTED)
@@ -570,12 +1046,23 @@ class WorkflowStore:
             # one message covering every clause. Same lock, same relative position.
             if reason := await self._alpha_entry_rejection(session, signal):
                 return f"{reason} No order submitted."
+            if reason := await self._non_native_capacity_rejection(session, signal, config):
+                return f"{reason} No order submitted."
             try:
                 risk = await self._entry_risk(session, config)
             except ValueError as exc:
                 return f"Account risk unavailable: {exc}. No order submitted."
-            if risk and risk.fingerprint != risk_fingerprint:
-                return "Account risk changed after preflight. No order submitted; request a fresh scan."
+            if risk and preflight_risk_fingerprint is None:
+                return "Account risk was not observed at preflight. No order submitted."
+            if risk and risk.fingerprint != preflight_risk_fingerprint:
+                logger.info(
+                    "Account risk observation refreshed between preflight and submission; re-assessing",
+                    extra={
+                        "event": "entry_risk_refreshed",
+                        "work_id": item.id,
+                        "signal_id": item.payload["signal_id"],
+                    },
+                )
             reservations = [
                 r.to_dict()
                 for r in (
@@ -606,7 +1093,8 @@ class WorkflowStore:
             evidence = {
                 **item.payload,
                 "account_risk": risk.model_dump(mode="json") if risk else None,
-                "risk_fingerprint": risk_fingerprint,
+                "risk_fingerprint": risk.fingerprint if risk else None,
+                "preflight_risk_fingerprint": preflight_risk_fingerprint,
                 "drawdown_multiplier": drawdown_risk_factor(float(risk.drawdown_pct), config.sizing) if risk else 1.0,
                 "broker_context": broker_context.model_dump(mode="json") if broker_context else None,
                 "capacity": capacity.model_dump(mode="json") if capacity else None,
@@ -629,6 +1117,7 @@ class WorkflowStore:
                 return False
             if recovery and row.status not in (WorkStatus.SUBMITTING, WorkStatus.UNKNOWN):
                 return False
+            previous = row.status
             row.status = (
                 WorkStatus.ACCEPTED
                 if result.success
@@ -671,9 +1160,17 @@ class WorkflowStore:
                 detail += (
                     " Conditions changed or the broker rejected this order. Run /scan for a new proposal and approval."
                 )
-            await self.add_notification(
-                session, f"entry/{row.id}/{row.status}", NotificationKind.MESSAGE, {"text": detail}
+            # An accepted auto entry is folded into the daily digest; a refusal, and the acceptance that
+            # clears an UNKNOWN outcome (its halt was announced), keep their notice.
+            folded = (
+                row.status == WorkStatus.ACCEPTED
+                and previous != WorkStatus.UNKNOWN
+                and await self.folds_into_auto_digest(session, item.payload["signal_id"])
             )
+            if not folded:
+                await self.add_notification(
+                    session, f"entry/{row.id}/{row.status}", NotificationKind.MESSAGE, {"text": detail}
+                )
             return True
 
     async def add_notification(self, session: AsyncSession, key: str, kind: str, payload: dict[str, Any]) -> str:
@@ -709,6 +1206,69 @@ class WorkflowStore:
         )
         row.sequence = queued_event.id
         return item_id
+
+    async def auto_entry_digest_queued(self, et_date: date) -> bool:
+        """Whether this date's digest is already queued: a plain read, without the trading workflow lock."""
+        async with self.db.session_factory() as session:
+            return bool(
+                await session.scalar(
+                    select(WorkItemRecord.id).where(
+                        WorkItemRecord.scope == self.scope,
+                        WorkItemRecord.kind == WorkKind.NOTIFICATION,
+                        WorkItemRecord.dedup_key == f"auto-entry-digest/{et_date.isoformat()}",
+                    )
+                )
+            )
+
+    async def queue_auto_entry_digest(self, et_date: date, text: str) -> bool:
+        """Queue the day's digest once: False (nothing queued) when this New York date's key already exists."""
+        key = f"auto-entry-digest/{et_date.isoformat()}"
+        async with self.db.session_factory() as session, session.begin():
+            await self.lock(session)
+            if await session.scalar(
+                select(WorkItemRecord.id).where(
+                    WorkItemRecord.scope == self.scope,
+                    WorkItemRecord.kind == WorkKind.NOTIFICATION,
+                    WorkItemRecord.dedup_key == key,
+                )
+            ):
+                return False
+            await self.add_notification(session, key, NotificationKind.MESSAGE, {"text": text, "formatted": True})
+            return True
+
+    async def notification_queued(self, key: str) -> bool:
+        """Whether a notification with this dedup key is already queued: a plain read, without the workflow lock."""
+        async with self.db.session_factory() as session:
+            return bool(
+                await session.scalar(
+                    select(WorkItemRecord.id).where(
+                        WorkItemRecord.scope == self.scope,
+                        WorkItemRecord.kind == WorkKind.NOTIFICATION,
+                        WorkItemRecord.dedup_key == key,
+                    )
+                )
+            )
+
+    async def queue_weekly_scorecard(self, key: str, text: str, payload: dict[str, Any]) -> bool:
+        """Queue the week's scorecard message and its journal event once, in one transaction.
+
+        ``key`` is ``weekly-scorecard/{iso_year}-W{iso_week}``; False (nothing written) when it already exists.
+        """
+        async with self.db.session_factory() as session, session.begin():
+            await self.lock(session)
+            if await session.scalar(
+                select(WorkItemRecord.id).where(
+                    WorkItemRecord.scope == self.scope,
+                    WorkItemRecord.kind == WorkKind.NOTIFICATION,
+                    WorkItemRecord.dedup_key == key,
+                )
+            ):
+                return False
+            await self.add_notification(session, key, NotificationKind.MESSAGE, {"text": text, "formatted": True})
+            await self.append(
+                session, stream="scorecard/weekly", kind=EventKind.WEEKLY_SCORECARD, key=key, payload=payload
+            )
+            return True
 
     async def enqueue_notification(self, key: str, kind: str, payload: dict[str, Any]) -> str:
         async with self.db.session_factory() as session, session.begin():
@@ -824,7 +1384,7 @@ class WorkflowStore:
                 projection = await session.get(OrderProjectionRecord, (self.scope, observation.order_id))
                 assert projection is not None
                 current = OrderObservation.model_validate_json(projection.payload)
-                if current.status in {"canceled", "rejected", "expired"} and Decimal(current.filled_quantity) == 0:
+                if current.status in BROKER_TERMINAL_STATUSES and Decimal(current.filled_quantity) == 0:
                     signal = await session.scalar(
                         select(SignalRecord).where(
                             *self.db._scope(),

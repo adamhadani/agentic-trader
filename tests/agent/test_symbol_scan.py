@@ -9,13 +9,14 @@ with source ``operator``, still sharing the one-dynamic-card-per-session cap.
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from agentic_trader.agent import copilot as copilot_module
 from agentic_trader.config import ScanBudget
-from agentic_trader.constants import SignalStatus
+from agentic_trader.constants import ExecutionMode, SignalStatus
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.execution.freshness import ExecutionReply
 from agentic_trader.screeners.dynamic_universe import AssetInfo, ScreenerEntry, StaticReference
@@ -68,7 +69,7 @@ async def journal_reference(
         "members": [],
         "scanned": [],
         "excluded": {},
-        "feed": feed or desk.config.market_data.alpaca_feed,
+        "feed": feed or desk.config.market_data.bars_feed,
         "threshold": value if threshold is _DEFAULT else threshold,
         "reference": {"percentile": percentile, "names": names, "value": value, "floor": 0},
     }
@@ -212,6 +213,45 @@ async def test_no_setup_is_reported_through_the_outbox(tap_desk, temp_db):  # no
     [text] = await message_texts(temp_db)
     assert "No valid setup for SPY right now" in text and "rejected: &lt;weak&gt;" in text
     tap_desk.notifier.send_message.assert_not_called()
+
+
+def _symbol_desk(scan_desk, app_config):
+    """The real run_scan behind ``/scan SYMBOL``: one futures and one equity contract, Alpaca execution."""
+    app_config.execution_mode = ExecutionMode.ALPACA
+    app_config.contracts = {
+        "/MES": SimpleNamespace(name="/MES", ticker="/MES", asset_class="FUTURES"),
+        "SPY": SimpleNamespace(name="SPY", ticker="SPY", asset_class="EQUITY"),
+    }
+    scan_desk.session_provider.get_session_info.return_value = session_info(
+        next_close=datetime.now(UTC) + timedelta(hours=2)
+    )
+    return scan_desk
+
+
+async def test_a_futures_symbol_scan_under_alpaca_says_the_broker_cannot_execute_it(scan_desk, app_config, temp_db):
+    """A restricted scan keeps its selection reply: it never ends at the unrestricted scans' idle check."""
+    desk = _symbol_desk(scan_desk, app_config)
+
+    await desk.request_symbol_scan("/MES")
+    await finish_background_scans(desk)
+
+    assert await message_texts(temp_db) == ["No valid setup for /MES right now: not executable by this broker."]
+    desk.data_fetcher.fetch_data.assert_not_called()
+
+
+async def test_an_equity_symbol_scan_meeting_a_closed_equity_session_says_so(scan_desk, app_config, temp_db):
+    desk = _symbol_desk(scan_desk, app_config)
+
+    async def equity_closed(instrument_type="all", timestamp=None):
+        # The handler's session read said open; inside run_scan the equity session has closed.
+        return (instrument_type != "equity", "test")
+
+    desk.session_provider.is_session_active.side_effect = equity_closed
+
+    await desk.request_symbol_scan("SPY")
+    await finish_background_scans(desk)
+
+    assert await message_texts(temp_db) == ["No valid setup for SPY right now: session closed."]
 
 
 async def test_a_busy_scanner_is_reported_through_the_outbox(tap_desk, temp_db, monkeypatch):  # noqa: F811
@@ -446,6 +486,23 @@ async def test_a_newer_wrong_feed_reference_never_shadows_an_older_valid_one(ope
 
     reference = operator_desk.run_scan.await_args.kwargs["operator_dynamic"].reference
     assert reference == StaticReference(percentile=0.25, names=25, value=6.0e7)
+
+
+async def test_under_sip_delayed_a_cached_iex_reference_is_ignored(operator_desk, app_config):
+    """The liquidity threshold is in the scan bars' units: an IEX reference never gates a SIP-scanned name."""
+    app_config.market_data.alpaca_feed = "iex"
+    app_config.market_data.scan_bars = "sip_delayed"
+    await journal_reference(operator_desk, value=6.0e7, feed="iex")
+
+    assert await refusal_notice(operator_desk, "NEWA") == NO_REFERENCE
+
+    await journal_reference(operator_desk, value=8.0e7, feed="sip", built_at=datetime.now(UTC) - timedelta(days=1))
+    operator_desk.run_scan = AsyncMock(return_value={"sent": 1, "runners_up": []})
+    await operator_desk.request_symbol_scan("NEWA")
+    await finish_background_scans(operator_desk)
+
+    reference = operator_desk.run_scan.await_args.kwargs["operator_dynamic"].reference
+    assert reference == StaticReference(percentile=0.25, names=25, value=8.0e7)
 
 
 async def test_the_latest_usable_reference_is_reconstructed_and_passed_to_run_scan(operator_desk, caplog):

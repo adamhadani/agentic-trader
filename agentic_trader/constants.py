@@ -144,8 +144,6 @@ DEFAULT_MAX_CONCURRENT_CONTRACTS = 2
 DEFAULT_MIN_RISK_REWARD_RATIO = 2.0
 DEFAULT_MIN_STOP_ATR_MULTIPLE = 1.5
 DEFAULT_DEDUPLICATION_HOURS = 12
-DEFAULT_LOCKOUT_PRE_EVENT_MINUTES = 60
-DEFAULT_LOCKOUT_POST_EVENT_MINUTES = 30
 
 
 class VolatilityRegime(StrEnum):
@@ -256,11 +254,9 @@ SECTOR_MAP: dict[str, str] = {
 }
 
 # Options & Gamma Exposure (GEX) Constants
-DEFAULT_IMPLIED_VOLATILITY = 0.20
 OPTIONS_CONTRACT_MULTIPLIER = 100.0
 GEX_MILLION_CONVERSION = 1_000_000.0
 DEFAULT_GEX_REGIME_THRESHOLD = 5.0
-DEFAULT_TIME_TO_EXPIRY_DAYS = 14.0
 
 # Pairs Trading & Statistical Arbitrage Constants
 DEFAULT_PAIRS_LOOKBACK = 30
@@ -302,7 +298,9 @@ DEFAULT_STRATEGY_ALLOCATIONS: dict[str, float] = {
 }
 
 # Database Persistence & Pooling Defaults
-DEFAULT_POSTGRES_DB_URL = "postgresql+asyncpg://adamhadani@localhost:5432/agentic_trader"
+# No user in the URL: asyncpg takes it from PGUSER or the account running the process. Set DATABASE_URL to
+# name one explicitly (docs/production.md).
+DEFAULT_POSTGRES_DB_URL = "postgresql+asyncpg://localhost:5432/agentic_trader"
 DEFAULT_DB_POOL_SIZE = 10
 DEFAULT_DB_MAX_OVERFLOW = 20
 DEFAULT_DB_POOL_TIMEOUT = 30.0
@@ -371,10 +369,26 @@ class CloseRequestStatus(StrEnum):
 
 
 ACTIVE_CLOSE_STATUSES = (CloseRequestStatus.CLAIMED, CloseRequestStatus.SUBMITTED, CloseRequestStatus.UNKNOWN)
+
+
+class CalendarStatus(StrEnum):
+    """Health of one tier-1 calendar source. `failed` is live-feed only; `expired` and `invalid` are static only."""
+
+    OK = "ok"
+    FAILED = "failed"
+    EXPIRED = "expired"
+    INVALID = "invalid"
+
+
 ALPACA_MAX_ORDERS_PER_PAGE = 500
 ALPACA_MAX_REPLACEMENT_CHAIN = 100
 BROKER_QUANTITY_TOLERANCE = 1e-6
 BROKER_PRICE_TOLERANCE = 1e-8
+# Alpaca reports an order's filled_avg_price and a position's avg_entry_price each at six decimals, and a
+# multi-price fill's average can differ by one unit in the last place (DIS, 2026-11-17: true average
+# 121.1403225806..., order 121.140322, position 121.140323, position cost_basis 31 x 121.140323). Cost-basis
+# identity checks allow a hundredth of a cent, 100x that gap and below a $0.01 tick; quantity stays exact.
+BROKER_COST_BASIS_TOLERANCE = 1e-4
 DEFAULT_STREAM_RECONNECT_INITIAL_SECONDS = 2.0
 DEFAULT_STREAM_RECONNECT_MAX_SECONDS = 60.0
 STREAM_RECONNECT_MULTIPLIER = 2.0

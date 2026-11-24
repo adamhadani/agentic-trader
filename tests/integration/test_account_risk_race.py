@@ -22,6 +22,7 @@ async def test_committing_worse_risk_fences_submission_waiting_for_postgres_lock
     app_config.execution_mode = ExecutionMode.ALPACA
     app_config.portfolio.cash = 10000
     venue.position = None
+    venue.take_profit["status"] = "held"
     state["account"]["cash"] = "10000"
     state["activities"] = [{"id": "deposit", "activity_type": "CSD", "net_amount": "10000"}]
     await ledger.refresh()
@@ -82,8 +83,12 @@ async def test_committing_worse_risk_fences_submission_waiting_for_postgres_lock
         if resource == LEDGER_LOCK:
             reader_acquired_lock.set()
 
+    context = await ledger.broker.entry_market_context(OrderRequest.model_validate(claim.payload))
+
     async def submit_if_admitted():
-        refusal = await store.begin_submission(claim, app_config, risk_fingerprint=checked.fingerprint)
+        refusal = await store.begin_submission(
+            claim, app_config, preflight_risk_fingerprint=checked.fingerprint, broker_context=context
+        )
         if refusal is None:
             # A faulty admission would reach the real SDK against the local venue.
             await ledger.broker.submit_entry_order(OrderRequest.model_validate(claim.payload))
@@ -108,7 +113,7 @@ async def test_committing_worse_risk_fences_submission_waiting_for_postgres_lock
             assert (await publishing).ready
             refusal = await admitting
         assert reader_acquired_lock.is_set()
-        assert refusal is not None and "risk changed after preflight" in refusal.lower()
+        assert refusal is not None and "drawdown" in refusal.lower()
         current = await ledger.current_risk()
         assert current.drawdown_pct == Decimal(".07")
         assert current.fingerprint != checked.fingerprint

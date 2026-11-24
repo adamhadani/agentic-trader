@@ -59,7 +59,7 @@ def calculate_dynamic_sizing(
     drawdown_factor x macro_factor``), so every tier offered on a card fits the budget the
     tap-time regime gate and admission re-check with the same inputs. The base tier scales
     its own target budget by the same drawdown and macro factors and is clamped to the max
-    tier; a paper-probe ``risk_dollars_cap`` may only lower the max.
+    tier; a capped card's ``risk_dollars_cap`` (paper probe, insider watch) may only lower the max.
     """
     sizing_cfg = config.sizing
     budget = per_trade_risk_budget(
@@ -103,9 +103,10 @@ def calculate_dynamic_sizing(
     # 3. Maximum Permissible Quantity (Hard Risk & Notional Gates): the shared per-trade budget
     max_risk_dollars = budget.dollars
     if risk_dollars_cap is not None and risk_dollars_cap < max_risk_dollars:
-        # A paper probe may only ever reduce risk. Base/half tiers clamp to max_qty below.
+        # A capped card (paper probe, insider watch) may only ever reduce risk. Base/half tiers clamp to max_qty below.
         max_risk_dollars = risk_dollars_cap
-        gating_reasons.append(f"Paper probe risk cap applied: ${risk_dollars_cap:,.0f}")
+        label = "Paper probe" if candidate is None or candidate.probe else "Card"
+        gating_reasons.append(f"{label} risk cap applied: ${risk_dollars_cap:,.0f}")
     qty_by_risk = max_risk_dollars / per_unit_risk
     qty_by_notional = trade_notional_ceiling / unit_notional
 

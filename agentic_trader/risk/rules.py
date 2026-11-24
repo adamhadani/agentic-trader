@@ -15,27 +15,29 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
-from agentic_trader.constants import AssetClass, Direction, StrategyType
+from agentic_trader.constants import AssetClass, CalendarStatus, Direction, StrategyType
 from agentic_trader.risk.book import Book
 from agentic_trader.risk.capital import RiskBudget
 from agentic_trader.risk.limits import RiskLimits, normalize_symbol
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
 
 __all__ = [
     "CorporateActionLike",
     "EntryIntent",
+    "FilingLike",
     "Rejection",
     "RiskRule",
     "admission_gates",
     "aggregate_stop_risk",
     "asset_class_notional",
     "blocking_corporate_action",
+    "blocking_filing",
     "book_gates",
     "concurrent_positions",
     "corporate_action_block",
@@ -44,6 +46,7 @@ __all__ = [
     "earnings_days_out",
     "entry_session_open",
     "exposure_known",
+    "filing_veto_block",
     "in_lockout_window",
     "macro_lockout",
     "meets_min_reward_risk",
@@ -80,6 +83,7 @@ class RiskRule(StrEnum):
     SESSION_NOT_RTH = "session_not_rth"
     REGIME_BREAKOUT = "regime_breakout"
     CORPORATE_ACTION = "corporate_action"
+    FILING_VETO = "filing_veto"
 
 
 @dataclass(frozen=True)
@@ -350,19 +354,34 @@ def correlation_group(intent: EntryIntent, book: Book, limits: RiskLimits) -> Re
 
 def in_lockout_window(now: datetime, event_at: datetime, pre_minutes: int, post_minutes: int) -> bool:
     """Whether ``now`` lies in ``[event_at - pre_minutes, event_at + post_minutes]``, inclusive at both ends. The one
-    lockout-window predicate: ``macro_lockout`` uses it, and so do the economic calendar and the scan-start check.
+    lockout-window predicate: ``macro_lockout`` uses it, and so does the union tier-1 calendar's ``check``.
     """
     return event_at - timedelta(minutes=pre_minutes) <= now <= event_at + timedelta(minutes=post_minutes)
 
 
 def macro_lockout(
-    event_title: str | None, event_at: datetime | None, now: datetime, limits: RiskLimits
+    event_title: str | None,
+    event_at: datetime | None,
+    now: datetime,
+    limits: RiskLimits,
+    *,
+    calendar_verified: bool,
+    static_status: CalendarStatus,
 ) -> Rejection | None:
     """Rule ``macro_lockout``: refuses an entry while ``now`` is inside the lockout window
     (``limits.lockout_pre_minutes`` / ``limits.lockout_post_minutes``) around the tier-1 event the caller found;
     no event means no lockout. The reason prints the event's UTC clock time, and an untitled event as
-    "scheduled release". Called by the scan (evaluator) and by entry admission on both broker branches.
+    "scheduled release". Before the window test, an unverified static tier-1 calendar refuses every entry when
+    ``limits.macro_calendar_unknown`` is ``closed`` (``static_status`` names why in the text); under ``open`` it
+    changes nothing. Called through ``CalendarCheck.lockout_rejection`` by the whole-scan check, the evaluator, the
+    tap gate and entry admission on both broker branches.
     """
+    if not calendar_verified and limits.macro_calendar_unknown == "closed":
+        return Rejection(
+            RiskRule.MACRO_LOCKOUT,
+            f"Macro calendar unverified: the static tier-1 calendar is {static_status}; new entries refused "
+            "(risk.macro_calendar_unknown: closed).",
+        )
     if event_at is None or not in_lockout_window(
         now, event_at, limits.lockout_pre_minutes, limits.lockout_post_minutes
     ):
@@ -382,6 +401,15 @@ def earnings_days_out(event_date: date | None, today: date, blackout_days: int) 
         return None
     days = (event_date - today).days
     return days if 0 <= days <= blackout_days else None
+
+
+def earnings_unverified_refuses(
+    *, verified: bool, has_event: bool, blackout_days: int, unknown: Literal["open", "closed"]
+) -> bool:
+    """Whether the earnings gate refuses on an unverifiable calendar: only under ``risk.earnings_calendar_unknown:
+    closed``, with a blackout configured, when no report was found and neither the live lookup nor a capture vouched.
+    """
+    return unknown == "closed" and blackout_days > 0 and not has_event and not verified
 
 
 class CorporateActionLike(Protocol):
@@ -440,6 +468,61 @@ def corporate_action_block(
         RiskRule.CORPORATE_ACTION,
         f"Corporate action: {action.symbol} {action.describe()} effective {action.effective_on.isoformat()} "
         f"({relative_days(action.effective_on, today)}) — within the {pre_days}/{post_days}-day blackout.",
+    )
+
+
+class FilingLike(Protocol):
+    """What the filing veto reads from a filing (``agentic_trader.data.edgar_filings.MatchedFiling`` satisfies it);
+    the rule never imports the capture's data module.
+    """
+
+    @property
+    def symbol(self) -> str: ...
+
+    @property
+    def category(self) -> str: ...
+
+    @property
+    def filing_date(self) -> date: ...
+
+    def describe(self) -> str: ...
+
+
+def blocking_filing[F: FilingLike](
+    filings: Sequence[F], symbol: str, today: date, *, windows: Mapping[str, int]
+) -> F | None:
+    """The newest filing on ``symbol`` with ``0 <= today - filing_date <= windows[category]`` (calendar days, both
+    ends inclusive); a filing dated after ``today`` never blocks, and a category with no entry in ``windows`` never
+    blocks. Symbols match case-insensitively; same-date
+    filings keep the given order (the capture's newest first).
+    """
+    wanted = symbol.strip().upper()
+    qualifying = [
+        f
+        for f in filings
+        if f.symbol.strip().upper() == wanted
+        and f.category in windows
+        and 0 <= (today - f.filing_date).days <= windows[f.category]
+    ]
+    return max(qualifying, key=lambda f: f.filing_date, default=None)
+
+
+def filing_veto_block(
+    filings: Sequence[FilingLike], symbol: str, today: date, *, windows: Mapping[str, int]
+) -> Rejection | None:
+    """Rule ``filing_veto``: a late-filing notice, adverse 8-K or offering prospectus filed by ``symbol``'s issuer
+    within its category's window refuses a long entry. The callers apply it to long equity entries only (a short
+    never evaluates it), at the scan (evaluator) gate, the tap gate and re-evaluate; admission does not apply it
+    (as with ``corporate_action``).
+    """
+    filing = blocking_filing(filings, symbol, today, windows=windows)
+    if filing is None:
+        return None
+    return Rejection(
+        RiskRule.FILING_VETO,
+        f"Filing veto: {filing.symbol.strip().upper()} filed {filing.describe()} on {filing.filing_date.isoformat()} "
+        f"({relative_days(filing.filing_date, today)}) — within the {windows[filing.category]}-day "
+        f"{filing.category} window.",
     )
 
 

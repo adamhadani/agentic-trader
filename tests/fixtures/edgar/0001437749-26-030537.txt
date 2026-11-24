@@ -1,0 +1,170 @@
+<SEC-DOCUMENT>0001437749-26-030537.txt : 20260916
+<SEC-HEADER>0001437749-26-030537.hdr.sgml : 20260916
+<ACCEPTANCE-DATETIME>20260916154036
+ACCESSION NUMBER:		0001437749-26-030537
+CONFORMED SUBMISSION TYPE:	4
+PUBLIC DOCUMENT COUNT:		1
+CONFORMED PERIOD OF REPORT:	20260915
+FILED AS OF DATE:		20260916
+DATE AS OF CHANGE:		20260916
+
+REPORTING-OWNER:
+
+	OWNER DATA:
+		COMPANY CONFORMED NAME:			HORIZON KINETICS ASSET MANAGEMENT LLC
+		CENTRAL INDEX KEY:			0001056823
+		ORGANIZATION NAME:
+		STATE OF INCORPORATION:			DE
+		FISCAL YEAR END:			1231
+		LEGAL ENTITY IDENTIFIER:    	254900EZRQX9YDXXN264
+
+	FILING VALUES:
+		FORM TYPE:		4
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-39804
+		FILM NUMBER:		261383568
+
+	BUSINESS ADDRESS:
+		STREET 1:		1270 AVENUE OF THE AMERICAS
+		STREET 2:		27TH FLOOR
+		CITY:			NEW YORK
+		STATE:			NY
+		ZIP:			10020
+		BUSINESS PHONE:		646-495-7347
+
+	MAIL ADDRESS:
+		STREET 1:		1270 AVENUE OF THE AMERICAS
+		STREET 2:		27TH FLOOR
+		CITY:			NEW YORK
+		STATE:			NY
+		ZIP:			10020
+
+	FORMER NAME:
+		FORMER CONFORMED NAME:	HORIZON ASSET MANAGEMENT LLC
+		DATE OF NAME CHANGE:	20130813
+
+	FORMER NAME:
+		FORMER CONFORMED NAME:	HORIZON ASSET MANAGEMENT INC/NY
+		DATE OF NAME CHANGE:	19990319
+
+ISSUER:
+
+	COMPANY DATA:
+		COMPANY CONFORMED NAME:			Texas Pacific Land Corp
+		CENTRAL INDEX KEY:			0001811074
+		STANDARD INDUSTRIAL CLASSIFICATION:	OIL ROYALTY TRADERS [6792]
+		ORGANIZATION NAME:           	01 Energy & Transportation
+		EIN:				750279735
+		STATE OF INCORPORATION:			DE
+		FISCAL YEAR END:			1231
+
+	BUSINESS ADDRESS:
+		STREET 1:		2699 HOWELL STREET
+		STREET 2:		SUITE 800
+		CITY:			DALLAS
+		STATE:			TX
+		ZIP:			75204
+		BUSINESS PHONE:		214-969-5530
+
+	MAIL ADDRESS:
+		STREET 1:		2699 HOWELL STREET
+		STREET 2:		SUITE 800
+		CITY:			DALLAS
+		STATE:			TX
+		ZIP:			75204
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>4
+<SEQUENCE>1
+<FILENAME>rdgdoc.xml
+<DESCRIPTION>FORM 4
+<TEXT>
+<XML>
+<?xml version="1.0"?>
+<ownershipDocument>
+
+    <schemaVersion>X0609</schemaVersion>
+
+    <documentType>4</documentType>
+
+    <periodOfReport>2026-09-15</periodOfReport>
+
+    <issuer>
+        <issuerCik>0001811074</issuerCik>
+        <issuerName>Texas Pacific Land Corp</issuerName>
+        <issuerTradingSymbol>TPL</issuerTradingSymbol>
+        <issuerForeignTradingSymbol></issuerForeignTradingSymbol>
+    </issuer>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001056823</rptOwnerCik>
+            <rptOwnerName>HORIZON KINETICS ASSET MANAGEMENT LLC</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>1270 AVENUE OF THE AMERICAS</rptOwnerStreet1>
+            <rptOwnerStreet2>27TH FLOOR</rptOwnerStreet2>
+            <rptOwnerCity>NEW YORK</rptOwnerCity>
+            <rptOwnerState>NY</rptOwnerState>
+            <rptOwnerZipCode>10020</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isTenPercentOwner>1</isTenPercentOwner>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <aff10b5One>0</aff10b5One>
+
+    <nonDerivativeTable>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Common Stock</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-09-15</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>P</transactionCode>
+                <equitySwapInvolved>0</equitySwapInvolved>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>1</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <value>370.59</value>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>A</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>3390847</value>
+                    <footnoteId id="F1"/>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>D</value>
+                </directOrIndirectOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+    </nonDerivativeTable>
+
+    <footnotes>
+        <footnote id="F1">On May 7, 2026, Horizon Kinetics Asset Management LLC (&quot;HKAM&quot;) filed an amendment to its Schedule 13D wherein it reported beneficial ownership of 10,109,933 shares. The extent of HKAM's pecuniary interest in the shares reported in the Schedule 13D is disclosed herein.</footnote>
+    </footnotes>
+
+    <ownerSignature>
+        <signatureName>/s/ Jay Kesslen, attorney-in-fact</signatureName>
+        <signatureDate>2026-09-16</signatureDate>
+    </ownerSignature>
+</ownershipDocument>
+</XML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "calendar_id": "us-tier1-test-v1",
+  "timezone": "America/New_York",
+  "valid_from": "2020-01-01",
+  "valid_through": "2099-12-31",
+  "retrieved_on": "2026-10-21",
+  "series_last_listed": {
+    "fomc_statement": "2099-12-31",
+    "fomc_press_conference": "2099-12-31",
+    "cpi": "2099-12-31",
+    "ppi": "2099-12-31",
+    "employment_situation": "2099-12-31"
+  },
+  "events": [
+    {
+      "kind": "employment_situation",
+      "at": "2021-03-05T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/empsit.htm",
+      "tentative": false
+    },
+    {
+      "kind": "cpi",
+      "at": "2021-03-10T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/cpi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "ppi",
+      "at": "2021-03-12T08:30:00-05:00",
+      "source_url": "https://www.bls.gov/schedule/news_release/ppi.htm",
+      "tentative": false
+    },
+    {
+      "kind": "fomc_statement",
+      "at": "2021-03-17T14:00:00-04:00",
+      "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+      "tentative": false
+    },
+    {
+      "kind": "fomc_press_conference",
+      "at": "2021-03-17T14:30:00-04:00",
+      "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+      "tentative": false
+    }
+  ]
+}

@@ -29,7 +29,7 @@ from agentic_trader.broker.base import (
 )
 from agentic_trader.config import ScanBudget, UniverseConfig, UniverseEntry
 from agentic_trader.constants import AssetClass, SignalStatus
-from agentic_trader.execution.durable import EventKind, WorkKind, WorkStatus
+from agentic_trader.execution.durable import EventKind, ScanTrigger, WorkKind, WorkStatus
 from agentic_trader.execution.entries import EntryExecutionService
 from agentic_trader.market.session import ET_TZ, MarketSessionInfo, MarketSessionType
 from agentic_trader.research.alpha.models import AlphaDefinition
@@ -155,7 +155,13 @@ async def ranked_events(db):
 
 async def suggestion_scan(desk, **kwargs):
     return await desk.run_scan(
-        use_llm=False, dry_run=False, asset_class="equity", budget=ScanBudget.FULL, shadow_evidence=True, **kwargs
+        use_llm=False,
+        dry_run=False,
+        asset_class="equity",
+        budget=ScanBudget.FULL,
+        shadow_evidence=True,
+        trigger=ScanTrigger.SUGGESTION_SCAN,
+        **kwargs,
     )
 
 
@@ -674,6 +680,21 @@ async def test_the_liquidity_threshold_calibrates_to_the_static_universe_on_the_
     assert event["payload"]["feed"] == "iex"
     assert event["payload"]["threshold"] == dynamic["threshold"]
     assert event["payload"]["reference"] == reference
+
+
+async def test_under_sip_delayed_the_dynamic_block_and_its_event_carry_the_scan_bar_feed(
+    dynamic_desk, temp_db, app_config
+):
+    """The reference and the candidates come from the scan's own (SIP) bars, so the label is SIP, not the
+    configured IEX quote feed."""
+    app_config.market_data.alpaca_feed = "iex"
+    app_config.market_data.scan_bars = "sip_delayed"
+
+    await suggestion_scan(dynamic_desk)
+
+    assert dynamic_desk.last_scan_summary["dynamic"]["feed"] == "sip"
+    [event] = await dynamic_events(temp_db)
+    assert event["payload"]["feed"] == "sip"
 
 
 async def test_the_absolute_floor_applies_when_it_is_the_larger(dynamic_desk, app_config):

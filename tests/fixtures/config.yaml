@@ -27,3 +27,8 @@ telemetry:
 universe:
   # Suggestion-scan screener reads are opt-in per test (tests/agent/test_dynamic_universe_scan.py).
   dynamic: {enabled: false}
+risk:
+  macro_calendar_path: tests/fixtures/calendar/us-tier1-test-v1.json
+scan:
+  # Scan tests card SPY and other listed index names; the exclusion tests opt in (tests/agent/test_broad_index_exclusion.py).
+  broad_index_etfs: []

@@ -6,6 +6,7 @@ import pytest
 
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.research.alpha.models import RegistrySnapshot
+from tests.calendar_doubles import clear_check, union_double
 
 
 @pytest.fixture(autouse=True)
@@ -44,8 +45,7 @@ def scan_desk(app_config, temp_db, mock_notifier):
     copilot.earnings_drift = None
     copilot.session_provider = AsyncMock()
     copilot.session_provider.is_session_active.return_value = (True, "Open")
-    copilot.calendar = AsyncMock()
-    copilot.calendar.is_in_lockout_window.return_value = (False, None)
+    copilot.calendar = union_double(clear_check())
     copilot.regime_detector = AsyncMock()
     copilot.regime_detector.get_regime.return_value = SimpleNamespace(summary_text="test")
     app_config.contracts = {"SPY": SimpleNamespace(name="SPY", ticker="SPY", asset_class="EQUITY")}

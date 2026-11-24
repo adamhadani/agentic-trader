@@ -1,6 +1,6 @@
 # Alpha research roadmap
 
-**Active long-horizon plan — updated 2026-09-19.** This is the canonical alpha work
+**Active long-horizon plan — updated 2026-10-30.** This is the canonical alpha work
 queue. [Pipeline contracts](alpha-pipeline.md) describe current behavior; the
 [architecture review](architecture-review.md) retains broader operational priorities.
 The [original alpha review](alpha-stack-review.md) is historical defect evidence.
@@ -23,6 +23,98 @@ also recognize controlled positive cases and quantify its statistical power.
 - Keep active paper service and test configuration isolated. Develop in a worktree.
 - Each change starts with behavioral tests; retain RED → GREEN evidence, then review,
   relevant integrations, pre-commit/CI and a controlled deployment if code changes.
+
+## Alpha directions program (October 30)
+
+The [October 30 alpha-directions review](alpha-directions-2026-10-30/README.md) asked why the data →
+signal → alpha pipeline still produces no tradable source and where to look next. Its
+[report](alpha-directions-2026-10-30/report.md) sets an 8-week program for 2026-11-02 → 2026-12-24.
+For new alpha work this program governs. The October 21 queue below still governs operations and
+measurement items it does not mention.
+
+**Diagnosis.**
+- **Single price/volume signals are exhausted at our power.** The minimum detectable effect is
+  0.065–0.08R per trade, against a plausible 0.02–0.05R. The 64 pooled t-statistics have mean −0.06 and
+  sd 1.25, which is what chance alone produces.
+- **Only the two information events, judged against event-built controls, showed anything.** PEAD gave
+  P2 +0.055R (t ≈ 2.66); its by-year excess is weak since 2025. Insider clusters gave P2 +0.070R. Both
+  were measured on survivorship-biased cohorts.
+- **Nothing combines signals.**
+- **The native card generator has a negative prior.** TREND_PULLBACK 4h LONG is −0.078R over 7,049
+  replayed setups.
+- **Clean history is nearly spent.** Only the 2007–2016 era (with Form 4 from 2006) and the prospective
+  window since 2026-08-15 are unread.
+- **A statistical pass is not a card.** A long-only mid-cap pass can still lose to a beta-matched SPY.
+- **Paper trading cannot validate within the program.** A 0.1R card effect needs about 28 months of
+  cards.
+
+**Program rules** ([report §3](alpha-directions-2026-10-30/report.md#program-rules-apply-to-every-read)):
+- **R1, freeze and hash before reading.** A window × read ledger records each read, with α declared per
+  lane: one-sided 5%, Holm within a lane.
+- **R2, rehearse.** Before every one-shot read, reproduce a known result on an already-read window.
+- **R3, power.** State power at the *shrunk* effect, in card units too.
+- **R4, negative controls.** Pseudo-event placebos for event legs; permuted-name C-IC for IC reads.
+- **R5, two gates before auto-entry.** The statistical gate, plus an economic gate: the source's
+  `net_excess_r_v1` on its most recent window, shrunk, must be ≥ 0.
+- **R6, capped probes.** Every source enters as a capped, killable probe ($100, −4R) inside a declared
+  slot allocation.
+
+**Ordered directions:**
+
+| # | Direction | Cost | Status |
+| --- | --- | --- | --- |
+| 1 | **Honest card stream.** `card_policy` decided 2026-10-30 (`enforce` at 0.0), `card_stats` empirical-Bayes prior across keys, PEAD net-excess base rate by year on PEAD cards, the raw EPS/consensus pair in `pead_decision`, `gex.py` IV NaN instead of a fabricated 0.20 (contract 9), the window × read ledger | $0 | Merged #138 and deployed 2026-10-31: EB prior, PEAD base-rate block and raw EPS pair, GEX NaN, [window × read ledger](research-window-ledger.md); `card_policy` enforces at 0.0 by operator decision 2026-10-30 |
+| 2 | **Sharadar 2007–2016 era, event lane.** `insider-oos-v1` (P2 primary, beta/ATR-matched controls, earnings-proximity and ex-crisis secondaries) and `pead-sue-v3` (consensus-free SUE, entry at the later of D+2 and `datekey` + 1). One frozen manifest, Holm over 2, delisting rule, placebo, rehearsal on 2016-08 → 2026-07 first | ≈ $499/yr (verify) | Parked: O1 (Sharadar) deferred by the operator 2026-10-30, no date; `insider-oos-v1`'s premise failed the 2026-11-14 breadth replication ([result](apriori-insider-breadth-2026-11-14.md)), so the event lane's case now rests on `pead-sue-v3` |
+| 3 | **IC machinery and `composite-ic-v1`.** Panel kernels, `ts_beta` and `ts_resid_std` ([what was left out](alpha-ic-lane.md#13-limits-and-what-was-left-out)); next-open forward and residual return arrays on the cached bars; rank IC with a session-block bootstrap; checks A-IC and C-IC; a zero-trial re-score of the 64 pairs. One equal-weight JKP-theme composite chosen by a mechanical rule, frozen before any IC, decided at h = 20 on the era. It becomes the yardstick for every new data source | $0 beyond Sharadar | The machinery is $0, but there is no clean confirmation window without the era (O1 deferred), so what it finds stays a hypothesis; **closed 2026-10-31: `composite-ic-v1` failed its development gate** (mean IC +0.0116, `t` 1.53; [results](alpha-ic-lane-results-2026-10-31.md)); the [IC tools](alpha-ic-lane.md) stay, the era is not read for it, and the 64 pairs read by IC changed nothing |
+| 4 | **Options-implied information.** Freeze `options_fields_v1`; spend one hour checking Alpaca's indicative IV ranks against ORATS before any capture worker | ≤ $49 | Deferred (week 7) |
+| — | **Cut:** residual no-news reversal, TSMOM on the ETF32, intraday SPY/QQQ noise band, `veto-v1` | — | Not to be run without a new review |
+
+**Also decided.**
+- **Do not reopen:**
+  - genetic or LLM formula search;
+  - new single-signal fixed sets on the bracket label;
+  - exit or bracket tuning;
+  - learned rankers on native setup features;
+  - backtests of historical headlines through LLM scores.
+- **Do not buy** vectorbt PRO, social, congress or estimate feeds, or real-time SIP.
+- **No GPU work** before the composite sets the IC bar.
+- **Judging data sources:** protocol DSE-v1 ([report §4](alpha-directions-2026-10-30/report.md#4-direct-answers-to-your-seven-thoughts),
+  thought 6). A new source must show incremental IC over the frozen composite, or excess over an
+  event-matched control plus the economic gate, on a window it has not consumed.
+- **Expectation:** about 1 in 4 that a source passes both gates by the January season (from about 01-13).
+
+**Operator decisions:**
+
+| Decision | Due | Status |
+| --- | --- | --- |
+| O1 (Sharadar) | — | Deferred by the operator 2026-10-30, no date; direction 2 is parked. Terms verified (Bundle $69/month or $499/year, no retention after cancellation, personal-use licence, publication limit): [README](alpha-directions-2026-10-30/README.md#sharadar-terms-and-evidence-verified-2026-10-30) |
+| O2 (≈ $550 spend cap) | — | On hold with O1 |
+| O3 (non-native sources ≤ 5 of 8 slots) | — | Approved 2026-10-30 (the principle; native keeps at least 3). Implemented 2026-11-14 with catalog auto-entry: `portfolio.max_non_native_positions: 5` ships in `config/config.yaml`, refuses a catalog, probe or alpha entry at admission (`non_native_capacity`) and stops catalog sources carding at the ceiling |
+| DP0 (`card_policy`) | — | Decided 2026-10-30: `enforce` at 0.0, shipped with the honest-stream PR, ahead of the date and with no preview evaluations |
+| DP1–DP4 | 11-20, 12-04, 12-18, holiday week | — |
+
+The week-by-week plan is [report §6.2](alpha-directions-2026-10-30/report.md#62-week-by-week-plan-2026-11-02--2026-12-24).
+Record each decision and each direction's result here and in the review's README.
+
+## Holistic review queue (October 21)
+
+The [October 21 holistic review](holistic-review-2026-10-21/README.md) re-examined the whole system
+against the north star, a steady stream of high-quality Telegram cards. Its report §5 replaces the
+competing orderings in this file with one queue:
+
+- **Phase 0, before the 2026-10-28 FOMC.** Make the risk inputs fail safe, and make the cards that
+  are sent the cards that are measured. Status: built on `feature/phase0-fail-safes` (static
+  tier-1 calendar, `UNKNOWN` regime, journal-only swing scans, broad-index exclusion, complete scan
+  journal); merge and deploy are recorded in the review README. The PEAD probe renewal (D1) is done.
+- **Phase 1.** Honest measurement, and a paper book that actually fills. Item 1.2 (card statistics v2:
+  the `net_excess_r_v1` unit, time-matured cohorts, a frozen replay prior shrunk toward the live record,
+  `card_policy` on the posterior: `preview` at 0.0 from 2026-10-28, `enforce` at 0.0 by operator decision 2026-10-30) is done; see
+  [card evidence](card-evidence.md) and the [prior](card-stats-prior-2026-10-28.md).
+- **Phase 2.** New evidence on session-correct bars against a beta-matched yardstick.
+- **Phase 3.** Architecture and longer-horizon work.
+
+The review's decisions D1–D9 and their status are recorded in its README. The sections below remain
+the historical record; where they disagree with the review's queue, the queue governs.
 
 ## Current priorities after the whole-stack survey
 
@@ -622,6 +714,10 @@ problem.
 
    *Status (October 18):* the predeclared bracket counterfactual v1 is built ([spec](superpowers/specs/2026-10-18-bracket-counterfactual-design.md); frozen protocol `config/research/bracket-counterfactual-v1.json`). It replays the native long setups of the setup-outcome development window under five bracket arms paired by setup: A0 the live 2R fixed bracket, A1 3R, A2 2R plus the live 1.5R ratchet approximated on hourly closes, A3 3R plus the ratchet, A4 the ratchet only. Rules: B1 a Holm-adjusted paired excess-R advantage over A0, B2 own EV >= 0 after cost, B3 the 2017-2021 sign, B4 sample floors, B5 a one-shot confirmation on the setup-outcome holdout, declared before the read. Run it with `alpha bracket-counterfactual`; `cards outcomes` reports the same arms descriptively. **Run the same day: `no_change`** — no arm passes B1 (best A1 +0.009R, ci90 [−0.022, +0.042]); the live ratchet arm A2 is reliably worse than the fixed bracket (−0.013R, ci90 [−0.020, −0.006]); every arm trails SPY by 0.10–0.15R in both windows; B2 fails for every arm; the confirmation window was not read ([result](bracket-counterfactual-2026-10-18.md)). The bracket is closed as the explanation for the native base rate: the entries lag the index. Next alpha work is on the entry side ([data augmentation](alpha-data-augmentation-2026-10-18.md)); the ratchet's cost is a hypothesis for a separately declared construction test and an operator decision.
 
+   *Status (October 20):* the bracket is closed, so the next alpha work is on the entry side ([data augmentation](alpha-data-augmentation-2026-10-18.md)). The survivorship spike found that Alpaca's SIP history serves the full life of every delisted name probed (22 of 22) but its asset master is not a delisting record, so a point-in-time cohort needs an external dated delisting list ([result](survivorship-spike-2026-10-20.md)). The FINRA short-volume lane is built ([design](superpowers/specs/2026-10-20-pooled-short-volume-design.md), [pooled mining](alpha-pooled-mining.md#short-volume-lane-short_fields_v1)): `alpha short-volume` acquisition, four `short_fields_v1` fields, protocol `pooled-short-volume-campaign` and two frozen fixed sets of eight formulas (`short-v1` on cohort v2, `cohort3-short-v1` on cohort v3). Checks A and C passed for both and the approved campaigns ran 2026-10-20: cohort v2 `no_finalists`, cohort v3 `no_confirmation_candidates` (`shorts_retreat` passed discovery at t +3.40 and failed selection), so the lane is closed on this window and the confirmation window is still unused ([results](alpha-pooled-short-v1-2026-10-20.md)); the next entry-side data source is an operator decision.
+
+   *Status (October 21):* the EDGAR insider lane (data-augmentation lane #2) is built ([design](superpowers/specs/2026-10-20-pooled-insider-design.md), [pooled mining](alpha-pooled-mining.md#insider-lane-insider_fields_v1)): `alpha insider-filings` acquisition of the SEC Form 3/4/5 data sets (run 2026-10-21, digest-pinned), six `insider_fields_v1` fields keyed on filing date (Form 4 open-market officer/director trades, plan trades kept in v1), protocol `pooled-insider-campaign` and two frozen fixed sets of eight formulas (`insider-v1` on cohort v2, `cohort3-insider-v1` on cohort v3). Checks A and C and the campaigns are pending, the campaigns on operator approval only.
+
 Prospective lanes keep running meanwhile: PEAD probe, native-daily panel (first outcomes mid-October),
 and the `vol_20` / `sector_rel_mom_60` evaluation window 2026-10-21 → 2026-11-04.
 
@@ -889,6 +985,45 @@ Corporate-action/partial-fill account semantics, macro/calendar freshness admiss
 stop-intent recovery, composition/bootstrap and independent operations monitoring
 remain in [architecture-review.md](architecture-review.md#remaining-findings-ranked).
 Portfolio execution cannot bypass those ownership/protection constraints.
+
+## Pre-event program (2026-11-06)
+
+Research verdict on event-driven work that costs nothing to build.
+
+- **Build first: the dated earnings-calendar capture.** Nasdaq dates are only as reliable as a match to 8-K
+  Item 2.02 times shows, the archive's consensus fields were fetched after the fact, and every season not
+  captured is lost.
+- **Then: an uncertainty-conditioned run-up: failed 2026-11-06, closed.** The rule bought the top volatility
+  tercile about ten sessions before the report and sold at the day −1 close. Its development read on cohort
+  v3 (2016–2026, ledger L43) returned −0.070R net of a beta-matched SPY and −0.006R against matched
+  non-announcers. The planted check was detected (MDE 0.039R), so the null is powered
+  ([result](apriori-runup-2026-11-06.md)). There will be no prospective read. The capture is kept for the
+  veto layer, any later pre-event test and checking the earnings rule's dates.
+- **Built 2026-11-06; preview 2026-11-07, enforce since 2026-11-16: an EDGAR negative-filing veto layer for long cards** (NT 10-K/10-Q,
+  8-K Items 2.04/2.05/2.06/4.02/5.01, 424B4/424B5 offering prospectuses (equity, convertible or debt; the cited
+  effect is for convertibles)), **and a release exit for open native positions, long or short.** The earnings
+  blackout gates entries only, so a native position opened 8 or more calendar days ahead can hold through a
+  report; the release exit closes it before the session of a report through the existing close service. Both
+  shipped in `preview` (2026-11-07) and ship `enforce` since 2026-11-16 (`filing_veto.entry_block` for
+  `late_filing` and `adverse_8k`, `offering` journal-only and non-native cards exempt; `release_exit.mode`),
+  on the evidence in [the preview-week result](filing-veto-release-exit-preview-2026-11-14.md); the
+  `cards outcomes` `filing_veto` and `release_exit` blocks keep measuring, and covering dynamic-universe names
+  is the open gap ([production](production.md#release-exit)). Lock-up expiry and PDUFA dates stay out
+  of v1.
+- **Then: the analyst/investor-day run-up: failed 2026-11-19, closed on this source.** The feasibility count found
+  Alpaca's Benzinga history now starts 2026-04-29, so SEC 8-K full text was the only free point-in-time source.
+  The rule bought the second session after a company's first 8-K announcing an investor, analyst or capital
+  markets day and sold at the close before the event. Its development read on cohorts v3 ∪ xu (2016–2026, 318
+  legs, ledger L45) returned −0.022R net of a beta-matched SPY and +0.018R against matched controls. The planted
+  half-published effect was detected (MDE 0.21R), so the published +3.7% would have shown
+  ([result](apriori-idday-2026-11-19.md)). There will be no live 8-K capture and no prospective read; the
+  standalone and large-cap cells (n ≤ 106) are hypotheses only.
+- **Dropped:** the unconditional announcement premium; hold-through surprise bets (scheduling, seasonality,
+  streaks, shorting, insider selling and news tone, which are vetoes at most); LLM backtests on historical
+  text; index-inclusion bets; buyback, SEO, split and pre-FOMC drifts; Google Trends, Reddit and StockTwits.
+
+**Native supply (2026-11-07).** Live scans read IEX bars, which hid about two-thirds of the setups the
+SIP-measured evidence describes; scan bars move to delayed SIP ([diagnosis](native-supply-2026-11-07.md)).
 
 ## References
 

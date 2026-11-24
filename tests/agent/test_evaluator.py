@@ -6,16 +6,19 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agentic_trader.agent.calendar import ForexFactoryCalendar, MacroEvent
+from agentic_trader.agent.calendar import Tier1Kind
 from agentic_trader.agent.earnings import EarningsEvent, EarningsLookup, EarningsTiming
 from agentic_trader.agent.evaluator import RiskEvaluator
 from agentic_trader.agent.regime import RegimeDetector, RegimeSnapshot
 from agentic_trader.constants import AssetClass, StrategyType, VolatilityRegime
 from agentic_trader.data.corporate_actions import CorporateAction, CorporateActionKind, CorporateActionsLookup
+from agentic_trader.data.edgar_filings import FilingCategory, MatchedFiling
+from agentic_trader.data.filings_capture import FilingsLookup
 from agentic_trader.market.session import ET_TZ, MarketSessionInfo, MarketSessionType
 from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy
 from agentic_trader.risk import RiskRule
 from agentic_trader.screeners.base import ScreenerCandidate
+from tests.calendar_doubles import clear_check, lockout_check, union_double, unverified_check
 
 
 @pytest.fixture
@@ -34,10 +37,10 @@ def evaluator_factory(config):
                 min_rr_threshold=2.0,
                 timestamp=datetime.now(UTC),
                 summary_text="Test context",
+                risk_multiplier=1.0,
             )
         )
-        calendar = AsyncMock(spec=ForexFactoryCalendar)
-        calendar.is_in_lockout_window.return_value = (False, None)
+        calendar = union_double(clear_check())
         return RiskEvaluator(config, **{"regime_detector": detector, "calendar": calendar, **overrides})
 
     return build
@@ -113,23 +116,17 @@ async def test_notional_limit_rejection(evaluator_factory):
 
 @pytest.mark.asyncio
 async def test_macro_lockout_rejection(evaluator_factory):
-    class MockCalendar(ForexFactoryCalendar):
-        async def is_in_lockout_window(self, pre_minutes=60, post_minutes=30, now=None):
-            return True, MacroEvent(
-                title="FOMC Rate Decision",
-                country="USD",
-                impact="High",
-                timestamp=datetime.now(UTC),
-            )
-
-    evaluator = evaluator_factory(calendar=MockCalendar())
+    decision = datetime(2026, 10, 28, 18, tzinfo=UTC)
+    calendar = union_double(lockout_check("FOMC Rate Decision", decision, kind=Tier1Kind.FOMC_STATEMENT))
+    evaluator = evaluator_factory(calendar=calendar)
     candidate = create_candidate(price=5800.0)
     eval_res = await evaluator.evaluate_candidate(candidate, current_open_notional=0.0, use_llm=False)
 
     assert eval_res.approved is False
-    assert "Macro event lockout: FOMC Rate Decision at " in eval_res.rejection_reason
+    assert eval_res.rejection_reason == "Macro event lockout: FOMC Rate Decision at 18:00 UTC."
     assert eval_res.rejection_rule == RiskRule.MACRO_LOCKOUT
     assert eval_res.macro_clearance is False
+    assert eval_res.thesis_summary == "Rejected: macro lockout active for 'FOMC Rate Decision'."
 
 
 @pytest.mark.asyncio
@@ -186,6 +183,7 @@ async def test_squeeze_breakout_suppression_in_extreme_regime(evaluator_factory)
         min_rr_threshold=2.5,
         timestamp=datetime.now(UTC),
         summary_text="VIX: 35.00 (EXTREME) | Breakouts: Suppressed",
+        risk_multiplier=1.0,
     )
     mock_regime.get_regime = lambda force_refresh=False: asyncio.sleep(0, result=extreme_snapshot)  # type: ignore
 
@@ -228,6 +226,7 @@ async def test_squeeze_breakout_allowed_in_normal_regime(evaluator_factory):
         min_rr_threshold=2.0,
         timestamp=datetime.now(UTC),
         summary_text="VIX: 17.50 (NORMAL) | Breakouts: Allowed",
+        risk_multiplier=1.0,
     )
     mock_regime.get_regime = lambda force_refresh=False: asyncio.sleep(0, result=normal_snapshot)  # type: ignore
 
@@ -414,26 +413,67 @@ async def test_blocked_sizing_cannot_reach_llm_approval(evaluator_factory, monke
     completion.assert_not_called()
 
 
-async def test_lockout_gate_and_prompt_summary_share_one_clock_and_window(evaluator_factory, config):
-    """The prompt's macro block restates the gate's verdict, so both must see the same clock and window."""
-    evaluator = evaluator_factory()
-    await evaluator.evaluate_candidate(create_candidate(), use_llm=False)
-    gate = evaluator.calendar.is_in_lockout_window.call_args.kwargs
-    summary = evaluator.calendar.get_macro_summary_for_prompt.call_args.kwargs
-    assert gate["now"] == summary["now"] and gate["now"].tzinfo is UTC
-    for kwargs in (gate, summary):
-        assert kwargs["pre_minutes"] == config.risk.lockout_pre_event_minutes
-        assert kwargs["post_minutes"] == config.risk.lockout_post_event_minutes
+def llm_answer(monkeypatch, **answer) -> AsyncMock:
+    content = json.dumps({"approved": True, "macro_clearance": True, "thesis_summary": "fixture", **answer})
+    completion = AsyncMock(
+        return_value=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+    )
+    monkeypatch.setattr("agentic_trader.agent.evaluator.litellm.acompletion", completion)
+    return completion
 
 
-def create_equity_candidate(contract="AAPL", price=150.0, atr=2.0, swing_low=146.0, swing_high=155.0):
+async def test_one_calendar_check_per_evaluation_feeds_the_gate_and_the_prompt(evaluator_factory, config, monkeypatch):
+    """The prompt's macro block restates the gate's verdict, so both read one check on one clock and window."""
+    check = clear_check()
+    evaluator = evaluator_factory(calendar=union_double(check))
+    evaluator.config.openai_api_key = "isolated-test-placeholder"
+    completion = llm_answer(monkeypatch)
+    result = await evaluator.evaluate_candidate(create_candidate(), use_llm=True)
+    assert result.approved is True and result.macro_note is None
+    assert evaluator.calendar.check.await_count == 1
+    now, pre, post = evaluator.calendar.check.await_args.args
+    assert now.tzinfo is UTC
+    assert (pre, post) == (config.risk.lockout_pre_event_minutes, config.risk.lockout_post_event_minutes)
+    [_, user] = completion.await_args.kwargs["messages"]
+    assert check.prompt_text() in user["content"]
+
+
+async def test_an_unverified_calendar_sets_macro_note_and_never_says_cleared(evaluator_factory, monkeypatch):
+    evaluator = evaluator_factory(calendar=union_double(unverified_check()))
+    result = await evaluator.evaluate_candidate(create_candidate(), use_llm=False)
+    assert result.approved is True and result.macro_clearance is True  # the LLM JSON contract is unchanged
+    assert result.macro_note == "static tier-1 calendar expired; live feed ok"
+    assert "Macro cleared" not in result.thesis_summary
+    assert "Macro lockout unverified (Regime: NORMAL, VIX 18.0)." in result.thesis_summary
+
+    evaluator.config.openai_api_key = "isolated-test-placeholder"
+    llm_answer(monkeypatch, macro_note="LLM-supplied note")
+    assert (await evaluator.evaluate_candidate(create_candidate(), use_llm=True)).macro_note == (
+        "static tier-1 calendar expired; live feed ok"
+    )
+    monkeypatch.setattr(
+        "agentic_trader.agent.evaluator.litellm.acompletion", AsyncMock(side_effect=RuntimeError("provider down"))
+    )
+    # An LLM error never approves a native card; the deterministic macro note still rides on the result.
+    unavailable = await evaluator.evaluate_candidate(create_candidate(), use_llm=True)
+    assert unavailable.approved is False and unavailable.macro_note == "static tier-1 calendar expired; live feed ok"
+    assert unavailable.llm_verdict is not None and unavailable.llm_verdict["error"] == "RuntimeError"
+
+
+async def test_a_verified_calendar_still_says_macro_cleared(evaluator_factory):
+    result = await (evaluator_factory()).evaluate_candidate(create_candidate(), use_llm=False)
+    assert result.macro_note is None
+    assert "Macro cleared (Regime: NORMAL, VIX 18.0)." in result.thesis_summary
+
+
+def create_equity_candidate(contract="AAPL", price=150.0, atr=2.0, swing_low=146.0, swing_high=155.0, direction="LONG"):
     return ScreenerCandidate(
         contract=contract,
         symbol=contract,
         asset_class=AssetClass.EQUITY,
         timeframe="4h",
         strategy="TREND_PULLBACK",
-        direction="LONG",
+        direction=direction,
         current_price=price,
         ema_20=price,
         ema_50=price - 5,
@@ -668,3 +708,215 @@ async def test_llm_path_keeps_the_deterministic_corporate_action_block(
     block = eval_res.corporate_actions
     assert (block["status"], block["mode"], block["would_block"]) == ("ok", "preview", True)
     assert block["reason"].startswith("Corporate action: AAPL forward split 4-for-1 effective ")
+
+
+def _filings(*filings, status="ok", covered=("AAPL", "NVDA"), as_of=None):
+    by_symbol: dict[str, list[MatchedFiling]] = {}
+    for filing in filings:
+        by_symbol.setdefault(filing.symbol, []).append(filing)
+    return FilingsLookup(
+        status,
+        as_of if as_of is not None else datetime.now(UTC),
+        frozenset(covered) if status == "ok" else frozenset(),
+        {symbol: tuple(rows) for symbol, rows in by_symbol.items()} if status == "ok" else {},
+    )
+
+
+def _late_filing(symbol="AAPL", days_ago=3):
+    return MatchedFiling(
+        symbol=symbol,
+        category=FilingCategory.LATE_FILING,
+        form="NT 10-K",
+        items=(),
+        filing_date=datetime.now(UTC).astimezone(ET_TZ).date() - timedelta(days=days_ago),
+        acceptance="2026-11-03T16:05:00.000Z",
+        accession="0000320193-26-000101",
+    )
+
+
+def _with_filing_mode(config, mode):
+    return config.model_copy(update={"filing_veto": config.filing_veto.model_copy(update={"entry_block": mode})})
+
+
+def _filing_reason(filing, days_ago):
+    unit = "today" if days_ago == 0 else f"{days_ago} day{'' if days_ago == 1 else 's'} ago"
+    return (
+        f"Filing veto: {filing.symbol} filed {filing.describe()} on {filing.filing_date.isoformat()} ({unit}) "
+        "— within the 30-day late_filing window."
+    )
+
+
+async def test_filing_veto_preview_annotates_a_long_without_refusing(config, evaluator_factory):
+    evaluator = evaluator_factory(config=_with_filing_mode(config, "preview"))
+    filing, as_of = _late_filing(), datetime.now(UTC)
+    eval_res = await evaluator.evaluate_candidate(
+        create_equity_candidate(), use_llm=False, filings=_filings(filing, as_of=as_of)
+    )
+    assert eval_res.approved is True and eval_res.rejection_rule is None
+    assert eval_res.filings == {
+        "status": "ok",
+        "mode": "preview",
+        "as_of": as_of.isoformat(),
+        "would_block": True,
+        "category": "late_filing",
+        "form": "NT 10-K",
+        "items": [],
+        "filing_date": filing.filing_date.isoformat(),
+        "accession": "0000320193-26-000101",
+        "reason": _filing_reason(filing, 3),
+        "would_refuse": True,
+    }
+
+
+async def test_filing_veto_enforce_refuses_a_long(config, evaluator_factory):
+    evaluator = evaluator_factory(config=_with_filing_mode(config, "enforce"))
+    filing = _late_filing()
+    eval_res = await evaluator.evaluate_candidate(create_equity_candidate(), use_llm=False, filings=_filings(filing))
+    assert eval_res.approved is False
+    assert eval_res.rejection_rule == RiskRule.FILING_VETO
+    assert eval_res.rejection_reason == _filing_reason(filing, 3)
+    assert eval_res.filings is not None and eval_res.filings["would_block"] is True
+
+
+def _exempt_candidates():
+    base = create_equity_candidate()
+    return {
+        "pead": base.model_copy(update={"strategy": "PEAD", "catalog_event": {"kind": "pead"}, "probe": True}),
+        "insider_watch": base.model_copy(update={"strategy": "INSIDER_WATCH_LONG", "catalog_event": {"kind": "w"}}),
+        "alpha": base.model_copy(update={"alpha_version": "a1", "alpha_policy": AlphaExecutionPolicy().to_dict()}),
+        "alpha_policy_only": base.model_copy(update={"alpha_policy": AlphaExecutionPolicy().to_dict()}),
+        "probe": base.model_copy(update={"probe": True}),
+    }
+
+
+@pytest.mark.parametrize("kind", list(_exempt_candidates()))
+async def test_filing_veto_enforce_never_refuses_a_non_native_card(config, evaluator_factory, kind):
+    evaluator = evaluator_factory(config=_with_filing_mode(config, "enforce"))
+    candidate = _exempt_candidates()[kind]
+    eval_res = await evaluator.evaluate_candidate(candidate, use_llm=False, filings=_filings(_late_filing()))
+    assert eval_res.rejection_rule != RiskRule.FILING_VETO
+    assert eval_res.filings is not None
+    assert eval_res.filings["exempt"] is True and eval_res.filings["would_refuse"] is False
+    assert eval_res.filings["would_block"] is True
+
+
+async def test_filing_veto_enforce_still_refuses_the_same_native_candidate(config, evaluator_factory):
+    evaluator = evaluator_factory(config=_with_filing_mode(config, "enforce"))
+    eval_res = await evaluator.evaluate_candidate(
+        create_equity_candidate(), use_llm=False, filings=_filings(_late_filing())
+    )
+    assert eval_res.rejection_rule == RiskRule.FILING_VETO
+    assert "exempt" not in eval_res.filings
+
+
+async def test_filing_veto_never_evaluates_a_short(config, evaluator_factory):
+    evaluator = evaluator_factory(config=_with_filing_mode(config, "enforce"))
+    eval_res = await evaluator.evaluate_candidate(
+        create_equity_candidate(direction="SHORT"), use_llm=False, filings=_filings(_late_filing())
+    )
+    assert eval_res.approved is True and eval_res.rejection_rule != RiskRule.FILING_VETO
+    assert eval_res.filings is None
+
+
+@pytest.mark.parametrize("status", ["stale", "unavailable"])
+async def test_stale_or_missing_filing_evidence_never_refuses(config, evaluator_factory, status):
+    evaluator = evaluator_factory(config=_with_filing_mode(config, "enforce"))
+    eval_res = await evaluator.evaluate_candidate(
+        create_equity_candidate(), use_llm=False, filings=_filings(_late_filing(), status=status)
+    )
+    assert eval_res.approved is True and eval_res.rejection_rule is None
+    assert eval_res.filings == {"status": status, "mode": "enforce"}
+
+
+async def test_uncovered_symbol_filing_evidence_is_labelled_and_never_refused(config, evaluator_factory):
+    evaluator = evaluator_factory(config=_with_filing_mode(config, "enforce"))
+    as_of = datetime.now(UTC)
+    eval_res = await evaluator.evaluate_candidate(
+        create_equity_candidate(), use_llm=False, filings=_filings(_late_filing(), covered=("NVDA",), as_of=as_of)
+    )
+    assert eval_res.approved is True and eval_res.rejection_rule is None
+    assert eval_res.filings == {"status": "uncovered", "mode": "enforce", "as_of": as_of.isoformat()}
+
+
+async def test_a_covered_symbol_without_a_filing_in_its_window_is_cleared(config, evaluator_factory):
+    evaluator = evaluator_factory(config=_with_filing_mode(config, "enforce"))
+    as_of = datetime.now(UTC)
+    eval_res = await evaluator.evaluate_candidate(
+        create_equity_candidate(),
+        use_llm=False,
+        filings=_filings(_late_filing(days_ago=31), _late_filing("NVDA", days_ago=1), as_of=as_of),
+    )
+    assert eval_res.approved is True and eval_res.rejection_rule is None
+    assert eval_res.filings == {
+        "status": "ok",
+        "mode": "enforce",
+        "as_of": as_of.isoformat(),
+        "would_block": False,
+        "category": None,
+        "form": None,
+        "items": None,
+        "filing_date": None,
+        "accession": None,
+        "reason": None,
+        "would_refuse": False,
+    }
+
+
+async def test_filing_veto_off_leaves_no_block_and_no_lookup_leaves_none(config, evaluator_factory):
+    off = evaluator_factory(config=_with_filing_mode(config, "off"))
+    eval_res = await off.evaluate_candidate(create_equity_candidate(), use_llm=False, filings=_filings(_late_filing()))
+    assert eval_res.approved is True and eval_res.filings is None
+    enforce = evaluator_factory(config=_with_filing_mode(config, "enforce"))
+    eval_res = await enforce.evaluate_candidate(create_equity_candidate(), use_llm=False, filings=None)
+    assert eval_res.approved is True and eval_res.filings is None
+
+
+async def test_filing_veto_never_touches_futures(config, evaluator_factory):
+    evaluator = evaluator_factory(config=_with_filing_mode(config, "enforce"))
+    eval_res = await evaluator.evaluate_candidate(
+        create_candidate(), use_llm=False, filings=_filings(_late_filing("/MES"), covered=("/MES",))
+    )
+    assert eval_res.approved is True and eval_res.filings is None
+
+
+async def test_a_later_refusal_keeps_the_filing_block(config, evaluator_factory):
+    session = AsyncMock()
+    session.get_session_info = AsyncMock(
+        return_value=MarketSessionInfo(
+            symbol="AAPL",
+            asset_class=AssetClass.EQUITY,
+            is_open=False,
+            is_rth=False,
+            session_type=MarketSessionType.CLOSED,
+            current_time=datetime.now(UTC),
+            details="Weekend",
+        )
+    )
+    evaluator = evaluator_factory(config=_with_filing_mode(config, "preview"), session_provider=session)
+    eval_res = await evaluator.evaluate_candidate(
+        create_equity_candidate(), use_llm=False, filings=_filings(_late_filing())
+    )
+    assert eval_res.rejection_rule == RiskRule.SESSION_CLOSED
+    assert eval_res.filings is not None and eval_res.filings["would_block"] is True
+
+
+@pytest.mark.parametrize(
+    ("reply", "approved"),
+    [
+        ({"approved": True}, True),
+        ({"approved": False, "rejection_reason": "LLM veto", "filings": "junk"}, False),
+    ],
+)
+async def test_llm_path_keeps_the_deterministic_filing_block(config, evaluator_factory, monkeypatch, reply, approved):
+    """The preview block survives an LLM approval or veto; a stray key in the reply never replaces it."""
+    evaluator = evaluator_factory(config=_with_filing_mode(config, "preview"))
+    evaluator.config.openai_api_key = "isolated-test-placeholder"
+    completion = AsyncMock(return_value=_llm_reply(**reply))
+    monkeypatch.setattr("agentic_trader.agent.evaluator.litellm.acompletion", completion)
+    filing = _late_filing()
+    eval_res = await evaluator.evaluate_candidate(create_equity_candidate(), use_llm=True, filings=_filings(filing))
+    completion.assert_awaited_once()
+    assert eval_res.approved is approved
+    assert eval_res.filings is not None
+    assert (eval_res.filings["mode"], eval_res.filings["would_block"]) == ("preview", True)
+    assert eval_res.filings["reason"] == _filing_reason(filing, 3)

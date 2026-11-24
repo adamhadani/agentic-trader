@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -124,6 +126,17 @@ def test_registry_snapshot_replacement():
     assert strategy.definition.version_id == definition.version_id
     assert registry.install_alphas(()) == 0
     assert registry.list_strategies() == []
+
+
+@pytest.mark.parametrize("delay", [None, timedelta(minutes=16)])
+def test_installed_alphas_and_probes_carry_the_scan_bar_delay(delay):
+    registry = StrategyRegistry()
+    active = AlphaDefinition(alpha_id="alpha_active", name="Active", expression="close")
+    probe = AlphaDefinition(alpha_id="alpha_probe", name="Probe", expression="close")
+
+    registry.install_alphas((active,), (probe,), bars_end_delay=delay)
+
+    assert [registry.get(sid).bars_end_delay for sid in ("alpha_active", "alpha_probe")] == [delay, delay]
 
 
 def test_formulaic_strategy_eligible_symbols_filtering():

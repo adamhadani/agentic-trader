@@ -1,0 +1,156 @@
+<SEC-DOCUMENT>0001868941-26-000050.txt : 20260922
+<SEC-HEADER>0001868941-26-000050.hdr.sgml : 20260922
+<ACCEPTANCE-DATETIME>20260922160635
+ACCESSION NUMBER:		0001868941-26-000050
+CONFORMED SUBMISSION TYPE:	4
+PUBLIC DOCUMENT COUNT:		1
+CONFORMED PERIOD OF REPORT:	20260921
+FILED AS OF DATE:		20260922
+DATE AS OF CHANGE:		20260922
+
+REPORTING-OWNER:
+
+	OWNER DATA:
+		COMPANY CONFORMED NAME:			BULLS HERMAN E
+		CENTRAL INDEX KEY:			0001205068
+		ORGANIZATION NAME:
+
+	FILING VALUES:
+		FORM TYPE:		4
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-40978
+		FILM NUMBER:		261396920
+
+	MAIL ADDRESS:
+		STREET 1:		C/O COMFORT SYSTEMS USA, INC.
+		STREET 2:		9753 KATY FREEWAY, SUITE 700
+		CITY:			HOUSTON
+		STATE:			TX
+		ZIP:			77024
+
+ISSUER:
+
+	COMPANY DATA:
+		COMPANY CONFORMED NAME:			Fluence Energy, Inc.
+		CENTRAL INDEX KEY:			0001868941
+		STANDARD INDUSTRIAL CLASSIFICATION:	MISCELLANEOUS ELECTRICAL MACHINERY, EQUIPMENT & SUPPLIES [3690]
+		ORGANIZATION NAME:           	04 Manufacturing
+		EIN:				871304612
+		FISCAL YEAR END:			0930
+
+	BUSINESS ADDRESS:
+		STREET 1:		2107 WILSON BOULEVARD
+		STREET 2:		SUITE 900
+		CITY:			ARLINGTON
+		STATE:			VA
+		ZIP:			22201
+		BUSINESS PHONE:		(833) 358-3623
+
+	MAIL ADDRESS:
+		STREET 1:		2107 WILSON BOULEVARD
+		STREET 2:		SUITE 900
+		CITY:			ARLINGTON
+		STATE:			VA
+		ZIP:			22201
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>4
+<SEQUENCE>1
+<FILENAME>wk-form4_1790107592.xml
+<DESCRIPTION>FORM 4
+<TEXT>
+<XML>
+<?xml version="1.0"?>
+<ownershipDocument>
+
+    <schemaVersion>X0609</schemaVersion>
+
+    <documentType>4</documentType>
+
+    <periodOfReport>2026-09-21</periodOfReport>
+
+    <notSubjectToSection16>0</notSubjectToSection16>
+
+    <issuer>
+        <issuerCik>0001868941</issuerCik>
+        <issuerName>Fluence Energy, Inc.</issuerName>
+        <issuerTradingSymbol>FLNC</issuerTradingSymbol>
+        <issuerForeignTradingSymbol></issuerForeignTradingSymbol>
+    </issuer>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001205068</rptOwnerCik>
+            <rptOwnerName>BULLS HERMAN E</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>C/O FLUENCE ENERGY, INC.</rptOwnerStreet1>
+            <rptOwnerStreet2>2107 WILSON BOULEVARD, SUITE 900</rptOwnerStreet2>
+            <rptOwnerCity>ARLINGTON</rptOwnerCity>
+            <rptOwnerState>VA</rptOwnerState>
+            <rptOwnerZipCode>22201</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>1</isDirector>
+            <isOfficer>0</isOfficer>
+            <isTenPercentOwner>0</isTenPercentOwner>
+            <isOther>0</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <aff10b5One>0</aff10b5One>
+
+    <nonDerivativeTable>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Class A Common Stock</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-09-21</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>P</transactionCode>
+                <equitySwapInvolved>0</equitySwapInvolved>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>10000</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <value>7.36</value>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>A</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>169550</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>D</value>
+                </directOrIndirectOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+    </nonDerivativeTable>
+
+    <derivativeTable></derivativeTable>
+
+    <footnotes></footnotes>
+
+    <remarks></remarks>
+
+    <ownerSignature>
+        <signatureName>/s/ Leah Patterson as Attorney-in-fact for Herman E. Bulls</signatureName>
+        <signatureDate>2026-09-22</signatureDate>
+    </ownerSignature>
+</ownershipDocument>
+</XML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

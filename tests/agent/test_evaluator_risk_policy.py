@@ -10,7 +10,6 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from agentic_trader.agent.calendar import MacroEvent
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.constants import AssetClass, OrderSide
@@ -31,6 +30,7 @@ from tests.agent.test_evaluator import (
     create_equity_candidate,
     evaluator_factory,  # noqa: F401  (fixture)
 )
+from tests.calendar_doubles import lockout_check, union_double
 
 
 def book_row(symbol, direction="LONG", notional=1000.0, risk=50.0, asset_class="EQUITY"):
@@ -280,14 +280,12 @@ async def test_closed_session_reason_carries_the_provider_detail(evaluator_facto
 
 
 async def test_macro_lockout_reason_is_the_rule_text_on_the_utc_clock(evaluator_factory):  # noqa: F811
-    evaluator = evaluator_factory()
     # An aware, non-UTC event time: the reason prints its UTC clock.
-    event_at = datetime.now(UTC).replace(second=0, microsecond=0).astimezone(ZoneInfo("America/New_York"))
-    event = MacroEvent(title="CPI", country="USD", impact="High", timestamp=event_at)
-    evaluator.calendar.is_in_lockout_window.return_value = (True, event)
+    event_at = datetime(2026, 10, 14, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    evaluator = evaluator_factory(calendar=union_double(lockout_check("CPI", event_at)))
     result = await evaluator.evaluate_candidate(make_candidate(), use_llm=False)
     assert result.approved is False and result.rejection_rule == RiskRule.MACRO_LOCKOUT
-    assert result.rejection_reason == f"Macro event lockout: CPI at {event_at.astimezone(UTC):%H:%M} UTC."
+    assert result.rejection_reason == "Macro event lockout: CPI at 12:30 UTC."
     assert result.macro_clearance is False
 
 
@@ -556,7 +554,7 @@ async def test_a_non_finite_llm_stop_restores_the_deterministic_bracket(evaluato
     _assert_deterministic_bracket(result, deterministic)
 
 
-async def test_a_non_numeric_llm_stop_falls_back_to_the_deterministic_card(evaluator_factory, monkeypatch):  # noqa: F811
+async def test_a_non_numeric_llm_stop_on_a_veto_is_a_malformed_veto(evaluator_factory, monkeypatch):  # noqa: F811
     evaluator = evaluator_factory()
     deterministic, result = await _deterministic_and_llm(
         evaluator,
@@ -566,9 +564,20 @@ async def test_a_non_numeric_llm_stop_falls_back_to_the_deterministic_card(evalu
         rejection_reason=lambda card: "thin thesis",
         stop_loss=lambda card: "abc",
     )
-    # An unparseable answer is no LLM verdict: the deterministic fallback approves the card.
-    assert result.approved is True and result.llm_verdict is None
-    assert "LLM fallback used" in result.thesis_summary
+    # A veto that fails validation still vetoes (fail closed) on the deterministic bracket.
+    assert result.approved is False and result.rejection_reason == "thin thesis"
+    assert result.llm_verdict is not None and result.llm_verdict["malformed"] is True
+    _assert_deterministic_bracket(result, deterministic)
+
+
+async def test_a_non_numeric_llm_stop_on_an_approval_is_an_error(evaluator_factory, monkeypatch):  # noqa: F811
+    evaluator = evaluator_factory()
+    deterministic, result = await _deterministic_and_llm(
+        evaluator, monkeypatch, make_candidate(), stop_loss=lambda card: "abc"
+    )
+    # A JSON-true approval that fails validation never approves.
+    assert result.approved is False and result.thesis_summary == "LLM unavailable (ValidationError)"
+    assert result.llm_verdict is not None and result.llm_verdict["error"] == "ValidationError"
     _assert_deterministic_bracket(result, deterministic)
 
 
@@ -769,7 +778,7 @@ async def test_a_tighter_llm_stop_keeps_the_deterministic_tiers(evaluator_factor
     assert all(tier["risk_dollars"] >= tier["quantity"] * 4.0 for tier in result.sizing_tiers)
 
 
-async def test_an_unparseable_answer_after_a_resize_falls_back_to_the_deterministic_card(
+async def test_an_invalid_approval_with_a_resizing_stop_is_withheld_on_the_deterministic_card(
     evaluator_factory,  # noqa: F811
     monkeypatch,
 ):
@@ -790,7 +799,8 @@ async def test_an_unparseable_answer_after_a_resize_falls_back_to_the_determinis
     response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
     monkeypatch.setattr("agentic_trader.agent.evaluator.litellm.acompletion", AsyncMock(return_value=response))
     result = await evaluator.evaluate_candidate(candidate, use_llm=True)
-    assert "LLM fallback used" in result.thesis_summary and result.llm_verdict is None
+    assert result.approved is False and result.thesis_summary == "LLM unavailable (ValidationError)"
+    assert result.llm_verdict is not None and result.llm_verdict["error"] == "ValidationError"
     _assert_deterministic_bracket(result, deterministic)
     assert (result.quantity, result.notional_value, result.effective_leverage) == (
         deterministic.quantity,

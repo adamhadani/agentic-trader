@@ -218,6 +218,36 @@ async def test_replaced_stop_fill_reconciles_by_exact_chain_once(desk):
     copilot.notifier.send_exit_alert.assert_awaited_once()
 
 
+async def test_close_proceeds_when_open_list_lags_by_id_cancellation(desk):
+    copilot, venue, sid = desk
+    await track_existing(copilot, venue, sid)
+    venue.stale_list_calls = 2
+    await copilot.close_position_manual(sid)
+    row = await copilot.db.get_signal_by_id(sid)
+    assert row["realized_pnl"] == 50
+    assert venue.stale_left and all(n < venue.stale_list_calls for n in venue.stale_left.values())
+    stale = [e for e in await copilot.db.get_audit_events(sid) if e["payload"].get("phase") == "stale_open_order_list"]
+    assert len(stale) == 1
+    market_posts = [body for method, path, _, body in venue.calls if method == "POST" and path == "/v2/orders"]
+    assert len(market_posts) == 1
+
+
+@pytest.mark.parametrize(("position_basis", "closes"), [("121.140323", True), ("121.1405", False), ("121.15", False)])
+async def test_close_accepts_broker_rounding_of_a_multi_price_entry_average(desk, position_basis, closes):
+    # DIS, 2026-11-17: the order reported 121.140322 and the position 121.140323 for one 121.14032258... average.
+    copilot, venue, sid = desk
+    venue.entry["filled_avg_price"] = "121.140322"
+    venue.position["avg_entry_price"] = position_basis
+    await track_existing(copilot, venue, sid)
+    reply = await copilot.close_service.close_signal(sid)
+    market_posts = [body for method, path, _, body in venue.calls if method == "POST" and path == "/v2/orders"]
+    if closes:
+        assert len(market_posts) == 1
+    else:
+        assert not market_posts
+        assert "cost basis differs" in reply
+
+
 async def test_close_after_stop_replacement_cancels_current_leg(desk):
     copilot, venue, sid = desk
     await track_existing(copilot, venue, sid)
@@ -340,7 +370,7 @@ async def test_sdk_type_field_maps_protective_leg_ids(alpaca_http):
 
 
 @pytest.mark.parametrize(
-    "changed", ["closed-session", "session-ended", "stale-quote", "price-moved", "existing-position"]
+    "changed", ["closed-session", "session-ended", "stale-quote", "stale-clock", "price-moved", "existing-position"]
 )
 async def test_entry_admission_uses_real_sdk_evidence_before_any_mutation(desk, changed):
 
@@ -353,7 +383,23 @@ async def test_entry_admission_uses_real_sdk_evidence_before_any_mutation(desk, 
     elif changed == "session-ended":
         venue.session_closes_at = datetime.now(UTC) - timedelta(seconds=1)
     elif changed == "stale-quote":
-        venue.quote_time -= timedelta(minutes=5)
+        venue.quote_time -= timedelta(minutes=6)
+        venue.trade_time = datetime.now(UTC)
+    elif changed == "stale-clock":
+        # 90 s is inside the quote limit (120 s) but outside the session clock's own 60 s.
+        venue.override = lambda method, path, query, body: (
+            (
+                200,
+                {
+                    "timestamp": (datetime.now(UTC) - timedelta(seconds=90)).isoformat(),
+                    "is_open": True,
+                    "next_open": datetime.now(UTC).isoformat(),
+                    "next_close": venue.session_closes_at.isoformat(),
+                },
+            )
+            if path == "/v2/clock"
+            else None
+        )
     elif changed == "price-moved":
         venue.quote_price = 110
     success = (await copilot.execute_signal_by_id(sid)).ok

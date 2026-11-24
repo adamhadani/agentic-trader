@@ -1,0 +1,344 @@
+{
+  "bars_from": "2016-01-01",
+  "bars_through": "2026-09-01",
+  "bootstrap": {
+    "block_mean": 20,
+    "confirmation_draws": 10000,
+    "discovery_draws": 1000,
+    "seed": 20260931,
+    "selection_draws": 1000
+  },
+  "bracket": {
+    "atr_window": 14,
+    "decision_time_et": "10:35",
+    "max_hold_sessions": 20,
+    "stop_atr_multiple": 2.0,
+    "target_r": 3.0
+  },
+  "cohort": "config/research/pooled/cohort-xu.json",
+  "cohort_sha256": "6ece7c5407bba67becd6483236e98370119944b6e9bf508e3858d2df56069a6a",
+  "complexity_penalty_per_node": 0.02,
+  "confirmation_gate": {
+    "alpha": 0.05,
+    "min_sessions": 300,
+    "recent_months": 12,
+    "trim_fraction": 0.01
+  },
+  "coverage": {
+    "max_no_reference_fraction": 0.02,
+    "max_unlabelled_fraction_per_year": 0.05
+  },
+  "decision_cost_bps": 15.0,
+  "dedupe_jaccard": 0.5,
+  "discovery_gate": {
+    "blocks": 4,
+    "carry": 5,
+    "min_positive_blocks": 3,
+    "min_sessions": 400,
+    "min_t": 3.0
+  },
+  "excluded_families": [
+    {
+      "id": "vol_20",
+      "reason": "Survived Holm in the setup-outcome study, which read 2021-2026."
+    },
+    {
+      "id": "sector_relative_momentum",
+      "reason": "Survived Holm in the setup-outcome study, which read 2021-2026."
+    },
+    {
+      "id": "residual_momentum",
+      "reason": "Factor-controls study read 2021-2026 and reported partly positive results."
+    },
+    {
+      "id": "volatility_scaled_momentum",
+      "reason": "Sector-panel study read 2021-2026 and reported a positive low-cost result."
+    },
+    {
+      "id": "reversal_5",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "signed_volume",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "overnight_intraday",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "abnormal_volume",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "momentum_12_1",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "price_volume_corr",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "illiquidity",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "reversal_x_volume",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "first_hour_momentum",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "overnight_persistence",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "overnight_vs_intraday",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "relative_volume",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "range_expansion",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "range_location",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "first_bucket_efficiency",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "intraday_high_proximity",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "pead_surprise_decay",
+      "reason": "events fixed set, scored in events-v1 / cohort3-events-v1 (no finalists)"
+    },
+    {
+      "id": "pead_reaction_decay",
+      "reason": "events fixed set, scored in events-v1 / cohort3-events-v1 (no finalists)"
+    },
+    {
+      "id": "pead_reaction_window",
+      "reason": "events fixed set, scored in events-v1 / cohort3-events-v1 (no finalists)"
+    },
+    {
+      "id": "pead_agreement",
+      "reason": "events fixed set, scored in events-v1 / cohort3-events-v1 (no finalists)"
+    },
+    {
+      "id": "surprise_x_reaction",
+      "reason": "events fixed set, scored in events-v1 / cohort3-events-v1 (no finalists)"
+    },
+    {
+      "id": "quiet_momentum",
+      "reason": "events fixed set, scored in events-v1 / cohort3-events-v1 (no finalists)"
+    },
+    {
+      "id": "quiet_reversal",
+      "reason": "events fixed set, scored in events-v1 / cohort3-events-v1 (no finalists)"
+    },
+    {
+      "id": "dividend_yield",
+      "reason": "events fixed set, scored in events-v1 / cohort3-events-v1 (no finalists)"
+    },
+    {
+      "id": "light_shorting",
+      "reason": "short-volume fixed set, scored in short-v1 / cohort3-short-v1 (no finalist)"
+    },
+    {
+      "id": "light_shorting_week",
+      "reason": "short-volume fixed set, scored in short-v1 / cohort3-short-v1 (no finalist)"
+    },
+    {
+      "id": "shorts_retreat",
+      "reason": "short-volume fixed set, scored in short-v1 / cohort3-short-v1 (no finalist)"
+    },
+    {
+      "id": "shorts_retreat_week",
+      "reason": "short-volume fixed set, scored in short-v1 / cohort3-short-v1 (no finalist)"
+    },
+    {
+      "id": "shorts_retreat_volume",
+      "reason": "short-volume fixed set, scored in short-v1 / cohort3-short-v1 (no finalist)"
+    },
+    {
+      "id": "unopposed_strength",
+      "reason": "short-volume fixed set, scored in short-v1 / cohort3-short-v1 (no finalist)"
+    },
+    {
+      "id": "squeeze",
+      "reason": "short-volume fixed set, scored in short-v1 / cohort3-short-v1 (no finalist)"
+    },
+    {
+      "id": "quiet_tape",
+      "reason": "short-volume fixed set, scored in short-v1 / cohort3-short-v1 (no finalist)"
+    }
+  ],
+  "families": [
+    {
+      "id": "net_buying",
+      "mutation_operators": [],
+      "rationale": "Lakonishok and Lee's net purchase ratio: issuers whose insiders are net buyers over six months outperform (Lakonishok and Lee, 2001; Jeng, Metrick and Zeckhauser, 2003).",
+      "seeds": [
+        "insider_net_ratio"
+      ]
+    },
+    {
+      "id": "buy_pressure",
+      "mutation_operators": [],
+      "rationale": "Among names with an insider purchase this quarter, the largest buying relative to the name's own turnover; names without a purchase have no score (NaN, ineligible).",
+      "seeds": [
+        "insider_buy_rel / (insider_buy_rel > 0)"
+      ]
+    },
+    {
+      "id": "opportunistic_buying",
+      "mutation_operators": [],
+      "rationale": "Non-routine (opportunistic) purchases carry the information (Cohen, Malloy and Pomorski, 2012); routine buyers are excluded by the same-month-of-the-prior-year rule.",
+      "seeds": [
+        "insider_opp_buy_rel / (insider_opp_buy_rel > 0)"
+      ]
+    },
+    {
+      "id": "cluster_buying",
+      "mutation_operators": [],
+      "rationale": "Purchases by two or more insiders in one quarter are the strongest (Alldredge and Blank, 2019); a name without a cluster has no score.",
+      "seeds": [
+        "insider_buy_rel / (insider_buyers > 1)"
+      ]
+    },
+    {
+      "id": "fresh_purchase",
+      "mutation_operators": [],
+      "rationale": "The most recently filed purchase first: the information is freshest the day it is filed.",
+      "seeds": [
+        "-insider_buy_age"
+      ]
+    },
+    {
+      "id": "recent_buy_pressure",
+      "mutation_operators": [],
+      "rationale": "Buying relative to turnover, only where a purchase was filed within the last ten sessions.",
+      "seeds": [
+        "insider_buy_rel / (insider_buy_age <= 10)"
+      ]
+    },
+    {
+      "id": "buying_into_weakness",
+      "mutation_operators": [],
+      "rationale": "Contrarian purchases after a decline are the profitable ones (Jeng, Metrick and Zeckhauser, 2003); only names with a negative twenty-session return are scored.",
+      "seeds": [
+        "insider_buy_rel / (ts_sum(returns, 20) < 0)"
+      ]
+    },
+    {
+      "id": "light_selling",
+      "mutation_operators": [],
+      "rationale": "The declared weak prior: among names with insider sales, the lightest relative to turnover (sales are mostly liquidity-driven and uninformative, and most recent sales are plan trades).",
+      "seeds": [
+        "-insider_sell_rel / (insider_sell_rel > 0)"
+      ]
+    }
+  ],
+  "feed": "alpaca:sip",
+  "formula_budget": 8,
+  "id": "pooled-insider-campaign",
+  "insider_inputs": {
+    "corporate_actions": {
+      "content_sha256": "9f38dffded5b73c53d38bc06ca34cf884549fa9ff91044e1bb74be62fa66c10d",
+      "source": "alpaca",
+      "trailing_sessions": 252,
+      "window": [
+        "2016-01-01",
+        "2027-03-31"
+      ]
+    },
+    "fields_version": "insider_fields_v1",
+    "insider_filings": {
+      "buy_window": 63,
+      "exclude_10b5_1": false,
+      "files_sha256": "67a262c0aa9acca12f4d1c67db1236d41771fda793cccabcb6eb185925cd66d9",
+      "max_trade_rel": 10,
+      "net_window": 126,
+      "owner_roles": [
+        "Officer",
+        "Director"
+      ],
+      "quarters_from": "2015q1",
+      "quarters_through": "2026q3",
+      "source": "sec-form345-datasets"
+    }
+  },
+  "null_check": {
+    "max_false_acceptances": 2,
+    "replicates": 40,
+    "seed": 20261003
+  },
+  "power": {
+    "ar_phi": 0.95,
+    "deltas": [
+      0.0,
+      0.05,
+      0.08,
+      0.1,
+      0.12,
+      0.15
+    ],
+    "detection_delta": 0.15,
+    "max_false_acceptance": 0.05,
+    "min_detection": 0.8,
+    "null_formulas": 200,
+    "replicates": 100,
+    "seed": 20260932
+  },
+  "rationale": "This protocol exists to build and pin the cohort-xu label cube for the a priori insider v2 breadth replication (docs/superpowers/specs/2026-11-14-insider-breadth-replication-design.md). It is cohort3-insider-v1 with exactly two changes: the cohort (cohort xu: ranks 1-400 and 1,401-2,156 of the same screen-v3 ranking on the 2026-10-15 snapshot, 1,156 names, disjoint from cohort v3) and the corporate-actions acquisition that matches it. Bracket, eligibility (absolute $5 million 20-session median dollar-volume floor, $10 price), 15 bp decisive cost, windows and every other parameter are unchanged, so the cube spec identity equals cohort v3's. The pooled insider fixed sets stay retired: no campaign runs on this protocol. Survivorship: listed and active on 2026-10-15, not point-in-time, delisted names absent (stronger for the small/mid band).",
+  "score_inputs": "daily",
+  "search": {
+    "archive_size": 16,
+    "forbidden_operators": [
+      "realized_vol",
+      "ts_std",
+      "ts_mad"
+    ],
+    "seed": 20260930
+  },
+  "search_mode": "fixed_set",
+  "selection": {
+    "fraction": 0.1,
+    "rule": "top_fraction"
+  },
+  "selection_gate": {
+    "min_fraction_of_discovery": 0.5,
+    "min_sessions": 150
+  },
+  "title": "Insider pooled protocol on cohort xu (ranks 1-400 and 1,401-2,156 of the cohort-v3 ranking, disjoint from cohort v3): the cohort3-insider-v1 protocol with only the cohort and its corporate actions changed, the vehicle for the cohort-xu label cube and the a priori insider v2 breadth replication; the pooled insider campaign is retired and never runs on it",
+  "universe": {
+    "min_eligible_names": 30,
+    "min_median_dollar_volume": 5000000.0,
+    "min_price": 10.0
+  },
+  "version": 1,
+  "windows": {
+    "confirmation": [
+      "2024-01-02",
+      "2026-07-31"
+    ],
+    "discovery": [
+      "2016-08-01",
+      "2021-12-31"
+    ],
+    "selection": [
+      "2022-01-03",
+      "2023-12-29"
+    ]
+  }
+}

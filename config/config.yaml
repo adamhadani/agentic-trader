@@ -4,6 +4,7 @@ portfolio:
   max_notional_exposure: 60000.0
   max_concurrent_contracts: 2
   max_concurrent_positions: 8 # paper desk cap (September 22)
+  max_non_native_positions: 5 # operator decision O3, approved 2026-11-14: catalog, probe and alpha entries share 5 of the 8 slots, so natives keep 3
   max_correlated_positions: 2 # open positions per correlation group (universe sectors)
   default_equity_risk_dollars: 250.0
 
@@ -94,6 +95,9 @@ contracts:
 
 universe:
   groups:
+    # BIL and SHY removed 2026-10-23 (holistic review RM-R2): a 1.5x ATR stop on a T-bill fund implies
+    # hundreds of times notional per unit of risk. Static-universe removal only: the dynamic universe and an
+    # operator /scan can still rank them.
     etf32:
       - {symbol: SPY, sector: etf_broad_equity}
       - {symbol: QQQ, sector: etf_broad_equity}
@@ -117,13 +121,11 @@ universe:
       - {symbol: EWG, sector: etf_international}
       - {symbol: EWU, sector: etf_international}
       - {symbol: EWC, sector: etf_international}
-      - {symbol: SHY, sector: etf_rates_credit}
       - {symbol: IEF, sector: etf_rates_credit}
       - {symbol: TLT, sector: etf_rates_credit}
       - {symbol: TIP, sector: etf_rates_credit}
       - {symbol: LQD, sector: etf_rates_credit}
       - {symbol: HYG, sector: etf_rates_credit}
-      - {symbol: BIL, sector: etf_rates_credit}
       - {symbol: AGG, sector: etf_rates_credit}
       - {symbol: GLD, sector: etf_metals}
       - {symbol: SLV, sector: etf_metals}
@@ -277,6 +279,15 @@ risk:
   lockout_pre_event_minutes: 60
   lockout_post_event_minutes: 30
   earnings_blackout_days: 7
+  # Immutable calendar file, pinned by SHA-256; renew as us-tier1-v2 before macro_calendar readiness degrades.
+  macro_calendar_path: config/calendar/us-tier1-v1.json
+  macro_calendar_sha256: 984c83a8a2b7528d2390509e752f5d41b5e7031c02c3b2dd293ef3c6d856d370
+  # open = an expired or invalid calendar leaves the lockout labelled unverified and never refuses an entry.
+  macro_calendar_unknown: open
+  # Readiness degrades this many days before the calendar's valid_through.
+  macro_calendar_renewal_days: 30
+  # closed = with neither the live Nasdaq lookup nor a fresh dated capture to vouch, equity entries are refused.
+  earnings_calendar_unknown: closed
 
 regime:
   vix_compressed_threshold: 15.0
@@ -284,10 +295,13 @@ regime:
   vix_extreme_threshold: 30.0
   cache_ttl_seconds: 900
   yield_curve_enabled: true
-  credit_oas_enabled: true
-  inflation_breakeven_enabled: true
   hy_oas_elevated_threshold: 3.50 # 350 bps
   hy_oas_critical_threshold: 5.00 # 500 bps
+  # Applies when a decision input (3m, 2y, 10y, HY OAS) is missing: macro stress UNKNOWN. Validated
+  # 0.10 <= m < 1.0, so never 1.0: a missing feed never sizes at full risk.
+  unknown_risk_multiplier: 0.5
+  # Applies when a decision input is missing: squeeze breakouts stay suppressed under UNKNOWN.
+  unknown_breakout_allowed: false
 
 strategies:
   mode: "parallel" # "single" or "parallel"
@@ -327,7 +341,8 @@ strategies:
     volume_sma_period: 20
 
 scheduler:
-  cron_hour_interval: 4 # Scan every 4 hours aligned with 4h candle closes
+  cron_hour_interval: 4 # every 4 h from daemon start; journal-only (sends no cards)
+  intraday_scan_enabled: false # idle by construction (spec 2026-10-21 §4 item 4); JOURNAL_ONLY when enabled
   suggestion_scan_times_et: ["10:35", "14:35"]
 
 sizing:
@@ -347,6 +362,13 @@ sizing:
   suggest_tiers_enabled: true # suggest Half, Base, and Max tiers in Telegram
 
 execution:
+  native_entry_lifetime: session # an unfilled native entry cancels before the next open (Alpaca only)
+  auto_entry: paper # scheduled-scan native cards are entered automatically (Alpaca paper only; needs session lifetime); "off" (quoted: a bare off is a YAML boolean) turns all auto-entry off, the catalog list below going inert
+  auto_entry_catalog: ["pead", "insider_watch"] # operator approval 2026-11-14: these catalog cards also auto-enter on the scheduled scan, with no LLM approval and the lifetime of their frozen policy; [] restores tap-only
+  lifetime_evidence_review_after_failures: 5 # consecutive failed reconciliation passes (60 s monitor + stream updates and scans; about 5 min when only the monitor runs) of a timed position's evidence read before a review halt; passes while the regular session is certainly closed do not count for an entry the journal shows filled
+  entry_trade_max_age_seconds: 300.0 # IEX prints are sparse on mid caps
+  entry_quote_max_age_seconds: 120.0 # the liveness evidence; a standing IEX quote on a mid cap can go over a minute without an update (ASND 81 s, 2026-11-16)
+  entry_clock_max_age_seconds: 60.0 # the broker session clock read at preflight and lifecycle checks
   entry_evidence_max_age_seconds: 30.0 # age starts before the first account/book read
   broker_request_timeout_seconds: 10.0
   stop_replace_timeout_seconds: 10.0
@@ -383,6 +405,10 @@ telemetry:
   metrics_enabled: true
   metrics_host: "0.0.0.0"
   metrics_port: 9108
+
+operations:
+  quiet_hours:
+    enabled: true   # weekdays 09:15-16:30 NY alert; keep aligned with scripts/awake.sh
 
 pairs:
   p_value_threshold: 0.05
@@ -438,6 +464,12 @@ market_data:
   retry_backoff_factor: 0.5
   scan_concurrency: 8
   max_requests_per_minute: 150
+  # 2026-11-07: IEX bars hid ~2/3 of setups; see docs/native-supply-2026-11-07.md. Scan bars, and every reader
+  # in their units (dynamic universe, card labellers, doctor probe), read SIP with each request ending
+  # sip_delay_minutes back (the free plan refuses a SIP end under 15 minutes old). Broker quotes stay real-time
+  # IEX (ALPACA_DATA_FEED). "configured" restores bars on alpaca_feed.
+  scan_bars: "sip_delayed"
+  sip_delay_minutes: 16
 
 scan:
   max_cards_per_scan: 1
@@ -447,18 +479,56 @@ scan:
   min_bar_coverage: 0.8
   coverage_sessions: 10
   coverage_reference_symbol: "SPY"
+  # Broad US equity index ETFs (unlevered, long-only, headline benchmarks): an unrestricted scan never sends a
+  # native card on them. A card-selection rule in run_scan, not an entry-risk rule; they are still collected,
+  # ranked and journaled (outcome broad_index_excluded). A restricted scan (/scan SPY) and Re-evaluate still
+  # card them, and an alpha, probe or catalog card is unaffected. [] turns the rule off. SPYM replaced SPLG
+  # (not in the 2026-10-15 Alpaca asset snapshot).
+  broad_index_etfs:
+    - SPY    # S&P 500, cap and equal weight
+    - VOO
+    - IVV
+    - SPYM
+    - RSP
+    - VTI    # total market
+    - ITOT
+    - SCHB
+    - IWV
+    - IWB    # large cap, S&P 100
+    - VV
+    - SCHX
+    - OEF
+    - QQQ    # Nasdaq-100, Dow 30
+    - QQQM
+    - DIA
+    - MDY    # mid cap
+    - IJH
+    - IWR
+    - VO
+    - IWM    # small cap
+    - IJR
+    - VB
 
 # Honest cards (docs/card-evidence.md): measured-evidence send policy, statistics worker, card validity.
 # Quote "off": YAML reads a bare off as false (the loader maps false back to "off").
 card_policy:
-  mode: "off"             # off -> preview -> enforce, an operator decision after reading the evidence
-  min_measured_ev: null   # R after cost; required for preview and enforce
+  mode: "enforce"  # off -> preview -> enforce; preview from 2026-10-28, enforce by operator decision 2026-10-30
+  min_measured_ev: 0.0    # posterior expected excess R, net_excess_r_v1; required for preview and enforce
   min_mature_cards: 20
-  stats_window_days: 90
+  stats_window_days: 180
   stats_time_et: "08:30"
   stats_poll_seconds: 300
   stats_max_age_seconds: 345600
   validity: "session_close"
+  prior_path: "config/research/card-stats-prior-v2.json"  # frozen replay prior (docs/card-stats-prior-2026-10-28.md)
+  prior_sha256: "cbbf3538abe256252de5ed0d2fde96ffe54fb79fc4f09432b86782577e7e3689"
+
+# Catalog paper probes (docs/apriori-alphas.md). The PEAD card's measured base rate is a frozen file pinned by
+# SHA-256 (docs/pead-base-rate-2026-10-30.md); a missing or mismatched file renders "unavailable" and never
+# stops a scan.
+apriori:
+  pead_base_rate_path: "config/research/pead-base-rate-v1.json"
+  pead_base_rate_sha256: "b92308070957a0bc4f3cb917bfb2e57ab3d59f73b74e38245cf0431d69890551"
 
 # Book-aware sizing (docs/card-evidence.md "Book-aware sizing").
 # Quote "off": YAML reads a bare off as false (the loader maps false back to "off").
@@ -471,7 +541,8 @@ book_sizing:
 
 database:
   name: "signals"
-  url: "postgresql+asyncpg://adamhadani@localhost:5432/agentic_trader"
+  # No user here: asyncpg takes it from PGUSER or the account running the daemon. DATABASE_URL overrides.
+  url: "postgresql+asyncpg://localhost:5432/agentic_trader"
   pool_size: 10
   max_overflow: 20
   pool_timeout: 30.0
@@ -519,3 +590,53 @@ news:
   enabled: true
   window_hours: 48
   max_scored_per_scan: 6
+
+# The native-card LLM gate (docs/superpowers/specs/2026-10-27-llm-gate-hygiene-design.md): one deadline per
+# call; a timeout, a provider error or an invalid reply never approves a native card.
+llm_gate:
+  timeout_seconds: 60.0
+
+# Insider watch cards (docs/superpowers/specs/2026-10-23-insider-watch-cards-design.md): a nightly SEC Form 4
+# capture for cohort v3 (EDGAR_USER_AGENT from the environment) feeds the frozen `insider` v1 cluster rule; the
+# 10:35 scan sends at most 2 unvalidated watch cards. Auto-entered on paper since the 2026-11-14 operator approval
+# (execution.auto_entry_catalog), tap-only when that list omits insider_watch; no probe or promotion credit.
+insider_watch:
+  enabled: true
+  max_cards_per_session: 2
+  max_open_positions: 4
+  max_risk_per_trade_usd: 100
+  archive_dir: ~/agentic-trader-research/insider-filings-cache
+  backfill_from: 2026-10-01
+  pooled_cache_dir: ~/agentic-trader-research/pooled-cache-v1
+
+# EDGAR negative-filing veto for long cards (docs/superpowers/specs/2026-11-06-release-exit-filing-veto-design.md).
+filing_veto:
+  capture: true
+  entry_block: "enforce"   # preview 2026-11-07 → 11-14; enforce since 2026-11-16
+  enforce_categories: ["late_filing", "adverse_8k"]   # offering stays journal-only: bond issues; the drift evidence is equity/convertibles
+  late_filing_days: 30
+  adverse_8k_days: 60
+  offering_days: 7
+  pre_scan_minutes: 30
+
+# Release exit for open native equity positions, long or short, ahead of a report (same spec).
+release_exit:
+  mode: "enforce"   # preview 2026-11-07 → 11-14; enforce since 2026-11-16
+  minutes_before_close: 30
+
+# Dated capture of the Nasdaq forward earnings calendar (docs/superpowers/specs/2026-11-06-earnings-capture-design.md).
+# Also the earnings blackout's fallback when the live lookup fails; off under risk.earnings_calendar_unknown: closed,
+# one failed live page refuses equity entries.
+earnings_capture:
+  enabled: true
+  horizon_days: 28
+
+# Weekly lane scorecard (docs/superpowers/specs/2026-11-14-catalog-auto-entry-scorecard-design.md): one Telegram message
+# per ISO week from Saturday 09:00 ET (catch-up up to 4 days, never twice). Operator approval 2026-11-14; preview with
+# `copilot cards scorecard`; `enabled: false` stops the job.
+scorecard:
+  enabled: true
+  due_weekday: 5       # Monday 0 .. Sunday 6
+  due_time_et: "09:00"
+  activity_days: 7
+  record_days: 90

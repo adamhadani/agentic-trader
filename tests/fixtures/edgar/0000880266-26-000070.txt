@@ -1,0 +1,158 @@
+<SEC-DOCUMENT>0000880266-26-000070.txt : 20260817
+<SEC-HEADER>0000880266-26-000070.hdr.sgml : 20260817
+<ACCEPTANCE-DATETIME>20260817162158
+ACCESSION NUMBER:		0000880266-26-000070
+CONFORMED SUBMISSION TYPE:	4
+PUBLIC DOCUMENT COUNT:		4
+CONFORMED PERIOD OF REPORT:	20260814
+FILED AS OF DATE:		20260817
+DATE AS OF CHANGE:		20260817
+
+REPORTING-OWNER:
+
+	OWNER DATA:
+		COMPANY CONFORMED NAME:			De Lange Bob
+		CENTRAL INDEX KEY:			0001694342
+		ORGANIZATION NAME:
+
+	FILING VALUES:
+		FORM TYPE:		4
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-12930
+		FILM NUMBER:		261286924
+
+	MAIL ADDRESS:
+		STREET 1:		510 LAKE COOK ROAD
+		STREET 2:		SUITE 100
+		CITY:			DEERFIELD
+		STATE:			IL
+		ZIP:			60015
+
+ISSUER:
+
+	COMPANY DATA:
+		COMPANY CONFORMED NAME:			AGCO CORP /DE
+		CENTRAL INDEX KEY:			0000880266
+		STANDARD INDUSTRIAL CLASSIFICATION:	FARM MACHINERY & EQUIPMENT [3523]
+		ORGANIZATION NAME:           	06 Technology
+		EIN:				581960019
+		STATE OF INCORPORATION:			DE
+		FISCAL YEAR END:			1231
+
+	BUSINESS ADDRESS:
+		STREET 1:		4205 RIVER GREEN PKWAY
+		CITY:			DULUTH
+		STATE:			GA
+		ZIP:			30096
+		BUSINESS PHONE:		7708139200
+
+	MAIL ADDRESS:
+		STREET 1:		4205 RIVER GREEN PARKWAY
+		CITY:			DULUTH
+		STATE:			GA
+		ZIP:			30096
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>4
+<SEQUENCE>1
+<FILENAME>wk-form4_1786998115.xml
+<DESCRIPTION>FORM 4
+<TEXT>
+<XML>
+<?xml version="1.0"?>
+<ownershipDocument>
+
+    <schemaVersion>X0609</schemaVersion>
+
+    <documentType>4</documentType>
+
+    <periodOfReport>2026-08-14</periodOfReport>
+
+    <notSubjectToSection16>0</notSubjectToSection16>
+
+    <issuer>
+        <issuerCik>0000880266</issuerCik>
+        <issuerName>AGCO CORP /DE</issuerName>
+        <issuerTradingSymbol>AGCO</issuerTradingSymbol>
+        <issuerForeignTradingSymbol></issuerForeignTradingSymbol>
+    </issuer>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001694342</rptOwnerCik>
+            <rptOwnerName>De Lange Bob</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>4205 RIVER GREEN PARKWAY</rptOwnerStreet1>
+            <rptOwnerStreet2></rptOwnerStreet2>
+            <rptOwnerCity>DULUTH</rptOwnerCity>
+            <rptOwnerState>GA</rptOwnerState>
+            <rptOwnerZipCode>30096</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>1</isDirector>
+            <isOfficer>0</isOfficer>
+            <isTenPercentOwner>0</isTenPercentOwner>
+            <isOther>0</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <aff10b5One>0</aff10b5One>
+
+    <nonDerivativeTable>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Common Stock</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-08-14</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>P</transactionCode>
+                <equitySwapInvolved>0</equitySwapInvolved>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>1000</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <value>100.71</value>
+                    <footnoteId id="F1"/>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>A</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>18717.3941</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>D</value>
+                </directOrIndirectOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+    </nonDerivativeTable>
+
+    <derivativeTable></derivativeTable>
+
+    <footnotes>
+        <footnote id="F1">The price reported in Column 4 is a weighted average price. The shares were purchased in multiple transactions ranging from $100.64 to $100.74, inclusive. The reporting person undertakes to provide, upon request, full information regarding the number of shares purchased at each separate price within the range set forth in this footnote.</footnote>
+    </footnotes>
+
+    <remarks></remarks>
+
+    <ownerSignature>
+        <signatureName>/s/ Kinsha O. Swain Attorney-in-Fact</signatureName>
+        <signatureDate>2026-08-17</signatureDate>
+    </ownerSignature>
+</ownershipDocument>
+</XML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

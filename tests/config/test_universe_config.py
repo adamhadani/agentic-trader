@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from agentic_trader.config import (
+    DEFAULT_BROAD_INDEX_ETFS,
     AppConfig,
     ContractConfig,
     MarketDataConfig,
@@ -64,8 +65,9 @@ def test_scan_config_defaults_match_the_spec():
         "coverage_sessions": 10,
         "coverage_reference_symbol": "SPY",
         "shadow_ranker_artifact": None,
+        "broad_index_etfs": DEFAULT_BROAD_INDEX_ETFS,
     }
-    assert [b.value for b in ScanBudget] == ["full", "session", "none"]
+    assert [b.value for b in ScanBudget] == ["full", "session", "none", "journal_only"]
 
 
 def test_market_data_and_universe_defaults_match_the_spec():

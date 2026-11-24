@@ -89,7 +89,7 @@ async def test_llm_verdict_on_a_catalog_probe_is_commentary_not_a_gate(evaluator
 
 @pytest.mark.parametrize(
     ("approved", "recorded"),
-    [("false", False), ("FALSE", False), ("no", False), (1, False), (None, False), ("True", True), (True, True)],
+    [("false", False), ("FALSE", False), ("no", False), (1, False), (None, False), ("True", False), (True, True)],
 )
 async def test_the_recorded_llm_verdict_is_true_only_for_an_explicit_true(
     evaluator_factory,  # noqa: F811

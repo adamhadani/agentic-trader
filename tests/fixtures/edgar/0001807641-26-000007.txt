@@ -1,0 +1,171 @@
+<SEC-DOCUMENT>0001807641-26-000007.txt : 20260721
+<SEC-HEADER>0001807641-26-000007.hdr.sgml : 20260721
+<ACCEPTANCE-DATETIME>20260721180143
+ACCESSION NUMBER:		0001807641-26-000007
+CONFORMED SUBMISSION TYPE:	4
+PUBLIC DOCUMENT COUNT:		1
+CONFORMED PERIOD OF REPORT:	20260717
+FILED AS OF DATE:		20260721
+DATE AS OF CHANGE:		20260721
+
+REPORTING-OWNER:
+
+	OWNER DATA:
+		COMPANY CONFORMED NAME:			Brase John P
+		CENTRAL INDEX KEY:			0001807641
+		ORGANIZATION NAME:
+
+	FILING VALUES:
+		FORM TYPE:		4
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-07275
+		FILM NUMBER:		261191301
+
+	MAIL ADDRESS:
+		STREET 1:		ONE STRAWBERRY LANE
+		CITY:			ORRVILLE
+		STATE:			OH
+		ZIP:			44667
+
+ISSUER:
+
+	COMPANY DATA:
+		COMPANY CONFORMED NAME:			CONAGRA BRANDS INC.
+		CENTRAL INDEX KEY:			0000023217
+		STANDARD INDUSTRIAL CLASSIFICATION:	FOOD & KINDRED PRODUCTS [2000]
+		ORGANIZATION NAME:           	04 Manufacturing
+		EIN:				470248710
+		STATE OF INCORPORATION:			DE
+		FISCAL YEAR END:			0530
+
+	BUSINESS ADDRESS:
+		STREET 1:		222 W. MERCHANDISE MART PLAZA
+		STREET 2:		SUITE 1300
+		CITY:			CHICAGO
+		STATE:			IL
+		ZIP:			60654
+		BUSINESS PHONE:		312-549-5000
+
+	MAIL ADDRESS:
+		STREET 1:		222 W. MERCHANDISE MART PLAZA
+		STREET 2:		SUITE 1300
+		CITY:			CHICAGO
+		STATE:			IL
+		ZIP:			60654
+
+	FORMER COMPANY:
+		FORMER CONFORMED NAME:	CONAGRA FOODS INC /DE/
+		DATE OF NAME CHANGE:	20001006
+
+	FORMER COMPANY:
+		FORMER CONFORMED NAME:	CONAGRA INC /DE/
+		DATE OF NAME CHANGE:	19920703
+
+	FORMER COMPANY:
+		FORMER CONFORMED NAME:	NEBRASKA CONSOLIDATED MILLS CO
+		DATE OF NAME CHANGE:	19721201
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>4
+<SEQUENCE>1
+<FILENAME>form4-07212026_100739.xml
+<TEXT>
+<XML>
+<?xml version="1.0"?>
+<ownershipDocument>
+
+    <schemaVersion>X0609</schemaVersion>
+
+    <documentType>4</documentType>
+
+    <periodOfReport>2026-07-17</periodOfReport>
+
+    <issuer>
+        <issuerCik>0000023217</issuerCik>
+        <issuerName>CONAGRA BRANDS INC.</issuerName>
+        <issuerTradingSymbol>CAG</issuerTradingSymbol>
+        <issuerForeignTradingSymbol></issuerForeignTradingSymbol>
+    </issuer>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001807641</rptOwnerCik>
+            <rptOwnerName>Brase John P</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>C/O CONAGRA BRANDS, INC.</rptOwnerStreet1>
+            <rptOwnerStreet2>222 W. MERCHANDISE MART PLAZA, STE. 1300</rptOwnerStreet2>
+            <rptOwnerCity>CHICAGO</rptOwnerCity>
+            <rptOwnerState>IL</rptOwnerState>
+            <rptOwnerZipCode>60654</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>true</isDirector>
+            <isOfficer>true</isOfficer>
+            <isTenPercentOwner>false</isTenPercentOwner>
+            <isOther>false</isOther>
+            <officerTitle>President and CEO</officerTitle>
+            <otherText></otherText>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <aff10b5One>0</aff10b5One>
+
+    <nonDerivativeTable>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Common Stock</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-07-17</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>P</transactionCode>
+                <equitySwapInvolved>0</equitySwapInvolved>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>35000</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <value>14.5895</value>
+                    <footnoteId id="F1"/>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>A</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>35000</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>D</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value></value>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+    </nonDerivativeTable>
+
+    <derivativeTable></derivativeTable>
+
+    <footnotes>
+        <footnote id="F1">Price reflects the weighted average sale price for multiple transactions with prices ranging from $14.575-$14.59 per share. The reporting person undertakes to provide, upon request by the Commission Staff, the Issuer, or a security holder of the Issuer, the full information regarding the number of shares purchased at each separate price.</footnote>
+    </footnotes>
+
+    <ownerSignature>
+        <signatureName>/s/ McLaurin Hill Files, Attorney-in-Fact</signatureName>
+        <signatureDate>2026-07-21</signatureDate>
+    </ownerSignature>
+</ownershipDocument>
+</XML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

@@ -62,7 +62,13 @@ def create_copilot_graph(
         model_with_tools = chat_model.bind_tools(tools)
     else:
         resolved_model: str = str(model_name or getattr(copilot.config, "llm_model", "gpt-4o-mini"))
-        llm = ChatLiteLLM(model=resolved_model, api_key=copilot.config.llm_api_key)
+        # ``model_kwargs`` reach ``litellm.acompletion`` on every request, so the chat path drops unsupported
+        # parameters per call; the process-global ``litellm.drop_params`` stays False.
+        llm = ChatLiteLLM(
+            model=resolved_model,
+            api_key=copilot.config.llm_api_key,
+            model_kwargs={"drop_params": True},
+        )
         model_with_tools = llm.bind_tools(tools)
 
     async def call_model(state: CopilotState) -> dict[str, list[AnyMessage]]:

@@ -22,11 +22,26 @@ from agentic_trader.config import AppConfig, ScanBudget, corporate_actions_live,
 from agentic_trader.constants import MAX_DAILY_COMPARISONS, AssetClass, AuditEventType
 from agentic_trader.data.corporate_actions import AlpacaCorporateActionsSource
 from agentic_trader.data.corporate_actions_worker import CorporateActionsWorker
+from agentic_trader.data.earnings_capture import (
+    EarningsCaptureStore,
+    default_capture_directory as earnings_capture_directory,
+    run_earnings_capture_worker,
+)
+from agentic_trader.data.filings_capture import FilingsCaptureStore, run_filings_capture_worker
+from agentic_trader.data.insider_capture import (
+    CaptureScope,
+    InsiderCaptureStore,
+    capture_scope,
+    default_capture_directory,
+    load_watch_cohort,
+    run_insider_capture_worker,
+)
 from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.diagnostics.doctor import format_doctor_cli_output, run_diagnostics
 from agentic_trader.diagnostics.monitor import OperationsMonitor
 from agentic_trader.diagnostics.probe import probe_readiness
 from agentic_trader.diagnostics.readiness import HealthComponent
+from agentic_trader.execution.auto_entry import auto_entry_active
 from agentic_trader.execution.durable import ScanTrigger
 from agentic_trader.market.bars import ObservationStatus
 from agentic_trader.market.session import ET_TZ
@@ -37,6 +52,7 @@ from agentic_trader.research.alpha.daily_plan import DailyComparisonPlan, DailyP
 from agentic_trader.research.alpha.decisions import SessionDecisionService
 from agentic_trader.research.alpha.models import DecisionStatus
 from agentic_trader.research.alpha.observation import SessionObservationService
+from agentic_trader.research.pooled.entry import REPO_ROOT
 from agentic_trader.research.setups.card_stats_worker import CardStatsUnavailable, CardStatsWorker
 from agentic_trader.runtime import runtime_identity
 from agentic_trader.screeners.earnings_drift import PEAD_DECISION_TIME_ET
@@ -429,37 +445,116 @@ async def run_corporate_actions_worker(copilot, config, readiness) -> None:
             await asyncio.wait_for(shutdown.wait(), timeout=policy.poll_seconds)
 
 
+async def run_insider_capture(copilot, config) -> None:
+    """The nightly SEC Form 4 capture for insider watch cards (data/insider_capture.py).
+
+    The cohort's issuer CIKs come from the frozen insider entry and the archive's ticker map, loaded on
+    the first poll that has dates to capture, and only over the pinned archive (``capture_scope`` checks
+    its ``files_sha256``): a failure there, a refreshed archive included, is observed by type name like any
+    failed poll, and nothing is captured under a scope the watch history would not read.
+    """
+    policy = config.insider_watch
+    store = InsiderCaptureStore(copilot.db.workflows, default_capture_directory())
+
+    def load_scope() -> CaptureScope:
+        return capture_scope(load_watch_cohort(REPO_ROOT, policy.archive_dir), policy.archive_dir)
+
+    async def scope() -> CaptureScope:
+        return await asyncio.to_thread(load_scope)
+
+    async def observe(ok: bool, detail: str) -> None:
+        await copilot.readiness.observe(HealthComponent.INSIDER_CAPTURE, ok, detail)
+
+    await run_insider_capture_worker(config, store, observe, copilot._shutdown_event, scope=scope)
+
+
+async def run_earnings_capture(copilot, config) -> None:
+    """The daily dated Nasdaq earnings-calendar capture (data/earnings_capture.py)."""
+    store = EarningsCaptureStore(copilot.db.workflows, earnings_capture_directory())
+
+    async def observe(ok: bool, detail: str) -> None:
+        await copilot.readiness.observe(HealthComponent.EARNINGS_CAPTURE, ok, detail)
+
+    await run_earnings_capture_worker(config, store, observe, copilot._shutdown_event)
+
+
+def start_earnings_capture(copilot, config) -> asyncio.Task[None] | None:
+    """Start the capture task when ``earnings_capture.enabled``; otherwise none."""
+    if not config.earnings_capture.enabled:
+        return None
+    return asyncio.create_task(run_earnings_capture(copilot, config))
+
+
+async def run_filings_capture(copilot, config) -> None:
+    """The filing-veto evidence capture (data/filings_capture.py) over the corporate-action symbols.
+
+    The symbols are read on each pass, as the corporate-actions worker reads them: the universe, held
+    equities (tracked and broker-held) and ``corporate_actions.extra_symbols``.
+    """
+    store = FilingsCaptureStore(copilot.db.workflows)
+
+    async def observe(ok: bool, detail: str) -> None:
+        await copilot.readiness.observe(HealthComponent.FILINGS_CAPTURE, ok, detail)
+
+    await run_filings_capture_worker(
+        config, store, observe, copilot._shutdown_event, symbols=lambda: corporate_action_symbols(copilot, config)
+    )
+
+
+def start_filings_capture(copilot, config) -> asyncio.Task[None] | None:
+    """Start the capture task when ``filing_veto.capture``; otherwise none."""
+    if not config.filing_veto.capture:
+        return None
+    return asyncio.create_task(run_filings_capture(copilot, config))
+
+
 def _slot_due_at(slot_et: str) -> datetime:
     """The instant a New York ``HH:MM`` suggestion-scan slot was due today."""
     return datetime.combine(datetime.now(ET_TZ).date(), dt_time.fromisoformat(slot_et), tzinfo=ET_TZ)
 
 
 def make_suggestion_scan(copilot: Any, *, use_llm: bool):
-    """The session-aligned suggestion scan: a full-budget equity scan, then an optional digest."""
+    """The session-aligned suggestion scan: a full-budget equity scan, then an optional digest.
+
+    The digest runs in a ``finally``: a closed session, a gated scan and a scan that raised are all
+    reportable sessions. A digest failure is logged and never masks the scan's own exception. With
+    paper auto-entry active, the same ``finally`` first runs the auto-entry sweep (outside the scan
+    lock, whether or not the scan raised): the normal, immediate path for this scan's marked cards.
+    A sweep failure is logged and never stops the digest.
+    """
 
     async def run_suggestion_scan(digest: bool = False, scheduled_time_et: str | None = None) -> None:
-        active, reason = await copilot.session_provider.is_session_active(instrument_type="equity")
-        if active:
-            await copilot.run_scan(
-                use_llm=use_llm,
-                dry_run=False,
-                asset_class="equity",
-                budget=ScanBudget.FULL,
-                shadow_evidence=True,
-                trigger=ScanTrigger.SUGGESTION_SCAN,
-                # The configured New York time of this job: only the PEAD decision time
-                # (10:35) may produce a drift card.
-                scheduled_time_et=scheduled_time_et,
-                # When that slot was due: a drift decision reached too late is skipped.
-                scheduled_at=_slot_due_at(scheduled_time_et) if scheduled_time_et else None,
-            )
-        else:
-            logger.info(
-                "Suggestion scan skipped: %s", reason, extra={"event": "suggestion_scan_skipped", "reason": reason}
-            )
-        # A closed session is still a reportable session: the digest always runs.
-        if digest:
-            await copilot.publish_scan_digest()
+        try:
+            active, reason = await copilot.session_provider.is_session_active(instrument_type="equity")
+            if active:
+                await copilot.run_scan(
+                    use_llm=use_llm,
+                    dry_run=False,
+                    asset_class="equity",
+                    budget=ScanBudget.FULL,
+                    shadow_evidence=True,
+                    trigger=ScanTrigger.SUGGESTION_SCAN,
+                    # The configured New York time of this job: only the PEAD decision time
+                    # (10:35) may produce a drift card.
+                    scheduled_time_et=scheduled_time_et,
+                    # When that slot was due: a drift decision reached too late is skipped.
+                    scheduled_at=_slot_due_at(scheduled_time_et) if scheduled_time_et else None,
+                )
+            else:
+                logger.info(
+                    "Suggestion scan skipped: %s", reason, extra={"event": "suggestion_scan_skipped", "reason": reason}
+                )
+        finally:
+            try:
+                if auto_entry_active(copilot.config):
+                    await copilot.auto_enter_pending()
+            except Exception:
+                logger.exception("Auto-entry sweep failed", extra={"event": "auto_entry_sweep_failed"})
+            if digest:
+                try:
+                    await copilot.publish_scan_digest()
+                except Exception:
+                    logger.exception("Scan digest could not be published", extra={"event": "scan_digest_failed"})
 
     return run_suggestion_scan
 
@@ -579,22 +674,30 @@ class MissedSuggestionScanNotice:
 
 
 def register_swing_scan(scheduler: Any, copilot: Any, config: AppConfig, *, use_llm: bool) -> None:
-    """Register the daemon's interval full-universe scan, journaled as ``ScanTrigger.SWING_SCAN``."""
+    """Register the daemon's interval full-universe scan, journaled as ``ScanTrigger.SWING_SCAN``.
+
+    It is journal-only (``ScanBudget.JOURNAL_ONLY``): it ranks and journals, and sends no card, so a
+    daemon restart cannot spend a session slot. The suggestion scans own the cards.
+    """
     scheduler.add_job(
         copilot.run_scan,
         "interval",
         hours=config.scheduler.cron_hour_interval,
         args=[use_llm, False],
-        kwargs={"budget": ScanBudget.FULL, "trigger": ScanTrigger.SWING_SCAN},
+        kwargs={"budget": ScanBudget.JOURNAL_ONLY, "trigger": ScanTrigger.SWING_SCAN},
         id="swing_scan",
-        # Runs once at start so the `scan` readiness component observes this run; its
-        # cards are journaled like any other.
+        # Runs once at start so the `scan` readiness component observes this run; it only journals,
+        # so the start run can no longer record a signal.
         next_run_time=datetime.now(UTC),
     )
 
 
 def register_intraday_scan(scheduler: Any, copilot: Any, config: AppConfig, *, use_llm: bool) -> None:
-    """Register the 15-minute intraday scan, scoped to the explicitly configured contracts."""
+    """Register the 15-minute intraday scan, scoped to the explicitly configured contracts.
+
+    It is journal-only (``ScanBudget.JOURNAL_ONLY``) and restricted, so it never journals either:
+    it can no longer send a card.
+    """
 
     async def run_intraday_scan(*, symbols: list[str]) -> None:
         session_active, reason = await copilot.session_provider.is_session_active(instrument_type="all")
@@ -605,7 +708,7 @@ def register_intraday_scan(scheduler: Any, copilot: Any, config: AppConfig, *, u
                 asset_class="all",
                 timeframe="15m",
                 symbols=symbols,
-                budget=ScanBudget.FULL,
+                budget=ScanBudget.JOURNAL_ONLY,
             )
         else:
             logger.debug("Intraday scan skipped outside market session: %s", reason)
@@ -636,6 +739,79 @@ def register_card_expiry_sweep(scheduler: Any, copilot: Any) -> None:
         "interval",
         minutes=5,
         id="card_expiry_sweep",
+        next_run_time=datetime.now(UTC),
+    )
+
+
+def register_auto_entry_jobs(scheduler: Any, copilot: Any, config: AppConfig) -> None:
+    """Register the paper auto-entry jobs; nothing unless ``auto_entry_active(config)``.
+
+    The sweep runs every minute and once at startup, so a card recorded before a restart (or by a
+    scan that raised) is still attempted, or abandoned once too old, without waiting for the next
+    suggestion scan. ``auto_enter_pending`` serializes itself and never raises into the scheduler.
+    """
+    if not auto_entry_active(config):
+        return
+    scheduler.add_job(
+        copilot.auto_enter_pending,
+        "interval",
+        minutes=1,
+        id="auto_entry_sweep",
+        next_run_time=datetime.now(UTC),
+    )
+    # Sent on its first run at or after regular close + 15 minutes; the key makes it once per date.
+    scheduler.add_job(
+        copilot.publish_auto_entry_digest,
+        "interval",
+        minutes=5,
+        id="auto_entry_digest",
+        next_run_time=datetime.now(UTC),
+    )
+
+
+def register_release_exit_job(scheduler: Any, copilot: Any, config: AppConfig) -> None:
+    """Register the release-exit tick (execution/release_exit.py): every 5 minutes and once at startup.
+
+    None when off, and none without the broker trading calendar the pass is timed on (the lifetime service's
+    strict Alpaca calendar, the one the auto-entry digest also reads; absent without Alpaca credentials, as in
+    the simulator): then it logs once, here at startup, instead of a ``TradingCalendarUnavailable`` every tick.
+    Its pass runs once per New York trading day, on the first tick at or after the calendar's close minus
+    ``release_exit.minutes_before_close``; ``run_release_exit`` never raises into the scheduler.
+    """
+    if config.release_exit.mode == "off":
+        return
+    if copilot.release_exit.calendar is None:
+        logger.warning(
+            "Release exit disabled: no broker trading calendar (release_exit.mode %s)",
+            config.release_exit.mode,
+            extra={"event": "release_exit_disabled", "reason": "no_trading_calendar"},
+        )
+        return
+    scheduler.add_job(
+        copilot.run_release_exit,
+        "interval",
+        minutes=5,
+        id="release_exit",
+        next_run_time=datetime.now(UTC),
+    )
+
+
+def register_scorecard_job(scheduler: Any, copilot: Any, config: AppConfig) -> None:
+    """Register the weekly scorecard tick (every 15 minutes and once at startup); none while disabled.
+
+    ``publish_weekly_scorecard`` is due from the configured New York weekday and time, queues one Telegram
+    message per ISO week (the key makes a second tick or a restart a no-op, a missed week publishes on the first
+    tick that follows), waits for a running scan, and never raises into the scheduler. One instance at a time.
+    """
+    if not config.scorecard.enabled:
+        return
+    scheduler.add_job(
+        copilot.publish_weekly_scorecard,
+        "interval",
+        minutes=15,
+        id="weekly_scorecard",
+        max_instances=1,
+        coalesce=True,
         next_run_time=datetime.now(UTC),
     )
 
@@ -709,6 +885,16 @@ async def daemon(no_llm: bool) -> None:
         if corporate_actions_live(config)
         else None
     )
+    # Nightly SEC Form 4 capture for insider watch cards; EDGAR_USER_AGENT is read inside the worker.
+    insider_capture_task = (
+        asyncio.create_task(run_insider_capture(copilot, config)) if config.insider_watch.enabled else None
+    )
+    earnings_capture_task = start_earnings_capture(copilot, config)
+    # The filing veto's EDGAR capture; EDGAR_USER_AGENT is read inside the worker.
+    filings_capture_task = start_filings_capture(copilot, config)
+    if copilot.insider_watch_source is not None:
+        # The pinned insider archive (about 16 s) is read once per process in a worker thread, from now.
+        copilot.insider_watch_source.warm()
 
     scheduler = AsyncIOScheduler(
         job_defaults={
@@ -739,6 +925,12 @@ async def daemon(no_llm: bool) -> None:
     )
     # Strike an untapped card's buttons once its session ends; runs regardless of halt.
     register_card_expiry_sweep(scheduler, copilot)
+    # Paper auto-entry of marked suggestion cards (Alpaca paper with session-bounded entries only).
+    register_auto_entry_jobs(scheduler, copilot, config)
+    # The release exit: one journaled pass per trading day shortly before the close (preview or enforce).
+    register_release_exit_job(scheduler, copilot, config)
+    # The weekly lane scorecard: one Telegram message per ISO week, from Saturday 09:00 ET by default.
+    register_scorecard_job(scheduler, copilot, config)
     # Schedule daily morning macro briefing (Monday - Friday)
     if config.scheduler.macro_briefing_enabled:
         scheduler.add_job(
@@ -786,6 +978,42 @@ async def daemon(no_llm: bool) -> None:
                 logger.exception(
                     "Corporate-actions worker ended with an error", extra={"event": "corporate_actions_task_failed"}
                 )
+        if insider_capture_task is not None:
+            insider_capture_task.cancel()
+            try:
+                await insider_capture_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                # Type name only: an exception's text may carry a request header.
+                logger.warning(
+                    "Insider-capture worker ended with an error",
+                    extra={"event": "insider_capture_task_failed", "reason": type(exc).__name__},
+                )
+        if earnings_capture_task is not None:
+            earnings_capture_task.cancel()
+            try:
+                await earnings_capture_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                # Type name only: an exception's text may carry a request header.
+                logger.warning(
+                    "Earnings-capture worker ended with an error",
+                    extra={"event": "earnings_capture_task_failed", "reason": type(exc).__name__},
+                )
+        if filings_capture_task is not None:
+            filings_capture_task.cancel()
+            try:
+                await filings_capture_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                # Type name only: an exception's text may carry a request header.
+                logger.warning(
+                    "Filings-capture worker ended with an error",
+                    extra={"event": "filings_capture_task_failed", "reason": type(exc).__name__},
+                )
         workflow_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await workflow_task
@@ -831,7 +1059,7 @@ async def monitor_once(config: AppConfig, report: dict[str, Any]) -> None:
     """Composition boundary for an external supervisor, never a second poller."""
     db = await asyncio.to_thread(SignalDatabase, config=config)
     try:
-        monitor = OperationsMonitor(OperationsStore(db.workflows), config.operations)
+        monitor = OperationsMonitor(OperationsStore(db.workflows), config.operations, config.release_exit.mode)
         await monitor.observe(report)
         await RetentionService(db.workflows, config.operations).sweep(apply=True, only_if_due=True)
         # Let the normal consumer deliver. If its loop/process is unavailable,

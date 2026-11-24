@@ -6,14 +6,17 @@ import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 import httpx
 
 from agentic_trader.constants import NASDAQ_EARNINGS_CALENDAR_URL
 from agentic_trader.market.session import ET_TZ, ensure_et
-from agentic_trader.risk import earnings_days_out
+from agentic_trader.risk import earnings_days_out, earnings_unverified_refuses
 
+
+if TYPE_CHECKING:
+    from agentic_trader.data.earnings_capture import CapturedReports
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +42,8 @@ def _parse_timing(raw: str | None) -> EarningsTiming:
     return _RAW_TIMING_MAP.get(raw or "", EarningsTiming.UNSPECIFIED)
 
 
-def _timing_word(timing: EarningsTiming) -> str:
+def timing_word(timing: EarningsTiming) -> str:
+    """How a report's timing reads on a card or notice: "before open", "after close" or "timing unspecified"."""
     if timing == EarningsTiming.PRE_MARKET:
         return "before open"
     if timing == EarningsTiming.AFTER_HOURS:
@@ -82,17 +86,27 @@ class EarningsLookup:
 
     `verified=False` means at least one date in the scanned window could not be
     fetched or parsed, so an absent `event` is not trustworthy evidence of "no
-    report" — callers must fail open rather than treat it as clearance.
+    report" — callers apply ``risk.earnings_calendar_unknown`` (``open`` labels it, ``closed`` refuses) rather
+    than treat it as clearance.
     """
 
     event: EarningsEvent | None
     verified: bool
     horizon_end: date
+    # "capture": the verdict came from the journaled dated calendar capture, not the live lookup.
+    source: Literal["live", "capture"] = "live"
+    capture_date: date | None = None
 
 
 @runtime_checkable
 class EarningsCalendarProtocol(Protocol):
     async def next_earnings(self, symbol: str, now: datetime, horizon_days: int) -> EarningsLookup: ...
+
+
+class EarningsCaptureSource(Protocol):
+    """The journaled dated earnings capture (``EarningsCaptureStore``), read-only."""
+
+    async def reports_between(self, start: date, end: date, *, today: date) -> CapturedReports | None: ...
 
 
 def _number(raw: object) -> float | None:
@@ -120,11 +134,35 @@ def _count(raw: object) -> int | None:
     return int(value)
 
 
+def calendar_page_rejection(response: httpx.Response) -> tuple[dict[str, Any] | None, str | None]:
+    """``(payload, None)`` for a verified calendar page, else ``(None, reason)``.
+
+    A page is verified only with HTTP 200, a JSON object body, ``status.rCode == 200`` and a
+    JSON-object ``data``; a soft-error page (``data: null``) is never an empty day.
+    """
+    if response.status_code != 200:
+        return None, f"HTTP {response.status_code}"
+    try:
+        payload = response.json()
+    except ValueError:
+        return None, "body is not JSON"
+    if not isinstance(payload, dict):
+        return None, "body is not a JSON object"
+    status = payload.get("status")
+    code = status.get("rCode") if isinstance(status, dict) else None
+    if code != 200:
+        return None, f"status.rCode {code!r}"
+    if not isinstance(payload.get("data"), dict):
+        return None, "data is not an object"
+    return payload, None
+
+
 def parse_calendar_payload(payload: object, day: date) -> list[CalendarRow]:
     """Rows of one Nasdaq calendar response for ``day``.
 
-    A missing or null ``data``/``rows`` is an empty day (the endpoint serves
-    ``data: null`` on some non-trading dates); rows without a symbol are skipped.
+    A missing or null ``data``/``rows`` parses as an empty day (research tolerance; the live
+    paths reject a page without a ``data`` object first, see ``calendar_page_rejection``);
+    rows without a symbol are skipped.
     """
     data = payload.get("data") if isinstance(payload, dict) else None
     raw_rows = data.get("rows") if isinstance(data, dict) else None
@@ -149,6 +187,59 @@ def parse_calendar_payload(payload: object, day: date) -> list[CalendarRow]:
             )
         )
     return rows
+
+
+@dataclass(frozen=True)
+class ForwardRow:
+    """One row of a forward (not yet reported) Nasdaq calendar page, as served."""
+
+    symbol: str
+    timing: EarningsTiming
+    fiscal_quarter: str | None
+    eps_forecast: float | None
+    n_estimates: int | None
+    last_year_report_date: date | None
+    last_year_eps: float | None
+    market_cap: float | None
+
+
+def _report_date(raw: object) -> date | None:
+    """``'11/06/2025'`` -> date(2025, 11, 6); ``N/A``, blank or unparseable -> None."""
+    try:
+        return date.strptime(str(raw or "").strip(), "%m/%d/%Y")
+    except ValueError:
+        return None
+
+
+def parse_forward_rows(payload: object, day: date) -> tuple[list[ForwardRow], int]:
+    """Forward rows of one Nasdaq calendar response for ``day`` and the count skipped.
+
+    A missing or null ``data``/``rows`` parses as an empty day; rows without a symbol are
+    skipped and counted. Duplicate symbols are kept as served.
+    """
+    data = payload.get("data") if isinstance(payload, dict) else None
+    raw_rows = data.get("rows") if isinstance(data, dict) else None
+    rows: list[ForwardRow] = []
+    skipped = 0
+    for row in raw_rows if isinstance(raw_rows, list) else []:
+        symbol = str(row.get("symbol") or "").strip().upper() if isinstance(row, dict) else ""
+        if not symbol:
+            skipped += 1
+            continue
+        quarter = str(row.get("fiscalQuarterEnding") or "").strip()
+        rows.append(
+            ForwardRow(
+                symbol=symbol,
+                timing=_parse_timing(row.get("time")),
+                fiscal_quarter=quarter or None,
+                eps_forecast=_number(row.get("epsForecast")),
+                n_estimates=_count(row.get("noOfEsts")),
+                last_year_report_date=_report_date(row.get("lastYearRptDt")),
+                last_year_eps=_number(row.get("lastYearEPS")),
+                market_cap=_number(row.get("marketCap")),
+            )
+        )
+    return rows, skipped
 
 
 @dataclass(frozen=True)
@@ -218,12 +309,10 @@ class NasdaqEarningsCalendar:
                     params={"date": day.isoformat()},
                     headers=NASDAQ_REQUEST_HEADERS,
                 )
-                if resp.status_code != 200:
-                    logger.warning(
-                        "Nasdaq earnings calendar returned HTTP %s for %s", resp.status_code, day.isoformat()
-                    )
+                payload, rejection = calendar_page_rejection(resp)
+                if rejection is not None:
+                    logger.warning("Nasdaq earnings calendar page rejected for %s: %s", day.isoformat(), rejection)
                     return None
-                payload = resp.json()
         except Exception as e:
             logger.warning("Failed to fetch Nasdaq earnings calendar", extra={"date": day.isoformat(), "error": str(e)})
             return None
@@ -243,8 +332,8 @@ class NasdaqEarningsCalendar:
     async def reported_rows(self, day: date) -> ReportedPage:
         """Every row Nasdaq lists for ``day``; unusable pages are ``rows=None``, never guessed.
 
-        Acceptance matches the study's acquisition: HTTP 200, a JSON object and
-        ``status.rCode == 200``. Uncached: a live PEAD decision reads the page once.
+        Acceptance is ``calendar_page_rejection``: HTTP 200, a JSON object, ``status.rCode == 200``
+        and a ``data`` object. Uncached: a live PEAD decision reads the page once.
         """
         try:
             async with httpx.AsyncClient(transport=self._transport, timeout=6.0) as client:
@@ -254,17 +343,9 @@ class NasdaqEarningsCalendar:
         except Exception as exc:
             return ReportedPage(day, None, None, f"request failed: {type(exc).__name__}", None)
         digest = hashlib.sha256(resp.content).hexdigest()
-        if resp.status_code != 200:
-            return ReportedPage(day, None, resp.status_code, f"HTTP {resp.status_code}", digest)
-        try:
-            payload = resp.json()
-        except ValueError:
-            return ReportedPage(day, None, 200, "body is not JSON", digest)
-        if not isinstance(payload, dict):
-            return ReportedPage(day, None, 200, "body is not a JSON object", digest)
-        code = (payload.get("status") or {}).get("rCode") if isinstance(payload.get("status"), dict) else None
-        if code != 200:
-            return ReportedPage(day, None, 200, f"status.rCode {code!r}", digest)
+        payload, rejection = calendar_page_rejection(resp)
+        if rejection is not None:
+            return ReportedPage(day, None, resp.status_code, rejection, digest)
         return ReportedPage(day, tuple(parse_calendar_payload(payload, day)), 200, None, digest)
 
     async def next_earnings(self, symbol: str, now: datetime, horizon_days: int) -> EarningsLookup:
@@ -290,16 +371,113 @@ class NasdaqEarningsCalendar:
         return EarningsLookup(event=found, verified=verified, horizon_end=horizon_end)
 
 
-def earnings_blackout_reason(lookup: EarningsLookup, symbol: str, now: datetime, blackout_days: int) -> str | None:
+def _is_ahead(report_date: date, timing: EarningsTiming, today: date) -> bool:
+    return report_date > today or (report_date == today and timing != EarningsTiming.PRE_MARKET)
+
+
+def _log_resolved(symbol: str, lookup: EarningsLookup) -> None:
+    """One INFO line for a verdict that did not come from a verified live lookup (capture or unverified)."""
+    logger.info(
+        "earnings_lookup_resolved",
+        extra={
+            "event": "earnings_lookup_resolved",
+            "contract": symbol,
+            "source": lookup.source,
+            "capture_date": lookup.capture_date.isoformat() if lookup.capture_date else None,
+            "verified": lookup.verified,
+        },
+    )
+
+
+async def resolve_earnings(
+    symbol: str,
+    now: datetime,
+    horizon_days: int,
+    *,
+    live: EarningsCalendarProtocol | None,
+    captures: EarningsCaptureSource | None,
+) -> EarningsLookup:
+    """One earnings verdict: the live lookup, else the journaled dated capture, else unverified.
+
+    A verified live result, or any live result that found a report, is returned as is. When the live
+    lookup raised or is unverified without a report, the capture (journal read only) vouches: it is
+    scanned with the live "ahead" rule and a verified ``source="capture"`` lookup returned. With
+    neither source the lookup is unverified. Failures are logged by exception type name only.
+    """
+    today = ensure_et(now, target_tz=ET_TZ).date()
+    horizon_end = today + timedelta(days=horizon_days)
+
+    if live is not None:
+        try:
+            lookup = await live.next_earnings(symbol, now, horizon_days)
+        except Exception as exc:
+            logger.warning(
+                "earnings_lookup_failed", extra={"event": "earnings_lookup_failed", "error": type(exc).__name__}
+            )
+        else:
+            if lookup.verified or lookup.event is not None:
+                return lookup
+
+    if captures is not None:
+        captured = None
+        try:
+            captured = await captures.reports_between(today, horizon_end, today=today)
+        except Exception as exc:
+            logger.warning(
+                "earnings_capture_read_failed",
+                extra={"event": "earnings_capture_read_failed", "error": type(exc).__name__},
+            )
+        if captured is not None:
+            symbol_upper = symbol.upper()
+            found: EarningsEvent | None = None
+            for day in sorted(captured.rows):
+                if day < today or day > horizon_end:
+                    continue
+                for row_symbol, timing in captured.rows[day]:
+                    if row_symbol.upper() == symbol_upper and _is_ahead(day, timing, today):
+                        found = EarningsEvent(symbol=symbol_upper, date=day, timing=timing)
+                        break
+                if found is not None:
+                    break
+            result = EarningsLookup(
+                event=found,
+                verified=True,
+                horizon_end=horizon_end,
+                source="capture",
+                capture_date=captured.capture_date,
+            )
+            _log_resolved(symbol, result)
+            return result
+
+    result = EarningsLookup(event=None, verified=False, horizon_end=horizon_end)
+    _log_resolved(symbol, result)
+    return result
+
+
+def earnings_blackout_reason(
+    lookup: EarningsLookup,
+    symbol: str,
+    now: datetime,
+    blackout_days: int,
+    *,
+    unknown: Literal["open", "closed"] = "open",
+) -> str | None:
     """Return a rejection reason when an ahead earnings event falls inside the blackout window.
 
     The window is ``agentic_trader.risk.earnings_days_out``: the report date lies within
     ``[0, blackout_days]`` days of today in New York. A report that was found always blocks,
     even if another date in the window could not be fetched. Only an *absence* is
-    untrustworthy when the lookup is unverified, and then the gate fails open.
-    `blackout_days=0` disables it.
+    untrustworthy when the lookup is unverified: the gate then fails open (``unknown="open"``) or
+    refuses (``"closed"``, ``risk.earnings_calendar_unknown``). `blackout_days=0` disables it.
     """
     if lookup.event is None:
+        if earnings_unverified_refuses(
+            verified=lookup.verified, has_event=False, blackout_days=blackout_days, unknown=unknown
+        ):
+            return (
+                f"{symbol}: earnings calendar unavailable and no fresh capture covers "
+                f"the next {blackout_days} days (policy closed)"
+            )
         return None
     today = ensure_et(now, target_tz=ET_TZ).date()
     days_out = earnings_days_out(lookup.event.date, today, blackout_days)
@@ -307,18 +485,28 @@ def earnings_blackout_reason(lookup: EarningsLookup, symbol: str, now: datetime,
         return None
 
     day_word = "day" if days_out == 1 else "days"
+    suffix = (
+        f" (calendar capture {lookup.capture_date.isoformat()})"
+        if lookup.source == "capture" and lookup.capture_date
+        else ""
+    )
     return (
-        f"{symbol} reports {lookup.event.date.isoformat()} {_timing_word(lookup.event.timing)} "
-        f"(in {days_out} {day_word}) — within {blackout_days}-day blackout"
+        f"{symbol} reports {lookup.event.date.isoformat()} {timing_word(lookup.event.timing)} "
+        f"(in {days_out} {day_word}) — within {blackout_days}-day blackout{suffix}"
     )
 
 
 def earnings_note(lookup: EarningsLookup, now: datetime, blackout_days: int) -> str:
     """Render the one-line earnings note shown on a suggestion card."""
+    suffix = (
+        f" (calendar capture {lookup.capture_date.isoformat()})"
+        if lookup.source == "capture" and lookup.capture_date
+        else ""
+    )
     if lookup.event is None:
         if not lookup.verified:
             return "Unverified — earnings calendar unavailable"
-        return f"No report within {blackout_days} days"
+        return f"No report within {blackout_days} days{suffix}"
 
     today = ensure_et(now, target_tz=ET_TZ).date()
     days_out = (lookup.event.date - today).days
@@ -326,8 +514,8 @@ def earnings_note(lookup: EarningsLookup, now: datetime, blackout_days: int) -> 
     qualifier = "within" if inside else "outside"
     day_word = "day" if days_out == 1 else "days"
     return (
-        f"Reports {lookup.event.date.isoformat()} {_timing_word(lookup.event.timing)} "
-        f"(in {days_out} {day_word}) — {qualifier} {blackout_days}-day blackout"
+        f"Reports {lookup.event.date.isoformat()} {timing_word(lookup.event.timing)} "
+        f"(in {days_out} {day_word}) — {qualifier} {blackout_days}-day blackout{suffix}"
     )
 
 
@@ -335,6 +523,7 @@ __all__ = [
     "NASDAQ_REQUEST_HEADERS",
     "CalendarRow",
     "EarningsCalendarProtocol",
+    "EarningsCaptureSource",
     "EarningsEvent",
     "EarningsLookup",
     "EarningsTiming",
@@ -343,4 +532,6 @@ __all__ = [
     "earnings_blackout_reason",
     "earnings_note",
     "parse_calendar_payload",
+    "resolve_earnings",
+    "timing_word",
 ]

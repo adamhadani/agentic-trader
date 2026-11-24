@@ -15,6 +15,7 @@ from telegram import (
     BotCommandScopeDefault,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    LinkPreviewOptions,
     MenuButtonCommands,
     Update,
 )
@@ -45,8 +46,14 @@ from agentic_trader.constants import (
     RuntimeEnvironment,
     SignalStatus,
 )
-from agentic_trader.execution.card_evidence import format_evidence_lines, parse_card_evidence
+from agentic_trader.execution.auto_entry import AUTO_ENTRY_SOURCE_FACT
+from agentic_trader.execution.card_evidence import (
+    format_evidence_lines,
+    format_pead_base_rate_lines,
+    parse_card_evidence,
+)
 from agentic_trader.execution.freshness import ExecutionReply
+from agentic_trader.execution.lifetimes import RestingCancelResult, parse_signal_id
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.notifier.transport import (
     ObservedPollingRequest,
@@ -125,7 +132,7 @@ def _evidence_block(card_evidence: Any, strategy: str, eval_res: LLMTradeEvaluat
     evidence = parse_card_evidence(card_evidence, strategy=strategy, direction=eval_res.direction)
     if evidence is None:
         return ""
-    return "".join(f"{line}\n" for line in format_evidence_lines(evidence, eval_res.risk_reward_ratio, html=markup))
+    return "".join(f"{line}\n" for line in format_evidence_lines(evidence, html=markup))
 
 
 def _book_line(book_sizing: dict[str, Any] | None, *, markup: bool) -> str:
@@ -172,7 +179,35 @@ def _corporate_action_line(block: dict[str, Any] | None, *, markup: bool) -> str
     return (html.escape(text) if markup else text) + "\n"
 
 
+def _filing_veto_line(block: dict[str, Any] | None, *, markup: bool) -> str:
+    """The filing-veto line, newline-terminated: a fresh preview block that would block, or an enforce block that
+    would block but would not refuse (a preview-only category or an exempt card); an enforce card that would be
+    refused is never sent. The reason is shown without its own "Filing veto: " lead and closing period."""
+    if not block or block.get("status") != "ok" or not block.get("would_block"):
+        return ""
+    mode = block.get("mode")
+    if mode == "preview":
+        label = "Filing veto (preview)"
+    elif mode == "enforce" and block.get("would_refuse") is False:
+        label = "Filing (not enforced)"
+    else:
+        return ""
+    reason = block.get("reason")
+    if not isinstance(reason, str) or not reason:
+        return ""
+    detail = reason.removeprefix("Filing veto: ").removesuffix(".")
+    text = f"🗂 {label}: {detail} — card unchanged"
+    return (html.escape(text) if markup else text) + "\n"
+
+
 NEWS_LABEL = "📰 News (context, not a gate): "
+# Insider watch cards (agent/insider_watch.py): the header and the frozen v1 study's result, verbatim.
+WATCH_HEADER = "👀 INSIDER WATCH — unvalidated"
+WATCH_ISSUER_URL = "https://www.sec.gov/cgi-bin/own-disp?action=getissuer&CIK={cik}"
+WATCH_STUDY_LINE = (
+    "Study v1 (2016–2026): +0.087R/trade, not significant on its own; "
+    "+0.070R vs matched names (90% CI excludes 0). Your call."
+)
 NEWS_HEADLINE_CHARS = 110  # the card clips headlines at a fixed width; not configurable
 
 
@@ -230,6 +265,89 @@ def _news_line(block: dict[str, Any] | None, *, markup: bool, now: datetime | No
     return NEWS_LABEL + (html.escape(text, quote=False) if markup else text) + "\n"
 
 
+ENTRY_SESSION_BOUND_LINE = "Unfilled entry is cancelled at the session close."
+AUTO_ENTRY_LINE = (
+    "🤖 Paper auto-entry: entered for you on the paper account; no tap needed. "
+    "Unfilled entry is cancelled at the session close."
+)
+AUTO_REFUSED_LINE = "🤖 Auto-entry refused: {reason}. Tap Execute to enter it yourself."
+AUTO_ABANDONED_LINE = "🤖 Auto-entry was not placed in time. Tap Execute to enter it yourself."
+CANCEL_ENTRY_ASK_LABEL = "Cancel entry…"
+# The signal statuses in which each payload ``auto_entry`` line is true at delivery.
+_AUTO_LINE_STATUSES: dict[str, tuple[str, ...]] = {
+    "placing": (SignalStatus.PENDING, SignalStatus.SUBMITTING, SignalStatus.EXECUTED),
+    "refused": (SignalStatus.PENDING,),
+    "abandoned": (SignalStatus.PENDING,),
+}
+
+
+def _cancel_entry_ask_markup(signal_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(CANCEL_ENTRY_ASK_LABEL, callback_data=f"cancelentry_ask:{signal_id}")]]
+    )
+
+
+def _auto_entry_line(auto_entry: str | None, auto_refusal: str | None, *, markup: bool) -> str:
+    """The auto-entry line a card carries (payload ``auto_entry``), or "" for a plain tap card."""
+    if auto_entry == "placing":
+        return AUTO_ENTRY_LINE + "\n"
+    if auto_entry == "refused":
+        reason = auto_refusal or "unknown"
+        return AUTO_REFUSED_LINE.format(reason=html.escape(reason, quote=False) if markup else reason) + "\n"
+    if auto_entry == "abandoned":
+        return AUTO_ABANDONED_LINE + "\n"
+    return ""
+
+
+def _is_watch(facts: dict[str, Any] | None) -> bool:
+    return facts is not None and facts.get("kind") == "insider_watch"
+
+
+def _watch_policy_line(facts: dict[str, Any], auto_entry: str | None) -> str:
+    """The watch card's policy clause: auto-entered when its source is enabled (the facts' flag), else tap-only.
+
+    A card the sweep refused or abandoned is a tap card again, so it reads tap-only beside its refusal line.
+    """
+    if facts.get(AUTO_ENTRY_SOURCE_FACT) and auto_entry not in ("refused", "abandoned"):
+        return "auto-entered on paper; unvalidated; earns no promotion credit"
+    return "tap-only, never auto-entered; earns no promotion credit"
+
+
+def _watch_block(facts: dict[str, Any] | None, *, markup: bool, auto_entry: str | None = None) -> str:
+    """An insider watch card's header and cluster facts (``card_facts`` of kind ``insider_watch``), or "".
+
+    The buyers are counted, never named: the line links the issuer's EDGAR insider-transactions page
+    (``issuer_cik``). The owner CIKs stay in the signal's provenance and the decision journal.
+    """
+    if facts is None or not _is_watch(facts):
+        return ""
+    exit_at = _ny_datetime(facts.get("time_exit_at"))
+    exit_text = (
+        f"{exit_at:%H:%M} NY on {exit_at.date().isoformat()}"
+        if exit_at
+        else f"15:45 NY on session {facts['holding_sessions']}"
+    )
+    filed = ", ".join(str(day) for day in facts.get("filing_dates") or ())
+    issuer = facts.get("issuer_cik")
+    url = WATCH_ISSUER_URL.format(cik=int(issuer)) if issuer is not None else None
+    header = WATCH_HEADER.removeprefix("👀 ")
+    if markup:
+        header = f"<b>{header}</b>"
+        filed = html.escape(filed)
+        link = f' · <a href="{html.escape(url)}">EDGAR insider filings</a>' if url else ""
+        study = html.escape(WATCH_STUDY_LINE)
+    else:
+        link = f" · EDGAR insider filings: {url}" if url else ""
+        study = WATCH_STUDY_LINE
+    return (
+        f"👀 {header} — risk capped at ${float(facts['risk_cap']):,.0f}; {_watch_policy_line(facts, auto_entry)}\n"
+        f"👥 {int(facts['buyers'])} officer/director buyers · "
+        f"${float(facts['opp_dollars']):,.0f} opportunistic open-market purchases · filed {filed}{link}\n"
+        f"⏱️ {facts['holding_sessions']}-session hold · time exit {exit_text} unless the stop or target fills first\n"
+        f"📚 {study}\n\n"
+    )
+
+
 def format_alert_card(
     eval_res: LLMTradeEvaluation,
     strategy: str,
@@ -244,20 +362,34 @@ def format_alert_card(
     card_evidence: dict[str, Any] | None = None,
     issued_at: str | None = None,
     book_sizing: dict[str, Any] | None = None,
+    entry_session_bound: bool = False,
+    card_facts: dict[str, Any] | None = None,
+    auto_entry: str | None = None,
+    auto_refusal: str | None = None,
 ) -> str:
     """Format alert message matching Section 8 of the specification.
 
     ``drift`` (a PEAD catalog-probe card's ``drift_card_facts``) adds the event and
     holding facts between the probe header and the card; None leaves the card unchanged.
+    ``card_facts`` is the generic catalog-source facts keyword (``CatalogCardSource.card_facts``): an
+    insider watch card's facts (``kind == "insider_watch"``) render the watch header, the cluster and the
+    study line before the card; facts of any other kind render nothing.
     ``card_evidence`` (the scan's ``CardEvidence`` dump) renders the measured-record block
     right after the target line; None renders none.
     """
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
-    macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
+    macro_status = (
+        f"Unverified — {html.escape(eval_res.macro_note)}"
+        if eval_res.macro_note
+        else ("Cleared" if eval_res.macro_clearance else "Event Alert Active")
+    )
     earnings_line = f"• <b>Earnings:</b> {html.escape(eval_res.earnings_note)}\n" if eval_res.earnings_note else ""
     regime_line = f"• <b>Regime:</b> {html.escape(regime_summary)}\n" if regime_summary else ""
+    auto_block = _auto_entry_line(auto_entry, auto_refusal, markup=True)
     valid_until_text = _valid_until_text(valid_until, issued_at)
     valid_until_line = f"• <b>Valid until:</b> {valid_until_text}\n" if valid_until_text else ""
+    # The placing line already says it (ruling R11); re-cards and tap cards keep the bullet.
+    valid_until_line += f"• {ENTRY_SESSION_BOUND_LINE}\n" if entry_session_bound and auto_entry != "placing" else ""
     updated_card_prefix = ""
     if reprices is not None:
         first_issued_hhmm = _ny_hhmm(first_issued_at)
@@ -358,18 +490,24 @@ def format_alert_card(
             f"📈 <b>PEAD</b> — EPS beat {drift['surprise_pct']:+.1f}%, reaction {drift['z']:+.1f}σ vs SPY "
             f"(report {html.escape(str(drift['report_date']))})\n"
             f"⏱️ {drift['holding_sessions']}-session hold · time exit {exit_text} "
-            "unless the stop or target fills first\n\n"
+            "unless the stop or target fills first\n"
         )
+        if isinstance(drift.get("base_rate"), dict):
+            drift_block += "\n".join(format_pead_base_rate_lines(drift["base_rate"], html=True)) + "\n"
+        drift_block += "\n"
 
     evidence_block = (
         _evidence_block(card_evidence, strategy, eval_res, markup=True)
         + _book_line(book_sizing, markup=True)
         + _corporate_action_line(eval_res.corporate_actions, markup=True)
+        + _filing_veto_line(eval_res.filings, markup=True)
         + _news_line(eval_res.news_context, markup=True)
     )
 
     # Using HTML formatting for rock-solid reliability with special characters
     text = (
+        f"{_watch_block(card_facts, markup=True, auto_entry=auto_entry)}"
+        f"{auto_block}"
         f"{drift_block}"
         f"{updated_card_prefix}"
         f"📋 <b>SETUP: {qty_str} {html.escape(eval_res.contract)} ({html.escape(eval_res.direction)})</b>\n"
@@ -412,18 +550,30 @@ def format_terminal_card(
     card_evidence: dict[str, Any] | None = None,
     issued_at: str | None = None,
     book_sizing: dict[str, Any] | None = None,
+    entry_session_bound: bool = False,
+    card_facts: dict[str, Any] | None = None,
+    auto_entry: str | None = None,
+    auto_refusal: str | None = None,
 ) -> str:
     """ASCII/plain text formatted card for terminal display.
 
     ``card_evidence`` renders the same measured-record block as the Telegram card, from the
-    same helper, right after the target line; None renders none.
+    same helper, right after the target line; None renders none. An insider watch card's
+    ``card_facts`` render its header and cluster in plain text before the card.
     """
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
-    macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
+    macro_status = (
+        f"Unverified — {eval_res.macro_note}"
+        if eval_res.macro_note
+        else ("Cleared" if eval_res.macro_clearance else "Event Alert Active")
+    )
     earnings_line = f"• Earnings:         {eval_res.earnings_note}\n" if eval_res.earnings_note else ""
     regime_line = f"• Volatility Regime:{regime_summary}\n" if regime_summary else ""
+    auto_block = _auto_entry_line(auto_entry, auto_refusal, markup=False)
     valid_until_text = _valid_until_text(valid_until, issued_at)
     valid_until_line = f"• Valid until:      {valid_until_text}\n" if valid_until_text else ""
+    # The placing line already says it (ruling R11); re-cards and tap cards keep the bullet.
+    valid_until_line += f"• {ENTRY_SESSION_BOUND_LINE}\n" if entry_session_bound and auto_entry != "placing" else ""
     updated_card_prefix = ""
     if reprices is not None:
         first_issued_hhmm = _ny_hhmm(first_issued_at)
@@ -511,13 +661,15 @@ def format_terminal_card(
         _evidence_block(card_evidence, strategy, eval_res, markup=False)
         + _book_line(book_sizing, markup=False)
         + _corporate_action_line(eval_res.corporate_actions, markup=False)
+        + _filing_veto_line(eval_res.filings, markup=False)
         + _news_line(eval_res.news_context, markup=False)
     )
 
     border = "=" * 65
+    watch_block = _watch_block(card_facts, markup=False, auto_entry=auto_entry)
     return f"""
 {border}
-{updated_card_prefix}📋 SETUP: {qty_str} {eval_res.contract} ({eval_res.direction})
+{watch_block}{auto_block}{updated_card_prefix}📋 SETUP: {qty_str} {eval_res.contract} ({eval_res.direction})
 Strategy: {strategy}
 
 📊 Levels
@@ -594,6 +746,7 @@ class TelegramNotifier:
         positions_provider: Callable[[], Awaitable[str]] | None = None,
         close_handler: Callable[[int, float | None], Awaitable[str]] | None = None,
         flatten_handler: Callable[[bool], Awaitable[str]] | None = None,
+        cancel_handler: Callable[[int, bool], Awaitable[RestingCancelResult]] | None = None,
         execute_handler: Callable[..., Awaitable[ExecutionReply]] | None = None,
         reevaluate_handler: Callable[[int], Awaitable[ExecutionReply]] | None = None,
         symbol_scan_handler: Callable[[str], Awaitable[ExecutionReply]] | None = None,
@@ -629,6 +782,7 @@ class TelegramNotifier:
         self.positions_provider = positions_provider
         self.close_handler = close_handler
         self.flatten_handler = flatten_handler
+        self.cancel_handler = cancel_handler
         self.execute_handler = execute_handler
         self.reevaluate_handler = reevaluate_handler
         self.symbol_scan_handler = symbol_scan_handler
@@ -789,6 +943,7 @@ class TelegramNotifier:
                 BotCommand("backtest", "Offline backtest simulation"),
                 BotCommand("scan", "Universe scan, or /scan SYMBOL for one name"),
                 BotCommand("close", "Close one position without halting trading"),
+                BotCommand("cancel", "Preview, then cancel one resting entry order"),
                 BotCommand("flatten", "Preview or close all positions without a trading halt"),
                 BotCommand("panic", "EMERGENCY: cancel all orders, liquidate positions & halt"),
                 BotCommand("resume", "Resume trading operations after panic halt"),
@@ -846,6 +1001,7 @@ class TelegramNotifier:
             self.app.add_handler(CommandHandler("scan", self._observe_handler(self.handle_scan_command)))
             self.app.add_handler(CommandHandler("positions", self._observe_handler(self.handle_positions_command)))
             self.app.add_handler(CommandHandler("close", self._observe_handler(self.handle_close_command)))
+            self.app.add_handler(CommandHandler("cancel", self._observe_handler(self.handle_cancel_command)))
             self.app.add_handler(CommandHandler("flatten", self._observe_handler(self.handle_flatten_command)))
             self.app.add_handler(CommandHandler("perf", self._observe_handler(self.handle_perf_command)))
             self.app.add_handler(CommandHandler("macro", self._observe_handler(self.handle_macro_command)))
@@ -938,6 +1094,7 @@ class TelegramNotifier:
             "• /gex [sym] - View market maker gamma exposure (GEX), walls, and gamma flip (e.g. <code>/gex SPY</code>)\n"
             "• /backtest [sym] [lookback] - Run an offline backtest (e.g. <code>/backtest SPY 1y</code>)\n"
             "• /close &lt;id&gt; - Request broker closure; accounting waits for fills\n"
+            "• /cancel &lt;id&gt; - Preview, then cancel one unfilled resting entry (one broker cancel, never retried)\n"
             "• /scan - Trigger an on-demand quantitative scan across universe\n"
             "• /scan SYMBOL - Scan one configured contract or liquid US equity (e.g. <code>/scan XOM</code>)\n"
             "• /flatten [confirm] - Preview/close all broker positions; halt state unchanged\n"
@@ -1076,6 +1233,43 @@ class TelegramNotifier:
             await self.safe_reply_text(update.message, resp)
         else:
             await update.message.reply_text("Close handler not attached.")
+
+    async def handle_cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Preview an operator cancel; only the "Cancel entry" button sends the broker cancel."""
+        if not self._is_authorized(update) or not update.message:
+            return
+        args = context.args or []
+        signal_id = parse_signal_id(args[0]) if len(args) == 1 else None
+        if signal_id is None:
+            await update.message.reply_text(
+                "Usage: <code>/cancel &lt;signal_id&gt;</code>\nPreviews one resting entry; the confirm button cancels it.",
+                parse_mode="HTML",
+            )
+            return
+        if self.cancel_handler is None:
+            await update.message.reply_text("Cancel handler not attached.")
+            return
+        await self._reply_cancel_preview(update.message, signal_id, self.cancel_handler)
+
+    @staticmethod
+    async def _reply_cancel_preview(
+        message: Any, signal_id: int, cancel_handler: Callable[[int, bool], Awaitable[RestingCancelResult]]
+    ) -> None:
+        """Reply with the operator-cancel preview; its Cancel entry / Keep buttons confirm or drop it."""
+        result = await cancel_handler(signal_id, False)
+        text = TelegramHtmlFormatter.format_resting_cancel_html(result)
+        if result.status != "preview":
+            await message.reply_text(text, parse_mode="HTML")
+            return
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Cancel entry", callback_data=f"cancelentry_confirm:{signal_id}"),
+                    InlineKeyboardButton("Keep", callback_data="cancelentry_keep"),
+                ]
+            ]
+        )
+        await message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
     async def handle_flatten_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
@@ -1335,6 +1529,35 @@ class TelegramNotifier:
                     await msg.reply_text(reply.text, parse_mode="HTML")
             else:
                 await query.answer("Re-evaluate handler unavailable.", show_alert=True)
+        elif data.startswith("cancelentry_ask:"):
+            ask_id = parse_signal_id(data.removeprefix("cancelentry_ask:"))
+            if ask_id is None:
+                await query.answer("Invalid entry cancel button; nothing cancelled.", show_alert=True)
+                return
+            if self.cancel_handler is None:
+                await query.answer("Cancel handler unavailable; nothing cancelled.", show_alert=True)
+                return
+            await query.answer()
+            if msg and hasattr(msg, "reply_text"):
+                await self._reply_cancel_preview(msg, ask_id, self.cancel_handler)
+        elif data.startswith("cancelentry_confirm:"):
+            cancel_id = parse_signal_id(data.removeprefix("cancelentry_confirm:"))
+            if cancel_id is None:
+                await query.answer("Invalid entry cancel button; nothing cancelled.", show_alert=True)
+                return
+            if self.cancel_handler is None:
+                await query.answer("Cancel handler unavailable; nothing cancelled.", show_alert=True)
+                return
+            await query.answer("Cancelling entry…")
+            await _safe_clear_markup()
+            result = await self.cancel_handler(cancel_id, True)
+            if msg and hasattr(msg, "reply_text"):
+                await msg.reply_text(TelegramHtmlFormatter.format_resting_cancel_html(result), parse_mode="HTML")
+        elif data == "cancelentry_keep":
+            await query.answer("Entry kept")
+            await _safe_clear_markup()
+            if msg and hasattr(msg, "reply_text"):
+                await msg.reply_text("Entry kept; nothing was cancelled.")
         elif data == "panic_confirm":
             await query.answer("Executing emergency kill switch...")
             await _safe_clear_markup()
@@ -1371,16 +1594,25 @@ class TelegramNotifier:
         drift: dict[str, Any] | None = None,
         card_evidence: dict[str, Any] | None = None,
         book_sizing: dict[str, Any] | None = None,
+        entry_session_bound: bool = False,
+        card_facts: dict[str, Any] | None = None,
+        auto_entry: str | None = None,
+        auto_refusal: str | None = None,
     ) -> int | None:
         # ``valid_until``/``reprices``/``first_issued_at`` arrive in card payloads recorded
         # by the scan and by tap-time re-pricing; rendered on both cards below. ``drift``
-        # (a PEAD catalog-probe scan card only) is rendered on the Telegram card.
+        # (a PEAD catalog-probe scan card only) is rendered on the Telegram card;
+        # ``card_facts`` (a catalog source's generic facts; an insider watch card's) is rendered on both cards.
         # ``card_evidence`` (native scan cards and their replacements) renders the
         # measured-record block on both cards; payloads queued before it existed omit it.
         # The signal row is read once: its timestamp dates ``Valid until`` (a close after the
         # issue date names its day) and its status guards the buttons below.
         row = await self.db.get_signal_by_id(signal_id) if self.db else None
         issued_at = _issued_at(row)
+        if auto_entry is not None and row is not None and row["status"] not in _AUTO_LINE_STATUSES.get(auto_entry, ()):
+            # Each auto line is true only in its statuses ("placing": not yet refused or ended; a re-card's
+            # "Tap Execute": live); any other status renders exactly as a tap card (spec 2.3, "as today").
+            auto_entry, auto_refusal = None, None
         # Always output to terminal/logs
         print(
             format_terminal_card(
@@ -1394,7 +1626,11 @@ class TelegramNotifier:
                 first_issued_at=first_issued_at,
                 card_evidence=card_evidence,
                 book_sizing=book_sizing,
+                entry_session_bound=entry_session_bound,
                 issued_at=issued_at,
+                card_facts=card_facts,
+                auto_entry=auto_entry,
+                auto_refusal=auto_refusal,
             )
         )
 
@@ -1418,7 +1654,11 @@ class TelegramNotifier:
             drift=drift,
             card_evidence=card_evidence,
             book_sizing=book_sizing,
+            entry_session_bound=entry_session_bound,
             issued_at=issued_at,
+            card_facts=card_facts,
+            auto_entry=auto_entry,
+            auto_refusal=auto_refusal,
         )
 
         # A retried SIGNAL delivery can land after the card already left PENDING -- for
@@ -1427,7 +1667,15 @@ class TelegramNotifier:
         # an EXPIRED card still gets a Re-evaluate button (the handler itself refuses a
         # non-configured contract with a clear message).
         current_status = (row or {}).get("status") if self.db else None
-        if current_status is not None and current_status != SignalStatus.PENDING:
+        reply_markup: InlineKeyboardMarkup | None
+        if auto_entry == "placing" and current_status == SignalStatus.PENDING:
+            # A veto before the sweep places the entry: Dismiss only, never Execute.
+            reply_markup = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("❌ Dismiss Signal", callback_data=f"dism_{signal_id}")]]
+            )
+        elif auto_entry == "placing" and current_status in (SignalStatus.SUBMITTING, SignalStatus.EXECUTED):
+            reply_markup = _cancel_entry_ask_markup(signal_id)
+        elif current_status is not None and current_status != SignalStatus.PENDING:
             reply_markup = (
                 InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Re-evaluate", callback_data=f"reval_{signal_id}")]])
                 if current_status == SignalStatus.EXPIRED
@@ -1470,6 +1718,8 @@ class TelegramNotifier:
                 text=self._label(card_html),
                 parse_mode="HTML",
                 reply_markup=reply_markup,
+                # A watch card links the issuer's EDGAR page; it must not unfurl into a preview.
+                **({"link_preview_options": LinkPreviewOptions(is_disabled=True)} if _is_watch(card_facts) else {}),
             )
             if self.db:
                 await self.db.update_telegram_message_id(signal_id, msg.message_id)
@@ -1529,6 +1779,37 @@ class TelegramNotifier:
             bot = self.app.bot
             await bot.edit_message_reply_markup(chat_id=self.chat_id, message_id=message_id, reply_markup=markup)
             return f"struck buttons on card #{signal_id} ({contract})"
+        except BadRequest as exc:
+            reason = str(exc).lower()
+            if (
+                "message is not modified" in reason
+                or "message to edit not found" in reason
+                or "can't be edited" in reason
+                or "message_id_invalid" in reason
+            ):
+                return f"acknowledged unmodifiable card #{signal_id}: {exc}"
+            raise
+
+    async def mark_auto_entered_card(self, signal_id: int, contract: str) -> str | bool:
+        """CARD_AUTO_ENTERED delivery: swap an auto-entered card's Dismiss for Cancel entry….
+
+        Mirrors ``strike_expired_card``: the message id is read at delivery time; a card never
+        delivered is acknowledged without calling Telegram (its late delivery renders Cancel
+        entry… from the signal status); the same unmodifiable ``BadRequest`` cases are
+        acknowledged; any other failure propagates so the outbox retries.
+        """
+        if not self.is_configured() or not self.app:
+            return False
+        sig = await self.db.get_signal_by_id(signal_id) if self.db else None
+        message_id = sig.get("telegram_message_id") if sig else None
+        if not message_id:
+            return "no telegram message"
+        try:
+            bot = self.app.bot
+            await bot.edit_message_reply_markup(
+                chat_id=self.chat_id, message_id=message_id, reply_markup=_cancel_entry_ask_markup(signal_id)
+            )
+            return f"swapped buttons on auto-entered card #{signal_id} ({contract})"
         except BadRequest as exc:
             reason = str(exc).lower()
             if (

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from agentic_trader.accounting.risk import AccountRiskSnapshot
@@ -21,7 +22,7 @@ from agentic_trader.config import AppConfig
 from agentic_trader.constants import SignalStatus, SystemStateKey
 from agentic_trader.execution.admission import authorization_expiry, reservation_rejection
 from agentic_trader.execution.capacity import assess_entry_capacity
-from agentic_trader.execution.durable import WorkItem, WorkKind, WorkStatus
+from agentic_trader.execution.durable import EntryTrigger, WorkItem, WorkKind, WorkStatus
 from agentic_trader.risk import requires_account_risk
 from agentic_trader.storage.workflow import WorkflowStore
 
@@ -47,8 +48,10 @@ class EntryExecutionService:
         self.executor, self.macro_check = executor, macro_check
         self.ledger = ledger
 
-    async def authorize(self, request: OrderRequest) -> tuple[WorkItem | None, str]:
-        item, reason = await self.store.enqueue_entry(request, self.config)
+    async def authorize(
+        self, request: OrderRequest, *, trigger: EntryTrigger = EntryTrigger.TAP
+    ) -> tuple[WorkItem | None, str]:
+        item, reason = await self.store.enqueue_entry(request, self.config, trigger=trigger)
         if item and item.status == WorkStatus.QUEUED:
             # CLI/Telegram may help drain the same queue as the daemon. Durable
             # fencing, not a process-local lock, grants submission authority.
@@ -83,12 +86,27 @@ class EntryExecutionService:
             entry_order_ids=tuple(sorted({p["broker_order_id"] for p in reservations if p.get("broker_order_id")})),
         )
         if isinstance(context, BrokerEntryContext):
-            # The cheap price-drift check runs first: a drifted entry is refused without the macro
-            # check's provider calls (calendar lookup, regime refresh).
+            # The cheap price-drift checks (last trade, then the quote band) run first: a drifted
+            # entry is refused without the macro check's provider calls (calendar lookup, regime
+            # refresh). An IEX quote is one venue's book, not the NBBO, and is often wide and
+            # lopsided, so its midpoint is not the market price. At one instant the market lies
+            # within [IEX bid, IEX ask]; only a quote entirely outside the band proves a move.
             assert request.entry_price is not None
             if abs(float(context.price) / request.entry_price - 1) > policy.entry_max_price_drift_pct:
                 return (
                     f"Market price changed to {context.price:g}; original approved limit {request.entry_price:g} retained.",
+                    context,
+                )
+            band = Decimal(str(policy.entry_max_price_drift_pct))
+            limit = Decimal(str(request.entry_price))
+            quote = context.quote
+            if quote.bid_price > limit * (1 + band) or quote.ask_price < limit * (1 - band):
+                return (
+                    (
+                        f"Market quote {quote.bid_price:g}/{quote.ask_price:g} is entirely outside the "
+                        f"{policy.entry_max_price_drift_pct * 100:g}% drift band; "
+                        f"original approved limit {request.entry_price:g} retained."
+                    ),
                     context,
                 )
         elif not (isinstance(context, SimulatedEntryContext) and not requires_account_risk(self.config)):
@@ -139,7 +157,7 @@ class EntryExecutionService:
         if reason := await self.store.begin_submission(
             item,
             self.config,
-            risk_fingerprint=risk.fingerprint if risk else None,
+            preflight_risk_fingerprint=risk.fingerprint if risk else None,
             broker_context=context if isinstance(context, BrokerEntryContext) else None,
         ):
             await self.store.resolve_entry(

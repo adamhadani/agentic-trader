@@ -1,0 +1,102 @@
+{
+  "beta_window_sessions": 120,
+  "code_revision": "research/prospective-equity-panel-iex-v1-20260918-69-g72438f9",
+  "cost_bps_quantiles": {
+    "max": 136.44386906753076,
+    "p50": 6.185466676093411,
+    "p90": 11.676137343026687,
+    "p99": 21.259436076041485
+  },
+  "cost_model": {
+    "cost_cap_bps": 200.0,
+    "cost_floor_bps": 5.0,
+    "cost_min_sessions": 15.0,
+    "cost_window_sessions": 20.0,
+    "impact_coefficient": 1.0,
+    "reference_risk_usd": 1000.0
+  },
+  "excluded_symbols": [
+    "BIL",
+    "DIA",
+    "IJH",
+    "IJR",
+    "ITOT",
+    "IVV",
+    "IWB",
+    "IWM",
+    "IWR",
+    "IWV",
+    "MDY",
+    "OEF",
+    "QQQ",
+    "QQQM",
+    "RSP",
+    "SCHB",
+    "SCHX",
+    "SHY",
+    "SPY",
+    "SPYM",
+    "VB",
+    "VO",
+    "VOO",
+    "VTI",
+    "VV"
+  ],
+  "keys": [
+    {
+      "direction": "LONG",
+      "mean": -0.021025053907424963,
+      "n_rows": 1087,
+      "n_sessions": 592,
+      "sd": 1.4039093507587814,
+      "se_session": 0.0488333313630404,
+      "strategy": "SQUEEZE_BREAKOUT",
+      "tau": 0.09845920848720906,
+      "tau_source": "key",
+      "timeframe": "1h"
+    },
+    {
+      "direction": "LONG",
+      "mean": 0.1315172213577273,
+      "n_rows": 114,
+      "n_sessions": 93,
+      "sd": 1.390807826803009,
+      "se_session": 0.13821614704132637,
+      "strategy": "SQUEEZE_BREAKOUT",
+      "tau": 0.16432742109320947,
+      "tau_source": "pooled",
+      "timeframe": "4h"
+    },
+    {
+      "direction": "LONG",
+      "mean": -0.0784050397150786,
+      "n_rows": 7049,
+      "n_sessions": 1056,
+      "sd": 1.393392356523885,
+      "se_session": 0.02511483011911735,
+      "strategy": "TREND_PULLBACK",
+      "tau": 0.17315911700915282,
+      "tau_source": "key",
+      "timeframe": "4h"
+    }
+  ],
+  "min_quarters": 8,
+  "min_rows_per_quarter": 20,
+  "n_no_beta": 0,
+  "pooled_n_rows": 8250,
+  "pooled_sd": 1.3949119962143588,
+  "pooled_tau": 0.16432742109320947,
+  "r_clip": 10.0,
+  "source": {
+    "arm": "A0_live",
+    "feed": "alpaca:sip",
+    "frame": "frames/primary.csv.gz",
+    "frame_sha256": "15a1225cd26fab78e7a6209e96fe6999c171fce7a2d74f5047c734204cbfd469",
+    "protocol_sha256": "fc6496aa6f9cbec182e0096aef5b7226290e02c367d2dcd084acd6371e75d725",
+    "window_end": "2026-01-29",
+    "window_start": "2021-06-01"
+  },
+  "tau_floor": 0.05,
+  "unit": "net_excess_r_v1",
+  "version": "card-stats-prior-v1"
+}

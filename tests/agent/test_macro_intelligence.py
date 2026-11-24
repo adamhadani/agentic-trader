@@ -1,14 +1,15 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from agentic_trader.agent.macro import (
+    MACRO_INPUT_SOURCES,
     CreditSpreads,
     CreditStressRegime,
     FredDataClient,
-    InflationExpectations,
     InflationRegime,
+    MacroInput,
     MacroIntelligenceEngine,
     MacroIntelligenceReport,
     MacroStressLevel,
@@ -135,7 +136,6 @@ def test_compound_macro_stress_scoring():
             regime=YieldCurveRegime.NORMAL_STEEP,
         ),
         credit=CreditSpreads(high_yield_oas_pct=2.70, high_yield_oas_bps=270.0, regime=CreditStressRegime.BENIGN),
-        inflation=InflationExpectations(breakeven_10y=2.30, breakeven_5y=2.35, regime=InflationRegime.ANCHORED),
     )
     assert assessment_low.level == MacroStressLevel.LOW
     assert assessment_low.risk_multiplier == 1.0
@@ -153,7 +153,6 @@ def test_compound_macro_stress_scoring():
             regime=YieldCurveRegime.FLAT,
         ),
         credit=CreditSpreads(high_yield_oas_pct=3.10, high_yield_oas_bps=310.0, regime=CreditStressRegime.BENIGN),
-        inflation=InflationExpectations(breakeven_10y=2.40, breakeven_5y=2.45, regime=InflationRegime.ANCHORED),
     )
     assert assessment_mod.level == MacroStressLevel.MODERATE
     assert assessment_mod.risk_multiplier == 0.8
@@ -170,7 +169,6 @@ def test_compound_macro_stress_scoring():
             regime=YieldCurveRegime.INVERTED,
         ),
         credit=CreditSpreads(high_yield_oas_pct=4.80, high_yield_oas_bps=480.0, regime=CreditStressRegime.ELEVATED),
-        inflation=InflationExpectations(breakeven_10y=2.75, breakeven_5y=2.80, regime=InflationRegime.ELEVATED),
     )
     assert assessment_high.level == MacroStressLevel.HIGH
     assert assessment_high.risk_multiplier == 0.5
@@ -188,7 +186,6 @@ def test_compound_macro_stress_scoring():
             regime=YieldCurveRegime.INVERTED,
         ),
         credit=CreditSpreads(high_yield_oas_pct=6.20, high_yield_oas_bps=620.0, regime=CreditStressRegime.CRITICAL),
-        inflation=InflationExpectations(breakeven_10y=2.90, breakeven_5y=2.95, regime=InflationRegime.ELEVATED),
     )
     assert assessment_extreme.level == MacroStressLevel.EXTREME
     assert assessment_extreme.risk_multiplier == 0.25
@@ -212,12 +209,12 @@ async def test_fred_data_client_csv_parsing():
     with patch.object(client, "_fetch_csv_text", new_callable=AsyncMock) as mock_fetch:
         mock_fetch.return_value = sample_csv
 
-        val = await client.fetch_latest_value("BAMLH0A0HYM2")
-        assert val == 2.65
+        result = await client.fetch_input("hy_oas", "BAMLH0A0HYM2", decision=True)
+        assert (result.value, result.observed_on, result.error) == (2.65, date(2026, 9, 11), None)
 
         # Verify caching
-        val_cached = await client.fetch_latest_value("BAMLH0A0HYM2")
-        assert val_cached == 2.65
+        cached = await client.fetch_input("hy_oas", "BAMLH0A0HYM2", decision=True)
+        assert cached.value == 2.65
         assert mock_fetch.call_count == 1
 
 
@@ -228,61 +225,75 @@ async def test_fred_data_client_fallback_on_error():
     with patch.object(client, "_fetch_csv_text", new_callable=AsyncMock) as mock_fetch:
         mock_fetch.side_effect = Exception("Connection timeout")
 
-        val = await client.fetch_latest_value("BAMLH0A0HYM2", force_refresh=True)
-        assert val is None
+        result = await client.fetch_input("hy_oas", "BAMLH0A0HYM2", decision=True, force_refresh=True)
+        assert (result.value, result.error) == (None, "Exception")
+
+
+def _fake_sources(values: dict):
+    """``yahoo_fetch`` and ``fred_client`` fakes keyed by ticker / series id; ``None`` is no observation."""
+
+    def make(name: str, symbol: str, decision: bool) -> MacroInput:
+        value = values.get(symbol)
+        return MacroInput(
+            name=name,
+            value=value,
+            source=MACRO_INPUT_SOURCES[name],
+            observed_on=date(2026, 9, 11) if value is not None else None,
+            decision=decision,
+            error=None if value is not None else "no_observation",
+        )
+
+    def yahoo_fetch(name: str, ticker: str, *, decision: bool) -> MacroInput:
+        return make(name, ticker, decision)
+
+    class Fred(FredDataClient):
+        async def fetch_input(self, name, series_id, *, decision, force_refresh=False):
+            return make(name, series_id, decision)
+
+    return yahoo_fetch, Fred()
 
 
 @pytest.mark.asyncio
 async def test_macro_intelligence_engine_end_to_end():
     config = RegimeConfig(cache_ttl_seconds=300)
-    engine = MacroIntelligenceEngine(config=config)
+    yahoo_fetch, fred_client = _fake_sources(
+        {
+            "^IRX": 3.95,
+            "^FVX": 4.65,
+            "^TNX": 4.95,
+            "^TYX": 5.25,
+            "^VIX": 17.2,
+            "DX-Y.NYB": 103.4,
+            "DGS2": 4.35,
+            "BAMLH0A0HYM2": 2.65,
+            "T10YIE": 2.37,
+            "T5YIE": 2.40,
+        }
+    )
+    engine = MacroIntelligenceEngine(config=config, fred_client=fred_client, yahoo_fetch=yahoo_fetch)
 
-    # Mock yfinance ticker fetch
-    mock_yields = {
-        "^IRX": 3.95,
-        "^FVX": 4.65,
-        "^TNX": 4.95,
-        "^TYX": 5.25,
-        "^VIX": 17.2,
-        "DX-Y.NYB": 103.4,
-    }
+    evaluation = await engine.evaluate(force_refresh=True)
+    report = evaluation.report
 
-    def mock_fetch_ticker(t):
-        return mock_yields.get(t, 4.0)
-
-    # Mock FRED client
-    mock_fred_data = {
-        "DGS2": 4.35,
-        "BAMLH0A0HYM2": 2.65,
-        "T10YIE": 2.37,
-        "T5YIE": 2.40,
-    }
-
-    async def mock_fetch_fred(series_id, force_refresh=False):
-        return mock_fred_data.get(series_id)
-
-    with (
-        patch("agentic_trader.agent.macro._fetch_ticker_sync", side_effect=mock_fetch_ticker),
-        patch.object(engine.fred_client, "fetch_latest_value", side_effect=mock_fetch_fred),
-    ):
-        report: MacroIntelligenceReport = await engine.get_macro_report(force_refresh=True)
-
-        assert isinstance(report, MacroIntelligenceReport)
-        assert report.yields.yield_10y == 4.95
-        assert report.yields.yield_2y == 4.35
-        assert pytest.approx(report.spreads.slope_10y_2y_bps, abs=0.1) == 60.0
-        assert report.spreads.regime == YieldCurveRegime.NORMAL_STEEP
-        assert report.credit.high_yield_oas_pct == 2.65
-        assert report.credit.regime == CreditStressRegime.BENIGN
-        assert report.inflation.breakeven_10y == 2.37
-        assert report.inflation.regime == InflationRegime.ANCHORED
-        assert report.vix == 17.2
-        assert report.dxy == 103.4
-        assert report.stress.level == MacroStressLevel.LOW
-        assert report.stress.risk_multiplier == 1.0
-        assert report.stress.squeeze_breakout_allowed is True
-        assert "LOW" in report.summary_text
-        assert "NORMAL_STEEP" in report.summary_text
+    assert isinstance(report, MacroIntelligenceReport)
+    assert evaluation.stress is report.stress
+    assert report.yields.yield_10y == 4.95
+    assert report.yields.yield_2y == 4.35
+    assert pytest.approx(report.spreads.slope_10y_2y_bps, abs=0.1) == 60.0
+    assert report.spreads.regime == YieldCurveRegime.NORMAL_STEEP
+    assert report.credit.high_yield_oas_pct == 2.65
+    assert report.credit.regime == CreditStressRegime.BENIGN
+    assert report.inflation is not None
+    assert report.inflation.breakeven_10y == 2.37
+    assert report.inflation.regime == InflationRegime.ANCHORED
+    assert report.vix == 17.2
+    assert report.dxy == 103.4
+    assert report.stress.level == MacroStressLevel.LOW
+    assert report.stress.risk_multiplier == 1.0
+    assert report.stress.squeeze_breakout_allowed is True
+    assert "LOW" in report.summary_text
+    assert "NORMAL_STEEP" in report.summary_text
+    assert report.observation_dates["DGS2"] == "2026-09-11"
 
 
 @pytest.mark.asyncio
@@ -291,7 +302,7 @@ async def test_macro_explainer_deterministic():
     spreads = calculate_yield_curve_spreads(yields)
     credit = classify_credit_stress(2.65)
     inflation = classify_inflation_expectations(2.37, 2.40)
-    stress = compute_compound_macro_stress(vix=17.5, yield_spreads=spreads, credit=credit, inflation=inflation)
+    stress = compute_compound_macro_stress(vix=17.5, yield_spreads=spreads, credit=credit)
 
     report = MacroIntelligenceReport(
         timestamp=datetime.now(UTC),
@@ -326,14 +337,17 @@ async def test_macro_explainer_deterministic():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad_value", [None, float("nan"), float("inf")])
 async def test_macro_missing_data_does_not_invent_baselines(bad_value):
-    engine = MacroIntelligenceEngine()
-    with (
-        patch("agentic_trader.agent.macro._fetch_ticker_sync", return_value=bad_value),
-        patch.object(engine.fred_client, "fetch_latest_value", new=AsyncMock(return_value=2.5)),
-        pytest.raises(ValueError, match="Macro data unavailable"),
-    ):
-        await engine.get_macro_report()
-    assert engine._cached_report is None
+    """A missing or non-finite Yahoo read is a missing input: UNKNOWN stress, no report, nothing cached."""
+    values = dict.fromkeys(("^IRX", "^FVX", "^TNX", "^TYX", "^VIX", "DX-Y.NYB"), bad_value)
+    values |= {"DGS2": 2.5, "BAMLH0A0HYM2": 2.5, "T10YIE": 2.5, "T5YIE": 2.5}
+    yahoo_fetch, fred_client = _fake_sources(values)
+    engine = MacroIntelligenceEngine(fred_client=fred_client, yahoo_fetch=yahoo_fetch, vix_retry_delay_seconds=0)
+    evaluation = await engine.evaluate()
+    assert evaluation.report is None
+    assert evaluation.stress.level is MacroStressLevel.UNKNOWN
+    assert evaluation.missing_decision == ("vix", "3m", "10y")
+    assert all(evaluation.inputs[name].value is None for name in ("vix", "3m", "10y", "5y", "30y", "dxy"))
+    assert engine._cached_evaluation is None
 
 
 @pytest.mark.asyncio
@@ -342,7 +356,8 @@ async def test_fred_observation_date_and_failed_forced_refresh():
     with patch.object(
         client, "_fetch_csv_text", new=AsyncMock(return_value="DATE,VALUE\n2026-09-11,4.63\n2026-09-14,.")
     ):
-        assert await client.fetch_latest_value("DGS2") == 4.63
-        assert client.observation_dates["DGS2"] == "2026-09-11"
+        result = await client.fetch_input("2y", "DGS2", decision=True)
+        assert (result.value, result.observed_on) == (4.63, date(2026, 9, 11))
     with patch.object(client, "_fetch_csv_text", new=AsyncMock(side_effect=TimeoutError)):
-        assert await client.fetch_latest_value("DGS2", force_refresh=True) is None
+        failed = await client.fetch_input("2y", "DGS2", decision=True, force_refresh=True)
+        assert (failed.value, failed.error) == (None, "TimeoutError")

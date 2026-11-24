@@ -9,10 +9,10 @@ from uuid import uuid4
 
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.constants import AuditEventType
-from agentic_trader.diagnostics.incidents import OperationalNotice
+from agentic_trader.diagnostics.incidents import OperationalNotice, QuietHoursSummary
 from agentic_trader.execution.durable import NotificationKind
 from agentic_trader.notifier.transport import notification_id
-from agentic_trader.presentation.operations import format_operational_notice
+from agentic_trader.presentation.operations import format_operational_notice, format_quiet_hours_summary
 from agentic_trader.storage.workflow import WorkflowStore
 
 
@@ -70,6 +70,8 @@ class NotificationDispatcher:
     async def _deliver(self, kind: NotificationKind, args: dict):
         if kind == NotificationKind.OPERATIONAL:
             return await self.notifier.send_message(format_operational_notice(OperationalNotice.model_validate(args)))
+        if kind == NotificationKind.OPERATIONS_SUMMARY:
+            return await self.notifier.send_message(format_quiet_hours_summary(QuietHoursSummary.model_validate(args)))
         if kind == NotificationKind.EXIT:
             return await self.notifier.send_exit_alert(**args)
         if kind == NotificationKind.STOP:
@@ -79,6 +81,8 @@ class NotificationDispatcher:
             return await self.notifier.send_signal_alert(**args)
         if kind == NotificationKind.CARD_EXPIRED:
             return await self.notifier.strike_expired_card(**args)
+        if kind == NotificationKind.CARD_AUTO_ENTERED:
+            return await self.notifier.mark_auto_entered_card(**args)
         return await self.notifier.send_message(args["text"] if args.get("formatted") else html.escape(args["text"]))
 
     async def drain(self) -> int:

@@ -33,7 +33,7 @@ from agentic_trader.constants import (
     RuntimeEnvironment,
     SignalStatus,
 )
-from agentic_trader.execution.durable import EventKind, NotificationKind
+from agentic_trader.execution.durable import EntryTrigger, EventKind, NotificationKind
 from agentic_trader.execution.freshness import card_is_stale
 from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG
 from agentic_trader.runtime import RUN_ID, validate_test_database
@@ -445,7 +445,9 @@ class SignalDatabase:
         """Check if an active or recent signal was emitted for this contract and strategy within `hours`.
 
         A FAILED card does not count: the system, not the operator, failed to place it
-        (e.g. a preflight refusal), so the setup may be carded again. Pending, dismissed,
+        (e.g. a preflight refusal), or its entry was cancelled unfilled after its session
+        (the native session-close bound, or an operator cancel), so the setup may be carded
+        again, typically next session; that is intended. Pending, dismissed,
         expired and executed cards still suppress repeats; a FAILED card still spends the
         session's card budget (``signals_since``).
         """
@@ -793,6 +795,18 @@ class SignalDatabase:
             if risk_dollars is not None:
                 vals["risk_dollars"] = float(risk_dollars)
             before = await session.get(SignalRecord, signal_id)
+            first_fill = before is not None and before.executed_at is None and executed_at is not None
+            fill_facts = (
+                (
+                    before.contract,
+                    vals.get("quantity", before.quantity),
+                    vals.get("entry_price", before.entry_price),
+                    before.stop_loss,
+                    before.take_profit,
+                )
+                if before is not None
+                else None
+            )
             session.add(
                 self._audit(
                     AuditEventType.ENTRY_EXECUTION_UPDATED,
@@ -808,8 +822,25 @@ class SignalDatabase:
                     SignalRecord.status.in_([SignalStatus.PENDING, SignalStatus.SUBMITTING, SignalStatus.EXECUTED]),
                 )
                 .values(**vals)
+                .returning(SignalRecord.id)
             )
-            await session.execute(stmt)
+            updated = (await session.execute(stmt)).scalar_one_or_none() is not None
+            if (
+                first_fill
+                and fill_facts is not None
+                and updated
+                and await self.workflows.display_entry_trigger(session, signal_id) == EntryTrigger.AUTO
+            ):
+                symbol, qty, price, stop, target = fill_facts
+                await self.workflows.add_notification(
+                    session,
+                    f"signal/{signal_id}/auto-filled",
+                    NotificationKind.MESSAGE,
+                    {
+                        "text": f"🤖 Auto-entry #{signal_id} {symbol} filled {qty:g} @ ${price:.2f}; "
+                        f"stop ${stop:.2f}, target ${target:.2f}."
+                    },
+                )
             await session.commit()
 
     async def get_signal_by_id(self, signal_id: int) -> dict[str, Any] | None:

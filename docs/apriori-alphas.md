@@ -15,13 +15,16 @@ Rules:
 - A leg that passes becomes eligible for a live, capped paper probe, which needs its own
   spec (Part 2). A failed leg stays off.
 
-Run: `copilot alpha apriori-study config/research/apriori/<entry>.json --output NEW_DIR [--cache DIR]` — the command reads the entry's `id` (`pead`, `exdiv`) to choose the study.
+Run: `copilot alpha apriori-study config/research/apriori/<entry>.json --output NEW_DIR [--cache DIR]` — the command reads the entry's `id` (`pead`, `exdiv`, `insider`) to choose the study. The `insider` entry also needs `--insider-filings DIR`, `--corporate-actions actions.json` and the pooled `--cache` holding its cube (refused for the other entries).
 
 | Entry | Version | Hypothesis | Long | Short | Result |
 | --- | --- | --- | --- | --- | --- |
 | `pead` | 1 | Post-earnings drift when EPS surprise and price reaction agree | — | — | Failed closed on calendar coverage (Nasdaq gap 2016-06-06..07-08); no outcomes computed |
 | `pead` | 2 | Same, decisions from 2016-08-01 | **eligible** (+0.149R; +0.055R vs control) | failed (−0.064R) | [result](apriori-pead-2026-09-26.md), [spec](superpowers/specs/2026-09-25-apriori-pead-study-design.md) |
 | `exdiv` | 1 | Regular quarterly payers run up in the five sessions before the ex-date (Hartzmark & Solomon 2013); long from E−5 at 10:35 to the last cum-dividend close; same-name mid-quarter placebo | failed (+0.069R, ci90 [+0.035, +0.102]; but the same-name placebo earns +0.046R and the paired difference +0.025R has ci90 [−0.026, +0.072], so P2 fails) | — | failed on P2, 2026-10-12 ([result](apriori-exdiv-2026-10-12.md), [spec](superpowers/specs/2026-10-12-exdiv-leg-design.md)) |
+| `insider` | 1 | Opportunistic insider cluster purchases (two or more officers or directors within 21 sessions) drift up (Cohen, Malloy and Pomorski 2012; Alldredge and Blank 2019); long on the cohort-v3 cube cell after the filing; matched-control cell, same session and liquidity tercile | failed (+0.087R, ci90 [−0.008, +0.189], so P1 fails; but +0.070R over same-session matched controls, ci90 [+0.009, +0.134], so P2 holds) | — | failed on P1, 2026-10-23 ([result](apriori-insider-2026-10-23.md), [spec](superpowers/specs/2026-10-23-apriori-insider-leg-design.md)) |
+| `insider` | 2 | Breadth replication: v1's frozen rule, unchanged, on cohort xu (1,156 names disjoint from cohort v3, ranks 1–400 and 1,401–2,156), same window; P2 primary, P4 required, P1 and P3 descriptive | not replicated (+0.011R over matched controls, ci90 [−0.049, +0.074], so P2 fails; P4 holds with 1,048 events) | — | failed on P2, 2026-11-14; insider lane closed ([result](apriori-insider-breadth-2026-11-14.md), [spec](superpowers/specs/2026-11-14-insider-breadth-replication-design.md)) |
+| `idday` | 1 | Investor-day run-up (Cabrera, Kolokolova and Zhang 2025): long from the second session after the first 8-K announcing an investor, analyst or capital markets day to the close before it; cohorts v3 ∪ xu; earnings-matched controls, same-firm placebo, issuer-cluster bootstrap; development only | failed (−0.022R net, ci90 [−0.105, +0.061]; +0.018R vs matched controls, ci90 [−0.058, +0.095]; planted half effect detected) | — | failed, 2026-11-19; closed on this source ([result](apriori-idday-2026-11-19.md), [spec](superpowers/specs/2026-11-19-apriori-idday-design.md)) |
 
 ## Entry 2: pre-ex-dividend run-up
 
@@ -89,8 +92,11 @@ v4 finalist whose picks still overlap either entry is not probe-eligible; see
 
 ## Part 2: live paper probe
 
-A passing leg runs only as a catalog paper probe — never automatically, never active
-or shadow, and never combined with the DSL registry's promotion path. The probe
+A passing leg runs only as a catalog paper probe — enrolled by the operator and never
+automatically, never active or shadow, and never combined with the DSL registry's promotion path. Since 2026-11-14
+the PEAD probe's card is auto-entered on the Alpaca paper account while `execution.auto_entry_catalog` lists
+`pead` (a tap-only card otherwise); that is an entry convenience under the same caps, not promotion credit
+([paper auto-entry](paper-auto-entry.md#catalog-sources)). The probe
 is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
 (`load_catalog_probe` rejects any leg outside `LIVE_LEGS = ("LONG",)`).
 
@@ -107,7 +113,11 @@ is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
   `pead_events.build_events` — the identical liquidity gate, reaction z and ATR
   the study used, never a reimplementation. A missing Nasdaq calendar page, an
   empty page, a missing SPY D-1/D+1 close or a bar-fetch failure fails the whole
-  session closed (`status: "unavailable"`), never partially. The whole
+  session closed (`status: "unavailable"`), never partially. Daily bars are read
+  in 100-symbol chunks, all chunks of the adjusted and raw requests concurrently
+  (`PEAD_FETCH_CONCURRENCY` = 8), each chunk retried once on its own; a chunk
+  that still fails fails the session, and the journaled reason is the exception
+  type name only (`bars_unavailable: ReadTimeout (after 1 retry)`). The whole
   preparation (calendar, bars and event construction) is bounded at
   `DRIFT_PREPARE_TIMEOUT_SECONDS` (60 s, `agent/copilot.py`); exceeding it is
   also `"unavailable"` (`reason: "timeout"`) — the reads run under the scan lock
@@ -144,7 +154,8 @@ is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
   reached"`, `status` stays `"ok"`, payload `open_drift_positions`) but sends no
   drift card and reads no drift-only bars.
 - **LLM commentary only.** The evaluator's LLM call still runs, but its verdict is
-  stored as `llm_verdict` in the signal's evaluation and never gates the card; the
+  stored as `llm_verdict` in the signal's evaluation and never gates the card, nor its
+  paper auto-entry (`auto_entry_catalog` needs no LLM approval); the
   thesis is prefixed "LLM commentary (not a gate): …". The bracket, quantity and
   time exit come entirely from the frozen policy.
 - **Fail-closed behaviour.** Admission fails closed for the catalog strategy IDs
@@ -184,6 +195,16 @@ is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
   cumulative from first enrolment). Demote with `copilot alpha demote
   VERSION_ID --generation N`. Run `copilot alpha apriori-probe --help` for the
   exact CLI options.
+
+  **Renewal (operator decision, 2026-10-21).** The PEAD probe is renewed for 180
+  days at unchanged risk, judged on the counterfactual label over every eligible
+  event (`probe_outcomes`, below), not on taps. Renewal is a separate operator
+  action, never a deploy step: the command above with `--renew --days 180` and
+  the registry generation observed at the time (`--days` accepts up to
+  `MAX_PROBE_TERM_DAYS = 180`, `agentic_trader/research/alpha/probe.py`). It extends
+  a current, unkilled probe from now. Done 2026-10-21 14:46 ET:
+  `apriori:pead:v2:long:fc8a5b3ec14845a2`, registry generation 17 → 18, expires
+  2027-04-19, the $100 per-trade cap unchanged.
 - **Measurement.** `copilot cards outcomes` reports the probe alongside the
   native scan-outcome report: every journaled `pead_decision` event in the
   window (`agentic_trader/research/apriori/probe_outcomes.py`), including events
@@ -199,7 +220,21 @@ is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
   `bar_failures` and never aborts the rest of the report. Realized and
   counterfactual results are not comparable until the probe has at least 10
   closed trades. `/alphas` shows the probe's forward record
-  (`AlphaRepository.probe_report()`, `kind == "apriori"`) between scans.
+  (`AlphaRepository.probe_report()`, `kind == "apriori"`) between scans. The
+  renewal decision above reads the counterfactual mean over every eligible
+  event, because carded and tapped events are a selected subset.
+- **Card base rate.** The Telegram PEAD block carries a measured base rate beneath the hold line
+  ("Expected excess (PEAD v2, LONG)": the shrunk 2025-on mean in `net_excess_r_v1` units, the full replay
+  and the 2025-on cell, and the paired beat over all reporters), from the digest-pinned
+  `config/research/pead-base-rate-v1.json` (`apriori.pead_base_rate_path`, `apriori.pead_base_rate_sha256`;
+  [result](pead-base-rate-2026-10-30.md)). It is loaded once at copilot construction; a missing, unpinned or
+  mismatched file logs `pead_base_rate_unavailable` (with its fixed reason: digest mismatch, file not found and so on) and the card says "PEAD base rate:
+  unavailable". The card stores the block under `drift.base_rate` and the decision provenance under
+  `pead_base_rate`. It is evidence only: it never gates, ranks, sizes, auto-enters or blocks a card, and a
+  card stored before it renders as it did.
+- **Raw EPS pair.** Each journaled `pead_decision` event now carries the calendar's raw `eps`,
+  `eps_forecast` and `n_estimates` (None when the calendar had none), as served today and not point-in-time;
+  earlier events lack them.
 - **Known limits.** The counterfactual label assumes a fill at the study's own
   decision price (the last regular-session hourly close at or before 10:35), not
   an actual broker fill — real slippage/timing is not measured. The live cohort
@@ -207,3 +242,172 @@ is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
   survivorship control, unlike the study's static universe). The event source
   depends entirely on Nasdaq's earnings calendar; an outage there fails the
   session closed rather than falling back to another source.
+
+## Entry 3: opportunistic insider cluster purchases
+
+`insider` version 1 (`config/research/apriori/insider-v1.json`, [spec](superpowers/specs/2026-10-23-apriori-insider-leg-design.md))
+is a research-only, long-only leg that reads the pooled insider lane's frozen inputs (cohort v3, the
+digest-pinned SEC Form 3/4/5 archives and corporate actions) as one a priori hypothesis.
+
+- **Event.** On an SEC Form 4 filing date F, at least two distinct officers or directors have
+  opportunistic open-market purchases of the issuer filed within the 21 sessions ending at F. A purchase is
+  routine (ignored) when the same owner bought the same issuer in the same calendar month a year earlier;
+  trades above 10x the 20-session median raw dollar volume are dropped first. At most one event per name
+  per 63 sessions. Decisions 2016-08-01..2026-07-31.
+- **Trade.** The cube cell for (D, symbol), D the first session after F: 10:35 New York, 2 x ATR14 stop, 3R
+  target, 20-session time exit, 15 bp decisive cost. The entry pins the pooled protocol and cube by SHA-256.
+- **Control and rule.** The mean of the 5 cube cells on D in the event's dollar-volume tercile, covered by
+  Form 4 reporting (a qualifying transaction filed before D) but with no qualifying purchase in the prior
+  126 sessions, nearest in 20-session return. P1-P4 as for PEAD (300 events,
+  100 from 2023-01-01); a pass only makes the leg eligible for a separately specified probe.
+- **Caveat.** Running it reads insider-conditioned outcomes over the pooled confirmation slice, so the pooled
+  insider fixed sets stay retired.
+- **Result (2026-10-23): failed on P1.** +0.087R per trade (ci90 [−0.008, +0.189]) over 1,062 events; P2 holds
+  (+0.070R over the matched controls, ci90 [+0.009, +0.134]), P3 and P4 hold. No probe. See
+  [result](apriori-insider-2026-10-23.md).
+- **Version 2: breadth replication (2026-11-14), failed on P2.**
+  - **Design.** `insider-v2.json` applies v1's frozen rule, unchanged, to cohort xu over the same window
+    ([spec](superpowers/specs/2026-11-14-insider-breadth-replication-design.md)). Cohort xu is 1,156 names
+    disjoint from cohort v3: ranks 1–400 and 1,401–2,156 of the same ranking.
+  - **Rule.** It holds iff P2 and P4 hold. P1 and P3 are descriptive, because the two cohorts share a market
+    path.
+  - **Result.** P2 fails: +0.011R over the matched controls, ci90 [−0.049, +0.074]. P4 holds with 1,048 events,
+    430 of them since 2023.
+  - **Consequence.** The insider lane is closed as an alpha source. There is no market-neutral probe, and
+    `insider-oos-v1` loses its premise. See [result](apriori-insider-breadth-2026-11-14.md).
+
+### Watch cards
+
+On 2026-10-23 the operator asked to see this leg's setups as discretionary cards despite the failed P1
+([spec](superpowers/specs/2026-10-23-insider-watch-cards-design.md)). The result is informative (+0.070R
+over matched names, P2 significant), so the **frozen** rule runs live and nothing about the leg changes.
+A watch card is not a probe: no registry entry, no enrolment, no shadow, holdout or promotion credit, and the
+card says "INSIDER WATCH — unvalidated". The 2026-11-14 breadth replication did not reproduce P2 on disjoint names, so
+the label stays and the lane has no validation path.
+
+- **Decision.** At the 10:35 New York suggestion scan only (a gated, late or other-time scan journals a
+  `skipped` decision; lateness reuses `apriori.max_drift_lateness_seconds`, shared with PEAD). The frozen
+  rule (`insider-v1.json`, digest-pinned) is built for D = today on the study's own 2,681-session calendar,
+  pinned by SHA-256 (`WATCH_CALENDAR_SHA256`, Alpaca calendar only: a fallback or mismatched calendar is
+  `unavailable`), so the 63-session cooldown chain equals the study's. Eligibility is the study's as of D-1
+  (SIP daily bars: price at least $10, 20-session median dollar volume at least $5M, ATR14).
+- **History.** The pinned 2015q1-2026q3 archives merge with the journaled live Form 4 captures
+  ([operations](production.md#insider-watch-form-4-capture)); the archive wins where both cover a date. The
+  10x-median plausibility filter runs on the pooled cube's raw bars for archived rows (once per process) and
+  on live bars for new buyers; if it was not checked the decision is unavailable. The history must be current for
+  D (latest captured filing date at least D minus 1 day: the Monday after Good Friday needs Friday's capture,
+  since EDGAR is open that day), and a symbol with an unread document (a parse error, a 404 or an over-budget
+  body) in the cluster window plus cooldown is blocked, not carded. Share-class siblings of one issuer keep
+  only the class with the higher dollar volume at D, as in the study (`share_class_sibling`), and a symbol
+  already carded by a native or PEAD card of the same scan is not carded again (`carded_this_scan`).
+- **Selection.** Ranked by buyers, then opportunistic dollars over dollar volume, then symbol (display order,
+  not validated: 3+ buyers +0.165R against +0.066R for two is descriptive). At most
+  `insider_watch.max_cards_per_session` (2) cards, none while `max_open_positions` (4) watch positions are
+  open; owned names are skipped and journaled.
+- **Card and trade.** The study's bracket: 2 x ATR14 stop, 3R target, 20-session time exit
+  (`AprioriBracketPolicy` with `SessionLifetimePolicy`, one-session resting entry), risk capped at
+  `max_risk_per_trade_usd` ($100). The card shows the buyer count, total opportunistic dollars, filing dates, an
+  EDGAR issuer link and the study line (+0.087R, not significant on its own; +0.070R vs matched, 90% CI
+  excludes 0). The LLM writes commentary only; every `risk/` rule still applies. The card is auto-entered on paper while `execution.auto_entry_catalog`
+  lists `insider_watch` (shipped since 2026-11-14; the card says "auto-entered on paper; unvalidated; earns no promotion
+  credit") and tap-only otherwise, and either way admission refuses a signal whose `alpha_policy` differs byte for
+  byte from the frozen contract. Auto entries share the $100 risk cap and the `portfolio.max_non_native_positions`
+  ceiling and earn no probe, shadow or promotion credit.
+- **Evidence.** Every decision is one `insider_watch_decision` event (sent or not, with its outcome or
+  eligibility reason); `cards outcomes` labels them
+  ([block](card-evidence.md#insider-watch-outcomes)). Nothing here validates the leg: reopening it as an alpha
+  needs its own predeclared forward test.
+
+## Entry 4: uncertainty-conditioned pre-earnings run-up
+
+`runup` version 1 (`config/research/apriori/runup-v1.json`,
+[spec](superpowers/specs/2026-11-06-apriori-runup-design.md)) is a research-only, long-only development read
+of the pre-announcement run-up (Frazzini and Lamont 2007; Barber et al. 2013; Johnson and So 2018; Gao, Hu
+and Zhang) on cohort v3. It is a development read: the window is spent, so it can fail but cannot pass.
+
+- **Rule in plain words.** For each deduplicated archive earnings report of a cohort name with report
+  session E, buy ten sessions earlier (D = E - 10) at the 10:35 New York decision clock and sell at the close
+  of E - 1, so the position is never held through the announcement. Only names in the top tercile of
+  60-session realised volatility (ending D - 1) among the cube-eligible names on D are legs; the rest are
+  announcers kept for descriptive statistics. Excluded: a second report within 40 sessions before E, an
+  identity break inside the volatility window, a structural corporate action within 5 calendar days of
+  [D, E]. Stop 2 x ATR14, no target, 15 bp per side decides (5 and 25 reported). Every labelled row (leg,
+  announcer, placebo or control cell) must fill on its decision session and exit by the close of its tenth
+  session, otherwise it is excluded as `hold_outside_window` (a failing control cell unpairs its pair).
+  Decisions 2016-08-01..2026-07-17.
+- **Inputs it pins.** The pooled events protocol (`cohort3-events-v1.json`) by SHA-256 on its bytes, its
+  cohort digest, the cached cohort-v3 cube by content hash, the Nasdaq page archive and the corporate-actions
+  acquisition by the protocol's digests. These pinned digests are checked before use and a mismatch names
+  both values. SPY hourly bars are fetched once into the run directory; SPY daily bars come from the pooled
+  cache when it has them, else they are fetched there too. SPY's file digests and the trading calendar's
+  digest are recorded in provenance, not checked against a pin.
+- **Pass rule.** P1: mean `net_excess_r_v1` of legs > 0 with ci90 lower bound > 0. P2: legs minus 5 matched
+  same-session controls (same dollar-volume tercile, top volatility tercile, no report in [D - 30, D + 10]
+  so no release in the control's hold and the legs' clean recent history, covered by the archive, nearest
+  20-session return) > 0 with the paired ci90 lower bound > 0. P3: the 1%-trimmed mean > 0 and the mean
+  from 2023-01-01 > 0. P4: at least 1,000 legs, 300 from 2023-01-01. P5: the legs' paired difference minus
+  the pseudo-events' paired difference > 0, with the ci90 lower bound > 0 from one joint session-block
+  bootstrap over both sets of decision sessions: the legs must beat their controls by more than the
+  pseudo-events beat theirs.
+- **Negative control and planted check.** Every leg gets one pseudo-event on the same name (a session drawn
+  within 63 of D with no report in [D' - 10, D' + 20]; a second draw of a name and session already drawn is
+  dropped and counted) through identical gates, labels, controls and statistics; its P2 must not hold and
+  P5 must hold. Before the legs' statistics, a planted return of 0.63% of the decision price is added to
+  every paired placebo leg; P1 and P2 on that frame must both hold. `planted.json` also records the placebo
+  P2's minimum detectable effect, (1.645 + 0.84) x its bootstrap standard deviation.
+- **Decisions.** `inconclusive_underpowered`: the planted check failed, so the read decides nothing.
+  `failed`: any of P1-P5 failed or the placebo's P2 held. `survives_development`: only makes a separately
+  specified prospective read eligible, which must declare its own alpha. None authorizes a probe, card,
+  promotion, shadow or registry credit.
+- **Run.** `copilot alpha apriori-study config/research/apriori/runup-v1.json --output <new-dir>
+  --cache <pooled-cache> --earnings-pages <archive> --corporate-actions <actions.json>`. Ledger row L43.
+- **Result: `failed` (2026-11-06, [result](apriori-runup-2026-11-06.md)).** The legs return −0.070R net of a
+  beta-matched SPY and per-name cost (10,395 legs, ci90 [−0.101, −0.037]) and −0.006R against their matched
+  controls (ci90 [−0.026, +0.014]). P3 and P5 fail too, and P4 holds. The planted check was detected (MDE
+  0.039R), so this is a powered null. The pseudo-events' P2 did not hold. The control-band sensitivity shows
+  no leak. The lane is closed: no prospective read, no probe.
+
+## Entry 5: investor-day run-up
+
+`idday` version 1 (`config/research/apriori/idday-v1.json`,
+[spec](superpowers/specs/2026-11-19-apriori-idday-design.md)) is a research-only, long-only development read of
+the run-up from an analyst or investor day's announcement to the eve of the event (Cabrera, Kolokolova and Zhang
+2025) on cohorts v3 ∪ xu (2,156 names). The window is spent and the parser was checked by hand, so it can fail
+but cannot pass.
+
+- **Source.** Alpaca's Benzinga history now starts 2026-04-29, so events come from SEC 8-K full text:
+  `copilot alpha investor-days fetch` (EDGAR full-text search per issuer plus the matching documents, digest-pinned,
+  `EDGAR_USER_AGENT` required), `events` (the frozen `idday-parser-v1`: sentence-level announcement rules, an
+  event date within 400 days of the filing) and `sample` (the seeded 60-leg parser-check sample from issuers
+  outside the feasibility names).
+- **Rule in plain words.** F is the first 8-K announcing the registrant's own investor, analyst or capital markets
+  day or investor/analyst meeting on a future date E. Buy at 10:35 New York on the second session after F and sell
+  at the close of the last session before E, with a hold of 1–63 sessions. Exclusions:
+  - an earnings report inside the hold;
+  - a second event of the issuer within 63 sessions;
+  - an identity break or a structural action nearby;
+  - a name that is not cube-eligible.
+
+  The class is `with_earnings` when the issuer reported in the 3 sessions up to F, otherwise `standalone`. Stop
+  2 x ATR14, no target, 15 bp per side decides. Decisions run 2016-08-01..2026-06-30, with exits by 2026-07-31.
+- **Pass rule.**
+  - **P1:** the mean `net_excess_r_v1` > 0, with ci90 lower bound > 0.
+  - **P2:** legs minus 5 same-session controls > 0, with ci90 lower bound > 0. Controls are drawn from clean,
+    visible issuers with no search hit in `[D − 63, X + 10]`, earnings-matched by class, in the same
+    dollar-volume tercile and nearest in 20-session return.
+  - **P3:** the trimmed mean > 0, the mean from 2023 > 0, and an issuer-cluster bootstrap of P2.
+  - **P4:** at least 250 legs, 60 from 2023.
+  - **P5:** the legs beat their controls by more than the same-firm pseudo-events beat theirs. Each pseudo-event
+    is the firm's ordinary earnings release, or a quiet session, with no investor day.
+  - **Planted check:** 1.85% of the price, half the published effect.
+- **Run.** `copilot alpha apriori-study config/research/apriori/idday-v1.json --output <new-dir> --cache
+  <pooled-cache> --earnings-pages <archive> --corporate-actions <v3 actions.json> --corporate-actions-xu
+  <xu actions.json> --investor-days <acquisition cache> --parser-check <parser_check.json>`. Ledger row L45.
+- **Result: `failed` (2026-11-19, [result](apriori-idday-2026-11-19.md)).**
+  - The parser check had 2 errors in 60.
+  - The 318 legs return −0.022R net (ci90 [−0.105, +0.061]) and +0.018R against matched controls (ci90 [−0.058,
+    +0.095]).
+  - P3 and P5 fail, and P4 holds (131 legs since 2023).
+  - The planted check was detected (MDE 0.21R), so a published-size run-up would have shown.
+  - The standalone (+0.06R, n 71) and large-cap cells are descriptive only.
+  - Closed on this source: no live 8-K capture, no prospective read, no probe.

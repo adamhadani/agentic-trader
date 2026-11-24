@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 
+from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.alpha.equity_universe import EquityUniversePlan, build_snapshot, document_hash
 from agentic_trader.research.alpha.mining_universe import resolve_mining_universe
 
 
+# A fixed instant on the far side of the UTC/New York date boundary (22:30 ET on 2026-10-20 is already
+# 2026-10-21 in UTC). The snapshot builder compares a directory's ``file_date`` with the New York date of
+# ``observed_at``, so a fixture stamped with the UTC date fails whenever the two calendars disagree.
+OBSERVED = datetime(2026, 10, 21, 2, 30, tzinfo=UTC)
+FILE_DATE = OBSERVED.astimezone(ET_TZ).date().isoformat()
+
+
 def _snapshot(tmp_path):
-    observed = datetime.now(UTC) - timedelta(minutes=1)
+    observed = OBSERVED
     rows = []
     directory_rows = []
     for index, symbol in enumerate(("AAA", "BBB", "CCC"), start=1):
@@ -27,8 +35,8 @@ def _snapshot(tmp_path):
         directory_rows.append(
             {"Symbol": symbol, "ETF": "N", "Test Issue": "N", "NextShares": "N", "Financial Status": "N"}
         )
-    directory = {"name": "nasdaqlisted", "file_date": observed.date().isoformat(), "rows": directory_rows}
-    other = {"name": "otherlisted", "file_date": observed.date().isoformat(), "rows": []}
+    directory = {"name": "nasdaqlisted", "file_date": FILE_DATE, "rows": directory_rows}
+    other = {"name": "otherlisted", "file_date": FILE_DATE, "rows": []}
     snapshot = build_snapshot(
         EquityUniversePlan("fixture", target_size=3), rows, (directory, other), observed_at=observed
     )
@@ -40,7 +48,7 @@ def _snapshot(tmp_path):
 def test_snapshot_universe_is_capped_and_keeps_snapshot_identity(tmp_path):
     path, snapshot = _snapshot(tmp_path)
 
-    result = resolve_mining_universe(universe="snapshot", snapshot_path=path, max_symbols=2)
+    result = resolve_mining_universe(universe="snapshot", snapshot_path=path, max_symbols=2, observed_at=OBSERVED)
 
     assert result.symbols == tuple(row["symbol"] for row in snapshot["selected"][:2])
     assert result.version == f"snapshot:{snapshot['snapshot_id']}:cap:2"
@@ -69,7 +77,7 @@ def test_snapshot_universe_rejects_explicit_symbols(tmp_path):
     path, _ = _snapshot(tmp_path)
 
     with pytest.raises(ValueError, match="combined"):
-        resolve_mining_universe(universe="snapshot", symbols="AAA", snapshot_path=path)
+        resolve_mining_universe(universe="snapshot", symbols="AAA", snapshot_path=path, observed_at=OBSERVED)
 
 
 def test_screen_universe_preserves_screen_identity_and_order(tmp_path):

@@ -110,7 +110,9 @@ async def test_install_alphas_receives_the_active_and_probe_tuples_from_the_snap
 
     await scan_desk.run_scan(use_llm=False, dry_run=False, symbols=["SPY"])
 
-    scan_desk.strategy_engine.registry.install_alphas.assert_called_once_with(("ACTIVE_DEF",), ("PROBE_DEF",))
+    scan_desk.strategy_engine.registry.install_alphas.assert_called_once_with(
+        ("ACTIVE_DEF",), ("PROBE_DEF",), bars_end_delay=None
+    )
 
 
 @pytest.mark.parametrize("probe", [True, False])

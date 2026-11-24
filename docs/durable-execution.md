@@ -67,8 +67,17 @@ broker regular session, current broker positions and working orders, fresh
 Alpaca trade price, configured price drift, economic-event lockout and the combined
 macro/volatility risk policy. Alpaca admission also refreshes the reconciled
 [account risk snapshot](account-ledger.md#cash-flow-adjusted-drawdown-and-entry-admission).
-Final submission pins its exact fingerprint under the ledger lock and rechecks the
-lease after waiting. Every tier and explicit quantity shares the drawdown cap.
+Final submission re-reads the fresh risk observation under the trading → ledger lock and
+re-assesses capacity on it; a refreshed observation is recorded (`preflight_risk_fingerprint`
+beside `risk_fingerprint`), not refused, and a changed one refuses only through the risk
+read's validity checks and the capacity re-assessment. Final submission also rechecks the
+lease after waiting.
+
+On 2026-11-09 a periodic checkpoint between preflight and submission refused the TXN
+auto-entry under the old exact-fingerprint rule, although the re-assessment would have
+passed.
+
+Every tier and explicit quantity shares the drawdown cap.
 Typed [broker capacity evidence](entry-capacity.md) includes account restrictions,
 funding, asset borrowing, quote and complete exact order/position inventory. Final
 admission rechecks its age, the unchanged approved signal and all current reservations
@@ -191,6 +200,33 @@ can cause a duplicate notification. Neither scenario repeats the trading action.
 There is no Redis/pubsub dependency: one Telegram destination needs a durable
 consumer, not another infrastructure tier. Multiple consumers remain DB-fenced.
 
+## Paper auto-entry tags and notices
+
+[Paper auto-entry](paper-auto-entry.md) adds no queue, table or entry path. The sweep calls the same
+`execute_signal_by_id` a tap does, with `EntryTrigger.AUTO` (`tap` is the default, so the Telegram callback and
+the CLI are unchanged). The trigger is stored as `entry_trigger` on the entry work item payload and journaled
+on `entry_queued` and `card_tap_assessed`, so an auto entry is never counted as a tap.
+
+- **Journal and card.** One `auto_entry_attempted` event per selected card (stream `card/{signal_id}`, key
+  `auto-entry/{signal_id}`). Its follow-up commits in the same transaction: a `CARD_AUTO_ENTERED` notification
+  (`signal/{id}/auto-entered`, replaces the card's keyboard with Cancel entry...) for `entered`; a
+  `signal/{id}/auto-refused` re-card for a refusal that leaves the card `PENDING`; or, for a card the sweep's
+  tap check expired, missed or re-priced, the card-expiry `CARD_EXPIRED` strike (`signal/{id}/expired`) and a
+  `signal/{id}/auto-not-placed` notice (`expiry_kind` on the event names which).
+- **Fill notice.** When fill sync first sets `executed_at` on an auto entry, a `MESSAGE`
+  `signal/{id}/auto-filled` is queued in that transaction. Tap entries get none.
+- **Folded notices.** For an auto entry, three routine notices are not queued (their journal events are
+  unchanged): `entry/{work_id}/accepted`, the deadline-cause `entry-cancel/{id}/intent` and the deadline-cause
+  cancel result confirmed unfilled. They appear in the daily digest instead
+  (`auto-entry-digest/{et_date}`, close + 15 minutes, once per date, nothing on a day without marked cards).
+  A notice the digest can no longer report is queued as usual: once the digest of the entry's New York date is
+  queued, or for an entry of an earlier date. These display decisions read the trigger tolerantly (an unknown
+  stored value is a tap, with a warning), so they never fail the fact transaction they sit in.
+- **Never folded.** A notice that resolves an `UNKNOWN` outcome (its halt was announced), an operator-cause
+  cancel's notices, `signal/{id}/entry-terminal` (for an auto entry it fires only on a broker-side rejected,
+  expired or external cancel), every refusal, ratchet, exit, partial fill, missed bound and
+  `filled_before_cancel`.
+
 ## Readiness and operators
 
 `/healthz` remains process liveness. `/readyz` returns JSON with HTTP 200 or 503,
@@ -226,13 +262,30 @@ activity ledger to the broker account UUID.
 | `entry_preflight_lease_seconds` | 60 |
 | `entry_queue_max_age_seconds` | 120 |
 | `signal_max_age_seconds` | 14400 |
-| `entry_quote_max_age_seconds` | 60 |
+| `entry_quote_max_age_seconds` | 120 |
+| `entry_trade_max_age_seconds` | 300 |
+| `entry_clock_max_age_seconds` | 60 |
 | `entry_max_price_drift_pct` | 0.01 |
 | `worker_interval_seconds` / `worker_batch_size` | 2 / 20 |
 | `journal_history_days` / `journal_max_pages` | 7 / 20 |
 | `notification_delivery_timeout_seconds` / `notification_lease_seconds` | 60 / 120 |
 | `notification_max_attempts` | 8 |
 | `notification_retry_seconds` / `notification_max_retry_seconds` | 5 / 900 |
+
+The last trade has its own age limit (`entry_trade_max_age_seconds`, 300, at most 900). COLB,
+NSC and GEHC auto-entries were refused on 2026-11-10/11/12 with fresh quotes because the sparse
+IEX last print was over a minute old; a read-only probe found 30.5% of names with a trade older
+than 60 s and 4.1% older than 300 s. The IEX quote is the liveness evidence (the session clock
+only shows the market is open, not that this symbol is trading), so it keeps a tighter limit:
+120 s (`entry_quote_max_age_seconds`, at most 300) since the ASND PEAD auto-entry was refused on
+2026-11-16 with an 81 s old quote and a 108 s old trade, against the earlier 60 s. A standing
+IEX quote on a mid cap can go over a minute without an update and is still that venue's book; a
+symbol halted for more than two minutes still refuses. The broker session clock keeps its own
+60 s limit (`entry_clock_max_age_seconds`, at most 300), at preflight and in the lifecycle
+session check. A quote or trade timestamped more than 1 s in the future still refuses.
+The preflight drift check compares the last trade, and the whole IEX quote, with the approved
+limit. It refuses only when the whole quote lies outside the band, because an IEX quote is not
+the NBBO.
 
 Telemetry defaults: reconciliation 180s, Telegram poll 120s, worker 30s, scan 18000s,
 notification backlog 1800s, health observation interval 10s. All are configured
@@ -284,6 +337,6 @@ component observations, order events and delivery audits persist in PostgreSQL.
 
 ## Timed entry cancellations and holding closes
 
-[Trade lifetimes](alpha-trade-lifetimes.md) reuse these tables and scope locks. `entry_cancel` transitions directly to non-replayable `submitting` before one exact DELETE. Only complete, zero-fill terminal evidence for the persisted group permits `accepted`; ambiguous outcomes become `unknown`, halt new risk and retain their reservation. Independent recovery gives a submitting owner its bounded transport/confirmation window before declaring uncertainty, and never reissues the mutation. Journal projections fence stale snapshots. Both enqueue and pre-POST authorization reject unresolved cancellations.
+[Trade lifetimes](alpha-trade-lifetimes.md) reuse these tables and scope locks. `entry_cancel` transitions directly to non-replayable `submitting` before one exact DELETE. Only complete, zero-fill terminal evidence for the persisted group permits `accepted`; ambiguous outcomes become `unknown`, halt new risk and retain their reservation. Independent recovery gives a submitting owner its bounded transport/confirmation window before declaring uncertainty, and never reissues the mutation. There is one `entry_cancel` per signal, with a persisted cause: `deadline` (lifetime service) or `operator` (`/cancel`, `copilot cancel --confirm`); items claimed before causes existed are read as `deadline`. Outcomes: `accepted` (confirmed zero-fill terminal group, signal `FAILED`), `rejected` with reason `filled_before_cancel` (the DELETE itself errored because the broker refused it, and a fresh exact read confirms the full quantity filled with protective exits; position kept, no halt, notice sent) and `unknown` (everything else, including a failed lookup or an accepted DELETE followed by a fill: halt, retained reservation; `recover()` re-reads it every cycle). Journal projections fence stale snapshots. Both enqueue and pre-POST authorization reject unresolved cancellations.
 
 Holding deadlines invoke `PositionCloseService` with a deterministic identity derived from scope/signal/entry. Existing/failed IDs are never resubmitted. Close claims and changed results append `close_requested`/`close_resolved` plus deduplicated notification intents in the same transaction; identical recovery observations do not append repeated result transitions. Partial/uncertain evidence receives a retained `lifetime_review` event and outbox notice. No additional event bus, queue or schema is introduced.

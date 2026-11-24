@@ -52,7 +52,8 @@ async def test_scorer_builds_a_direction_free_prompt_and_parses_json():
     score = await scorer.score("AAPL", items("Apple misses", "Apple guides lower"))
     assert score == NewsScore(**GOOD)
     [call] = complete.calls
-    assert (call["model"], call["api_key"], call["temperature"], call["timeout"]) == ("openai/gpt-4o", "k", 0, 7)
+    assert (call["model"], call["api_key"], call["timeout"]) == ("openai/gpt-4o", "k", 7)
+    assert "temperature" not in call and call["drop_params"] is False
     assert call["response_format"] == {"type": "json_object"}
     system, user = call["messages"]
     assert system["role"] == "system" and "independent of any trade direction" in system["content"]

@@ -83,14 +83,35 @@ from agentic_trader.research.alpha.study_artifacts import execute_study
 from agentic_trader.research.alpha.targets import MAX_FORECAST_HORIZON, ForecastLabel, ForecastTarget
 from agentic_trader.research.alpha.validation import DatasetManifest
 from agentic_trader.research.alpha.volume_study import VolumeStudyPlan, compute_volume_study
-from agentic_trader.research.apriori.catalog import catalog_entry_id, load_exdiv_entry, load_pead_entry
+from agentic_trader.research.apriori.catalog import (
+    catalog_entry_id,
+    load_exdiv_entry,
+    load_idday_entry,
+    load_insider_entry,
+    load_pead_entry,
+    load_runup_entry,
+)
 from agentic_trader.research.apriori.exdiv_runner import build_exdiv_inputs
 from agentic_trader.research.apriori.exdiv_study import execute_exdiv_study
+from agentic_trader.research.apriori.idday_runner import build_idday_inputs
+from agentic_trader.research.apriori.idday_study import execute_idday_study
+from agentic_trader.research.apriori.insider_runner import build_insider_leg_inputs
+from agentic_trader.research.apriori.insider_study import execute_insider_study
 from agentic_trader.research.apriori.pead_runner import build_pead_inputs
 from agentic_trader.research.apriori.pead_study import execute_pead_study
 from agentic_trader.research.apriori.probe import is_catalog_definition, load_catalog_probe
+from agentic_trader.research.apriori.runup_runner import build_runup_inputs
+from agentic_trader.research.apriori.runup_study import execute_runup_study
 from agentic_trader.research.corporate_actions import build_corporate_actions_source
-from agentic_trader.research.pooled.campaign import EventInputs, EventsCampaignProtocol, load_campaign_protocol
+from agentic_trader.research.pooled.campaign import (
+    EventInputs,
+    EventsCampaignProtocol,
+    InsiderCampaignProtocol,
+    InsiderInputs,
+    ShortInputs,
+    ShortVolumeCampaignProtocol,
+    load_campaign_protocol,
+)
 from agentic_trader.research.pooled.campaign_run import (
     LITERATURE_ENTRIES,
     check_gate,
@@ -103,7 +124,15 @@ from agentic_trader.research.pooled.cohort import load_cohort
 from agentic_trader.research.pooled.entry import REPO_ROOT, load_pooled_entry
 from agentic_trader.research.pooled.null_check import execute_null_check
 from agentic_trader.research.pooled.power import execute_power_check
-from agentic_trader.research.pooled.runner import EventSources, build_cube_inputs, load_event_sources
+from agentic_trader.research.pooled.runner import (
+    EventSources,
+    InsiderSources,
+    ShortSources,
+    build_cube_inputs,
+    load_event_sources,
+    verify_insider_digests,
+    verify_short_digests,
+)
 from agentic_trader.research.pooled.screen import config_group_symbols, execute_screen, load_screen_rule
 from agentic_trader.research.pooled.search_power import execute_search_power, require_search
 from agentic_trader.research.pooled.study import check_power_gate, execute_pooled_study
@@ -1579,12 +1608,95 @@ def _apriori_clients() -> _AprioriClients:
 @click.option(
     "--cache", type=click.Path(path_type=Path), default=None, help="Page/bar cache directory; defaults to OUTPUT/raw"
 )
+@click.option(
+    "--insider-filings",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="SEC Form 3/4/5 archive directory (insider entry only)",
+)
+@click.option(
+    "--corporate-actions",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Corporate-actions acquisition actions.json (insider and runup entries)",
+)
+@click.option(
+    "--earnings-pages",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Nasdaq earnings-calendar page archive directory (runup and idday entries)",
+)
+@click.option(
+    "--corporate-actions-xu",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Cohort xu corporate-actions acquisition actions.json (idday entry only)",
+)
+@click.option(
+    "--investor-days",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Investor-day filings acquisition directory (idday entry only)",
+)
+@click.option(
+    "--parser-check",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Labelled parser-check file, parser_check.json (idday entry only)",
+)
 @coro
-async def alpha_apriori_study_cmd(protocol_path, output, cache):
-    """Run a frozen a priori catalog study (`pead` or `exdiv` by the entry's id; research only; grants no credit)."""
+async def alpha_apriori_study_cmd(
+    protocol_path,
+    output,
+    cache,
+    insider_filings,
+    corporate_actions,
+    earnings_pages,
+    corporate_actions_xu,
+    investor_days,
+    parser_check,
+):
+    """Run a frozen a priori catalog study (`pead`, `exdiv`, `insider`, `runup` or `idday` by the entry's id; research only; grants no credit)."""
     if output.exists():
         raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
     entry_id = await asyncio.to_thread(catalog_entry_id, protocol_path)
+    if entry_id == "insider":
+        if insider_filings is None or corporate_actions is None:
+            raise click.ClickException("--insider-filings and --corporate-actions are required for the insider entry")
+        if cache is None:
+            raise click.ClickException("--cache is required for the insider entry: the pooled cache holding its cube")
+    elif entry_id == "runup":
+        if earnings_pages is None or corporate_actions is None:
+            raise click.ClickException("--earnings-pages and --corporate-actions are required for the runup entry")
+        if cache is None:
+            raise click.ClickException("--cache is required for the runup entry: the pooled cache holding its cube")
+        if insider_filings is not None:
+            raise click.ClickException("--insider-filings applies only to the insider entry")
+    elif entry_id == "idday":
+        required = {
+            "--cache": cache,
+            "--earnings-pages": earnings_pages,
+            "--corporate-actions": corporate_actions,
+            "--corporate-actions-xu": corporate_actions_xu,
+            "--investor-days": investor_days,
+            "--parser-check": parser_check,
+        }
+        missing = [flag for flag, value in required.items() if value is None]
+        if missing:
+            raise click.ClickException(f"{', '.join(missing)} required for the idday entry")
+        if insider_filings is not None:
+            raise click.ClickException("--insider-filings applies only to the insider entry")
+    if entry_id not in ("runup", "idday") and earnings_pages is not None:
+        raise click.ClickException("--earnings-pages applies only to the runup and idday entries")
+    if entry_id not in ("insider", "runup", "idday") and (insider_filings is not None or corporate_actions is not None):
+        raise click.ClickException(
+            "--insider-filings applies only to the insider entry and --corporate-actions to the insider, runup "
+            "and idday entries"
+        )
+    if entry_id != "idday" and any(value is not None for value in (corporate_actions_xu, investor_days, parser_check)):
+        raise click.ClickException(
+            "--corporate-actions-xu, --investor-days and --parser-check apply only to the idday entry"
+        )
     cache_dir = cache if cache is not None else output / "raw"
     environment = await asyncio.to_thread(research_environment)
 
@@ -1624,6 +1736,68 @@ async def alpha_apriori_study_cmd(protocol_path, output, cache):
             result = await execute_exdiv_study(
                 loaded_exdiv, output, build=build_exdiv, environment=environment, cohort_path=cohort_path
             )
+    elif entry_id == "insider":
+        loaded_insider = await asyncio.to_thread(load_insider_entry, protocol_path)
+        with _apriori_clients() as clients:
+
+            async def build_insider():
+                return await build_insider_leg_inputs(
+                    loaded_insider.entry,
+                    repo_root=REPO_ROOT,
+                    bars=clients.bars,
+                    calendar=clients.calendar,
+                    cache_dir=cache_dir,
+                    insider_filings_dir=insider_filings,
+                    actions_file=corporate_actions,
+                    static_symbols=clients.static_symbols,
+                    pace=clients.pace,
+                    progress=lambda message: click.echo(message, err=True),
+                )
+
+            result = await execute_insider_study(loaded_insider, output, build=build_insider, environment=environment)
+    elif entry_id == "runup":
+        loaded_runup = await asyncio.to_thread(load_runup_entry, protocol_path)
+        with _apriori_clients() as clients:
+
+            async def build_runup():
+                return await build_runup_inputs(
+                    loaded_runup.entry,
+                    repo_root=REPO_ROOT,
+                    bars=clients.bars,
+                    calendar=clients.calendar,
+                    cache_dir=cache_dir,
+                    earnings_pages=earnings_pages,
+                    actions_file=corporate_actions,
+                    market_cache_dir=output / "market",
+                    static_symbols=clients.static_symbols,
+                    pace=clients.pace,
+                    progress=lambda message: click.echo(message, err=True),
+                )
+
+            result = await execute_runup_study(loaded_runup, output, build=build_runup, environment=environment)
+    elif entry_id == "idday":
+        loaded_idday = await asyncio.to_thread(load_idday_entry, protocol_path)
+        with _apriori_clients() as clients:
+
+            async def build_idday():
+                return await build_idday_inputs(
+                    loaded_idday.entry,
+                    repo_root=REPO_ROOT,
+                    bars=clients.bars,
+                    calendar=clients.calendar,
+                    cache_dir=cache_dir,
+                    earnings_pages=earnings_pages,
+                    actions_v3=corporate_actions,
+                    actions_xu=corporate_actions_xu,
+                    investor_days_dir=investor_days,
+                    parser_check=parser_check,
+                    market_cache_dir=output / "market",
+                    static_symbols=clients.static_symbols,
+                    pace=clients.pace,
+                    progress=lambda message: click.echo(message, err=True),
+                )
+
+            result = await execute_idday_study(loaded_idday, output, build=build_idday, environment=environment)
     else:
         raise click.ClickException(f"Unknown catalog entry id: {entry_id}")
     summary = ("status", "decision", "decisions", "error")  # exdiv has one leg (`decision`); pead has two
@@ -1637,18 +1811,66 @@ def alpha_pooled_group():
     """Pooled alpha mining: one formula across the frozen cohort (research only)."""
 
 
-def _pooled_event_sources(
-    protocol, earnings_pages: Path | None, corporate_actions: Path | None
-) -> tuple[EventInputs, EventSources] | None:
-    """The event sources an events protocol reads; refused for any other protocol."""
-    given = earnings_pages is not None or corporate_actions is not None
+def _pooled_field_sources(
+    protocol,
+    earnings_pages: Path | None,
+    corporate_actions: Path | None,
+    short_volume: Path | None,
+    insider_filings: Path | None,
+) -> tuple[
+    tuple[EventInputs, EventSources] | None,
+    tuple[ShortInputs, ShortSources] | None,
+    tuple[InsiderInputs, InsiderSources] | None,
+]:
+    """The extra field sources a protocol reads (events, short-volume or insider); refused for any other protocol."""
     if isinstance(protocol, EventsCampaignProtocol):
         if earnings_pages is None or corporate_actions is None:
             raise click.ClickException("--earnings-pages and --corporate-actions are required for an events protocol")
-        return protocol.event_inputs, EventSources(earnings_pages=earnings_pages, actions_file=corporate_actions)
-    if given:
+        if short_volume is not None:
+            raise click.ClickException("--short-volume applies only to a short-volume protocol")
+        if insider_filings is not None:
+            raise click.ClickException("--insider-filings applies only to an insider protocol")
+        return (
+            (protocol.event_inputs, EventSources(earnings_pages=earnings_pages, actions_file=corporate_actions)),
+            None,
+            None,
+        )
+    if isinstance(protocol, ShortVolumeCampaignProtocol):
+        if short_volume is None or corporate_actions is None:
+            raise click.ClickException(
+                "--short-volume and --corporate-actions are required for a short-volume protocol"
+            )
+        if earnings_pages is not None:
+            raise click.ClickException("--earnings-pages applies only to an events protocol")
+        if insider_filings is not None:
+            raise click.ClickException("--insider-filings applies only to an insider protocol")
+        return (
+            None,
+            (protocol.short_inputs, ShortSources(short_volume_dir=short_volume, actions_file=corporate_actions)),
+            None,
+        )
+    if isinstance(protocol, InsiderCampaignProtocol):
+        if insider_filings is None or corporate_actions is None:
+            raise click.ClickException("--insider-filings and --corporate-actions are required for an insider protocol")
+        if earnings_pages is not None:
+            raise click.ClickException("--earnings-pages applies only to an events protocol")
+        if short_volume is not None:
+            raise click.ClickException("--short-volume applies only to a short-volume protocol")
+        return (
+            None,
+            None,
+            (
+                protocol.insider_inputs,
+                InsiderSources(insider_filings_dir=insider_filings, actions_file=corporate_actions),
+            ),
+        )
+    if earnings_pages is not None or corporate_actions is not None:
         raise click.ClickException("--earnings-pages/--corporate-actions apply only to an events protocol")
-    return None
+    if short_volume is not None:
+        raise click.ClickException("--short-volume applies only to a short-volume protocol")
+    if insider_filings is not None:
+        raise click.ClickException("--insider-filings applies only to an insider protocol")
+    return None, None, None
 
 
 _EARNINGS_PAGES_OPTION = click.option(
@@ -1661,14 +1883,34 @@ _CORPORATE_ACTIONS_OPTION = click.option(
     "--corporate-actions",
     type=click.Path(exists=True, path_type=Path),
     default=None,
-    help="The corporate-actions acquisition's actions.json (events protocols only).",
+    help="The corporate-actions acquisition's actions.json (events, short-volume and insider protocols only).",
+)
+_SHORT_VOLUME_OPTION = click.option(
+    "--short-volume",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "The directory of FINRA daily files that `alpha short-volume --cache DIR` filled (DIR/YYYY-MM-DD.txt "
+        "and .meta.json; short-volume protocols only)."
+    ),
 )
 
 
-def _pooled_build(clients, cohort, spec, cache_dir, *, require_cached=False, load_hourly=False, events=None):
+_INSIDER_FILINGS_OPTION = click.option(
+    "--insider-filings",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="The alpha insider-filings acquisition's cache directory (insider protocols only).",
+)
+
+
+def _pooled_build(
+    clients, cohort, spec, cache_dir, *, require_cached=False, load_hourly=False, events=None, short=None, insider=None
+):
     """``require_cached``: checks B and C and the campaign run only on the cube check A built.
     ``load_hourly``: an hourly-input protocol keeps the cube's hourly frames for scoring.
-    ``events``: an events protocol's pinned inputs and the files they are verified against."""
+    ``events``: an events protocol's pinned inputs and the files they are verified against.
+    ``short``: the same for a short-volume protocol; ``insider``: for an insider protocol."""
 
     async def build():
         return await build_cube_inputs(
@@ -1683,6 +1925,8 @@ def _pooled_build(clients, cohort, spec, cache_dir, *, require_cached=False, loa
             require_cached=require_cached,
             load_hourly=load_hourly,
             events=events,
+            short=short,
+            insider=insider,
         )
 
     return build
@@ -1706,13 +1950,19 @@ _POOLED_CACHE_HELP = "Shared bar and cube cache directory; give `power` and ever
 )
 @_EARNINGS_PAGES_OPTION
 @_CORPORATE_ACTIONS_OPTION
+@_SHORT_VOLUME_OPTION
+@_INSIDER_FILINGS_OPTION
 @coro
-async def alpha_pooled_power_cmd(protocol_path, output, cache, workers, earnings_pages, corporate_actions):
+async def alpha_pooled_power_cmd(
+    protocol_path, output, cache, workers, earnings_pages, corporate_actions, short_volume, insider_filings
+):
     """Power check A: detect a planted pooled edge and reject noise (discovery cells only)."""
     if output.exists():
         raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
     loaded = await asyncio.to_thread(load_campaign_protocol, protocol_path)
-    events = _pooled_event_sources(loaded.protocol, earnings_pages, corporate_actions)
+    events, short, insider = _pooled_field_sources(
+        loaded.protocol, earnings_pages, corporate_actions, short_volume, insider_filings
+    )
     cohort = await asyncio.to_thread(load_cohort, REPO_ROOT / loaded.protocol.cohort)
     if cohort.sha256 != loaded.protocol.cohort_sha256:
         raise click.ClickException("Cohort file does not match the protocol's cohort_sha256")
@@ -1729,6 +1979,8 @@ async def alpha_pooled_power_cmd(protocol_path, output, cache, workers, earnings
                 cache,
                 load_hourly=loaded.protocol.score_inputs == "hourly",
                 events=events,
+                short=short,
+                insider=insider,
             ),
             environment=environment,
             progress=lambda message: click.echo(message, err=True),
@@ -1898,15 +2150,19 @@ async def alpha_pooled_search_power_cmd(protocol_path, power_dir, output, cache)
 )
 @_EARNINGS_PAGES_OPTION
 @_CORPORATE_ACTIONS_OPTION
+@_SHORT_VOLUME_OPTION
+@_INSIDER_FILINGS_OPTION
 @coro
 async def alpha_pooled_null_check_cmd(
-    protocol_path, power_dir, output, cache, workers, earnings_pages, corporate_actions
+    protocol_path, power_dir, output, cache, workers, earnings_pages, corporate_actions, short_volume, insider_filings
 ):
     """Check C: real formulas on per-name-demeaned discovery panels must rarely be confirmed."""
     if output.exists():
         raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
     loaded, cohort = await _pooled_protocol(protocol_path)
-    events = _pooled_event_sources(loaded.protocol, earnings_pages, corporate_actions)
+    events, short, insider = _pooled_field_sources(
+        loaded.protocol, earnings_pages, corporate_actions, short_volume, insider_filings
+    )
     power_result = _passed_power(power_dir, loaded, cohort)
     environment = await asyncio.to_thread(research_environment)
     with _apriori_clients() as clients:
@@ -1922,6 +2178,8 @@ async def alpha_pooled_null_check_cmd(
                 require_cached=True,
                 load_hourly=loaded.protocol.score_inputs == "hourly",
                 events=events,
+                short=short,
+                insider=insider,
             ),
             power_result=power_result,
             environment=environment,
@@ -1990,6 +2248,8 @@ def _require_journal(repository, scope: str) -> None:
 )
 @_EARNINGS_PAGES_OPTION
 @_CORPORATE_ACTIONS_OPTION
+@_SHORT_VOLUME_OPTION
+@_INSIDER_FILINGS_OPTION
 @coro
 async def alpha_pooled_campaign_cmd(
     protocol_path,
@@ -2002,12 +2262,16 @@ async def alpha_pooled_campaign_cmd(
     recover,
     earnings_pages,
     corporate_actions,
+    short_volume,
+    insider_filings,
 ):
     """Run the budgeted pooled campaign once; writes the pooled ledger (research only; grants no credit)."""
     if output.exists():
         raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
     loaded, cohort = await _pooled_protocol(protocol_path)
-    events = _pooled_event_sources(loaded.protocol, earnings_pages, corporate_actions)
+    events, short, insider = _pooled_field_sources(
+        loaded.protocol, earnings_pages, corporate_actions, short_volume, insider_filings
+    )
     if loaded.protocol.requires_search_power and search_dir is None:
         raise click.ClickException("genetic protocols require --search-power (check B)")
     if not loaded.protocol.requires_search_power and search_dir is not None:
@@ -2035,6 +2299,12 @@ async def alpha_pooled_campaign_cmd(
         if events is not None:
             # A wrong page cache or actions file is refused here, before the ledger reserves anything.
             await asyncio.to_thread(load_event_sources, *events)
+        if short is not None:
+            # The same refusal for the FINRA files and actions, without needing the calendar.
+            await asyncio.to_thread(verify_short_digests, *short)
+        if insider is not None:
+            # The same refusal for the SEC archives, ticker map and actions, before the ledger opens.
+            await asyncio.to_thread(verify_insider_digests, *insider)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise click.ClickException(str(exc)) from exc
     entries = (
@@ -2055,6 +2325,8 @@ async def alpha_pooled_campaign_cmd(
                 require_cached=True,
                 load_hourly=loaded.protocol.score_inputs == "hourly",
                 events=events,
+                short=short,
+                insider=insider,
             )
             if recover:
                 result = await execute_campaign_recovery(

@@ -126,19 +126,80 @@ async def test_outbox_retry_is_delivery_only(store, app_config, mock_notifier):
     assert mock_notifier.send_exit_alert.await_count == 2
 
 
-async def test_price_freshness_rechecked_after_slow_macro_admission(service, store, entry, monkeypatch):
+@pytest.mark.parametrize("minutes,stale,quote_limit", [(6, "market trade", 300), (2, "market quote", 60)])
+async def test_price_freshness_rechecked_after_slow_macro_admission(
+    service, store, entry, monkeypatch, minutes, stale, quote_limit
+):
+    # Real time plus the simulated delay. A clock frozen at the start fell behind the work item's real created_at
+    # whenever setup took longer than the 1 s skew tolerance (a GC pause on CI), which reads as an expired approval.
+    shift = timedelta()
     clock = MagicMock(wraps=datetime)
-    clock.now.return_value = datetime.now(UTC)
+    clock.now.side_effect = lambda tz=None: datetime.now(tz) + shift
     monkeypatch.setattr(entries, "datetime", clock)
     service.config.execution.entry_evidence_max_age_seconds = 600
+    service.config.execution.entry_quote_max_age_seconds = quote_limit
+    # The slow step must not also cross the queued-authorization limit (120 s): two minutes sat on that boundary.
+    service.config.execution.entry_queue_max_age_seconds = 600
 
     async def slow_macro(*args):
-        clock.now.return_value += timedelta(minutes=5)
+        nonlocal shift
+        shift += timedelta(minutes=minutes)
 
     service.macro_check.side_effect = slow_macro
     item, _ = await service.authorize(await entry())
     assert item.status == WorkStatus.REJECTED
-    assert "market trade" in item.result["error_message"].lower()
+    assert stale in item.result["error_message"].lower()
+    service.executor.execute_order.assert_not_awaited()
+
+
+def _quoted(service, limit, bid, ask):
+    """Point the broker's context at a last trade equal to ``limit`` and the given quote."""
+    context = service.broker.entry_market_context.return_value
+    service.broker.entry_market_context.return_value = context.model_copy(
+        update={
+            "price": Decimal(limit),
+            "quote": context.quote.model_copy(update={"bid_price": Decimal(bid), "ask_price": Decimal(ask)}),
+        }
+    )
+
+
+async def _enqueue_at(service, store, entry, limit):
+    request = await entry()
+    request.entry_price = float(limit)
+    request.stop_loss = float(limit) * 0.95
+    request.take_profit = float(limit) * 1.1
+    item, _ = await store.enqueue_entry(request, service.config)
+    return item
+
+
+@pytest.mark.parametrize(
+    "limit,bid,ask",
+    [
+        ("329.50", "329.15", "345.02"),  # NSC 2026-11-11: wide, lopsided IEX book
+        ("397.02", "379.00", "400.00"),  # UNH 2026-11-09
+        ("687.06", "687.48", "713.84"),  # TMO 2026-11-06
+        ("100", "100.50", "101.50"),  # straddles the band edge
+    ],
+)
+async def test_quote_straddling_the_drift_band_reaches_the_macro_check(service, store, entry, limit, bid, ask):
+    await _enqueue_at(service, store, entry, limit)
+    _quoted(service, limit, bid, ask)
+    await service.dispatch_one()
+    service.macro_check.assert_awaited()
+
+
+@pytest.mark.parametrize("bid,ask", [("101.90", "102.10"), ("97.90", "98.10")])
+async def test_quote_entirely_outside_the_drift_band_refuses_before_macro(service, store, entry, bid, ask):
+    item = await _enqueue_at(service, store, entry, "100")
+    _quoted(service, "100", bid, ask)
+    await service.dispatch_one()
+    item = await store.get_work(item.id)
+    assert item.status == WorkStatus.REJECTED
+    assert item.result["error_message"] == (
+        f"Market quote {Decimal(bid):g}/{Decimal(ask):g} is entirely outside the 1% drift band; "
+        "original approved limit 100 retained."
+    )
+    service.macro_check.assert_not_awaited()
     service.executor.execute_order.assert_not_awaited()
 
 
@@ -148,7 +209,7 @@ async def test_admission_deadlines_are_rechecked_before_submission(service, entr
     clock.now.return_value = datetime.now(UTC)
     monkeypatch.setattr(entries, "datetime", clock)
     policy = service.config.execution
-    policy.entry_quote_max_age_seconds = 600
+    policy.entry_quote_max_age_seconds = 300
     policy.entry_evidence_max_age_seconds = 600
     policy.entry_queue_max_age_seconds = 30 if expires == "approval" else 600
     policy.signal_max_age_seconds = 30 if expires == "signal" else 600

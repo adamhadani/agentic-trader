@@ -53,6 +53,7 @@ from agentic_trader.constants import (
     ALPACA_MAX_ORDERS_PER_PAGE,
     ALPACA_MAX_REPLACEMENT_CHAIN,
     BROKER_CLOCK_SKEW_TOLERANCE_SECONDS,
+    BROKER_COST_BASIS_TOLERANCE,
     BROKER_PRICE_TOLERANCE,
     BROKER_QUANTITY_TOLERANCE,
     AssetClass,
@@ -536,7 +537,7 @@ class AlpacaBroker(BaseBroker):
         clock_age = (datetime.now(UTC) - timestamp).total_seconds()
         if (
             clock_age < -BROKER_CLOCK_SKEW_TOLERANCE_SECONDS
-            or clock_age > self.config.execution.entry_quote_max_age_seconds
+            or clock_age > self.config.execution.entry_clock_max_age_seconds
         ):
             raise ValueError("Broker session clock is stale or clock-skewed")
         if not is_open:
@@ -708,6 +709,10 @@ class AlpacaBroker(BaseBroker):
             )
         return list(observations.values())
 
+    @property
+    def supports_entry_cancellation(self) -> bool:
+        return True
+
     async def read_entry_group(self, order_id: str, known_ids: tuple[str, ...] = ()) -> list[OrderObservation]:
         if not self.client and not await self.connect():
             raise RuntimeError("Alpaca lifecycle connection failed")
@@ -746,7 +751,7 @@ class AlpacaBroker(BaseBroker):
         is_open = self._field(clock, "is_open")
         if not isinstance(timestamp, datetime) or timestamp.tzinfo is None or type(is_open) is not bool:
             raise ValueError("Broker session clock is incomplete")
-        if abs((datetime.now(UTC) - timestamp).total_seconds()) > self.config.execution.entry_quote_max_age_seconds:
+        if abs((datetime.now(UTC) - timestamp).total_seconds()) > self.config.execution.entry_clock_max_age_seconds:
             raise ValueError("Broker session clock is stale")
         return is_open
 
@@ -989,7 +994,7 @@ class AlpacaBroker(BaseBroker):
                     float(self._field(entry, "filled_avg_price")),
                     float(self._field(position, "avg_entry_price")),
                     rel_tol=0,
-                    abs_tol=BROKER_PRICE_TOLERANCE,
+                    abs_tol=BROKER_COST_BASIS_TOLERANCE,
                 ):
                     raise _CloseRefused("Broker cost basis differs from the tracked entry; reconcile before closing.")
             orders = await self._expand_close_orders(await open_orders(), request)
@@ -1036,9 +1041,28 @@ class AlpacaBroker(BaseBroker):
                     raise _CloseRefused("Order cancellations were not confirmed; no close order submitted.")
                 await asyncio.sleep(self.config.execution.close_cancel_poll_seconds)
             await observe({"phase": "cancellations_confirmed", "order_ids": cancellation_attempts})
+            known_ids = {str(self._field(order, "id")) for order in orders}
+            stale_reported = False
             while True:
-                if await open_orders():
+                listed = await open_orders()
+                if any(str(self._field(order, "id")) not in known_ids for order in listed):
                     raise _CloseRefused("New or remaining orders appeared during cancellation; no close submitted.")
+                # The list endpoint lags by-ID reads; a by-ID terminal read of a cancelled-group order wins.
+                stale_ids: list[str] = []
+                for listed_order in listed:
+                    listed_id = str(self._field(listed_order, "id"))
+                    current = await asyncio.to_thread(client.get_order_by_id, listed_id)
+                    if (
+                        self._enum(current, "status") == AlpacaOrderStatus.FILLED.value
+                        or float(self._field(current, "filled_qty", 0) or 0) > 0
+                    ):
+                        raise _CloseRefused("An order filled during cancellation; reconcile before closing.")
+                    if self._enum(current, "status") not in terminal:
+                        raise _CloseRefused("New or remaining orders appeared during cancellation; no close submitted.")
+                    stale_ids.append(listed_id)
+                if stale_ids and not stale_reported:
+                    stale_reported = True
+                    await observe({"phase": "stale_open_order_list", "order_ids": sorted(stale_ids)})
                 position = await check_position()
                 if (
                     abs(float(self._field(position, "qty_available", 0) or 0)) + BROKER_QUANTITY_TOLERANCE

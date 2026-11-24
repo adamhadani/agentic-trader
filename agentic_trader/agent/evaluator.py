@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import json
 import logging
 import math
 import os
-import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -14,15 +12,18 @@ from typing import TYPE_CHECKING, Any
 import litellm
 from pydantic import BaseModel, Field
 
-from agentic_trader.agent.calendar import BaseEconomicCalendar, ForexFactoryCalendar
+from agentic_trader.agent.calendar import UnionTier1Calendar
 from agentic_trader.agent.earnings import (
     EarningsCalendarProtocol,
-    EarningsLookup,
+    EarningsCaptureSource,
     earnings_blackout_reason,
     earnings_note,
+    resolve_earnings,
 )
+from agentic_trader.agent.filing_veto import filing_veto_evidence, filing_veto_exempt
+from agentic_trader.agent.llm_gate import LLM_KEY_MISSING, classify_gate_reply, llm_unavailable_reason
 from agentic_trader.agent.position_sizing import PositionSizingResult, calculate_dynamic_sizing
-from agentic_trader.agent.prompts import USER_EVALUATION_TEMPLATE, build_system_prompt
+from agentic_trader.agent.prompts import USER_EVALUATION_TEMPLATE, build_system_prompt, gate_prompt_sha256
 from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import (
@@ -33,6 +34,7 @@ from agentic_trader.constants import (
 from agentic_trader.data.corporate_actions import CorporateActionKind, CorporateActionsLookup, between
 from agentic_trader.market.session import ET_TZ, MarketSessionProtocol
 from agentic_trader.research.alpha.strategy import bracket_prices, entry_limit, execution_policy_from_dict
+from agentic_trader.research.apriori.watch_contract import INSIDER_WATCH_STRATEGY_ID
 from agentic_trader.risk import (
     Book,
     EntryIntent,
@@ -44,7 +46,6 @@ from agentic_trader.risk import (
     book_gates,
     corporate_action_block,
     entry_session_open,
-    macro_lockout,
     per_trade_risk,
     per_trade_risk_budget,
     regime_breakout,
@@ -57,6 +58,7 @@ from agentic_trader.screeners.base import ScreenerCandidate
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from agentic_trader.data.filings_capture import FilingsLookup
     from agentic_trader.data.market_data import MarketDataFetcher
 
 
@@ -68,6 +70,8 @@ logger = logging.getLogger(__name__)
 _INVALID_BRACKET = "Quantity and bracket prices must be finite and positive."
 # Float noise tolerated, in ticks, when a target is rounded away from the entry to a tick.
 _TICK_EPSILON = 1e-6
+# How much of an unusable gate reply the local DEBUG log keeps (never the journal or a card).
+REPLY_HEAD_CHARS = 200
 
 
 @dataclass(frozen=True)
@@ -82,11 +86,6 @@ class DeterministicLevels:
     quantity: float
     sizing_tiers: list[dict[str, Any]] = field(default_factory=list)
     gating_reasons: list[str] = field(default_factory=list)
-
-
-def _explicit_true(value: Any) -> bool:
-    """Only an explicit true approves: ``bool("false")`` would record a veto as approval."""
-    return value is True or (isinstance(value, str) and value.lower() == "true")
 
 
 class LLMTradeEvaluation(BaseModel):
@@ -116,11 +115,17 @@ class LLMTradeEvaluation(BaseModel):
     gating_reasons: list[str] | None = None
     session_type: str = "RTH"
     earnings_note: str | None = None
+    # Set when the static tier-1 calendar is unverified (CalendarCheck.macro_note): the card then shows
+    # "Unverified — {note}" instead of "Cleared". Never taken from the LLM; ``macro_clearance`` is unchanged.
+    macro_note: str | None = None
     corporate_actions: dict[str, Any] | None = None  # the scan's corporate-action block (docs/corporate-actions.md)
+    # The scan's filing-veto block (docs/risk-policy.md, ``filing_veto``); None for a short or a non-equity.
+    filings: dict[str, Any] | None = None
     # The scan's news block (docs/news-context.md): labelled context on the card and in the journal, never read as a gate.
     news_context: dict[str, Any] | None = None
-    # Every parsed LLM answer: approved/rejection_reason, the bracket as it would be
-    # applied, and whether the verdict decided the card (native) or is commentary (catalog).
+    # Every LLM-evaluated card (approval, veto or error): approved/rejection_reason, the bracket as it
+    # would be applied, whether the verdict decided the card (native) or is commentary (catalog), the
+    # provider's model snapshot, the gate prompt's hash, the error's type name and the malformed-veto flag.
     llm_verdict: dict[str, Any] | None = None
 
 
@@ -128,21 +133,28 @@ class RiskEvaluator:
     def __init__(
         self,
         config: AppConfig,
-        calendar: BaseEconomicCalendar | None = None,
+        calendar: UnionTier1Calendar | None = None,
         regime_detector: RegimeDetector | None = None,
         data_fetcher: MarketDataFetcher | None = None,
         session_provider: MarketSessionProtocol | None = None,
         earnings_calendar: EarningsCalendarProtocol | None = None,
+        earnings_captures: EarningsCaptureSource | None = None,
     ):
         self.config = config
-        self.calendar: BaseEconomicCalendar = calendar or ForexFactoryCalendar()
+        self.calendar: UnionTier1Calendar = calendar if calendar is not None else UnionTier1Calendar.from_config(config)
         self.regime_detector: RegimeDetector = regime_detector or RegimeDetector(config=config.regime)
         self.data_fetcher = data_fetcher
         self.session_provider = session_provider
         # None by default: never construct a network client implicitly (tests
         # block network I/O); the gate/note are simply skipped when unset.
         self.earnings_calendar = earnings_calendar
-        litellm.drop_params = True
+        # The dated capture the blackout falls back to when the live lookup cannot vouch (None: live only).
+        self.earnings_captures = earnings_captures
+        # No ``litellm.drop_params = True``: it is process-wide and makes litellm drop any parameter the model
+        # rejects, which also defeats the gate's per-call ``drop_params=False``. Callers that want dropping
+        # (macro explainer, doctor, chat) ask per call.
+        # The gate prompt's identity (config only), recorded in every ``llm_verdict``.
+        self.prompt_sha256 = gate_prompt_sha256(config)
 
         # Wire up LangSmith tracing if credentials exist in environment
         if os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY"):
@@ -156,12 +168,17 @@ class RiskEvaluator:
             )
 
     def _probe_risk_cap(self, candidate: ScreenerCandidate) -> float | None:
-        """A paper probe's risk ceiling (``alpha_pipeline.probe_risk_dollars``), or None for any other card.
+        """A capped card's risk ceiling, or None for any other card: a paper probe's
+        ``alpha_pipeline.probe_risk_dollars``, an insider watch card's ``insider_watch.max_risk_per_trade_usd``.
 
-        Sizing caps a probe's tiers at it, including tiers re-sized at an LLM-widened stop, and
+        Sizing caps the card's tiers at it, including tiers re-sized at an LLM-widened stop, and
         the post-LLM final-bracket check re-checks the re-sized max tier against it.
         """
-        return self.config.alpha_pipeline.probe_risk_dollars if candidate.probe else None
+        if candidate.probe:
+            return self.config.alpha_pipeline.probe_risk_dollars
+        if candidate.strategy == INSIDER_WATCH_STRATEGY_ID:
+            return self.config.insider_watch.max_risk_per_trade_usd
+        return None
 
     def calculate_levels_deterministic(
         self,
@@ -368,7 +385,9 @@ class RiskEvaluator:
         current_drawdown_pct: float = 0.0,
         current_equity: float | None = None,
         corporate_actions: CorporateActionsLookup | None = None,
+        filings: FilingsLookup | None = None,
         news_context: Mapping[str, Any] | None = None,
+        skip_llm_reason: str | None = None,
     ) -> LLMTradeEvaluation:
         """Size the candidate, run the deterministic gates, then (optionally) the LLM.
 
@@ -376,14 +395,22 @@ class RiskEvaluator:
         (``agentic_trader.risk.book_gates``) on ``active_positions`` -- open positions plus the
         cards this scan already sent; the statistical return-correlation check; macro lockout;
         earnings blackout; corporate action (``enforce`` only, from the scan's ``corporate_actions``
-        lookup; ``preview`` and stale evidence only annotate); the regime rules (breakout suppression,
+        lookup; ``preview`` and stale evidence only annotate); filing veto (long equities only, ``enforce``
+        only, from the scan's ``filings`` lookup; ``preview`` and stale, missing or uncovered evidence only
+        annotate); the regime rules (breakout suppression,
         then ``reward_risk`` at the required ratio, which only a versioned alpha bracket can fail);
         session. A refusal by a shared rule carries that rule's text and ``rejection_rule``.
         ``current_open_notional`` bounds the sizing notional ceiling; the book's own notional is what
         the caps judge.
+
+        With ``use_llm`` the LLM gate then decides a native card and comments on a catalog card. It fails
+        closed: a timeout (``llm_gate.timeout_seconds``), a provider error, an invalid reply or a missing
+        API key (``LLMKeyMissing``) is an error result -- a native card not approved, a catalog card
+        labelled -- whose ``llm_verdict["error"]`` is the type name. ``skip_llm_reason`` returns that error
+        result, named by it, without calling the LLM.
         """
-        # One clock for the deterministic lockout gate and the prompt's macro block,
-        # so the LLM never sees a verdict that differs from the gate's.
+        # One clock and one calendar check for the deterministic lockout gate, the prompt's macro
+        # block and the card's macro note, so the LLM never sees a verdict that differs from the gate's.
         evaluated_at = datetime.now(UTC)
         # Fetch current volatility and macro regime
         regime = await self.regime_detector.get_regime()
@@ -520,29 +547,32 @@ class RiskEvaluator:
                         thesis=f"Rejected by risk manager: High return correlation with {pos_contract}.",
                     )
 
-        # 2. Macro lockout (agentic_trader.risk.macro_lockout): the calendar finds the tier-1 event
-        #    whose window contains ``evaluated_at``; its timestamp is aware, and the rule's reason
-        #    prints the event's UTC clock time.
-        in_lockout, lock_event = await self.calendar.is_in_lockout_window(
-            pre_minutes=limits.lockout_pre_minutes,
-            post_minutes=limits.lockout_post_minutes,
-            now=evaluated_at,
+        # 2. Macro lockout (agentic_trader.risk.macro_lockout through CalendarCheck.lockout_rejection): the
+        #    union calendar's one check at ``evaluated_at`` finds the tier-1 event whose window contains it
+        #    (static first), and under ``risk.macro_calendar_unknown: closed`` an unverified static calendar
+        #    refuses before the window test. The same check renders the prompt block and the macro note.
+        calendar_check = await self.calendar.check(
+            evaluated_at, limits.lockout_pre_minutes, limits.lockout_post_minutes
         )
-        if (
-            in_lockout
-            and lock_event
-            and (rejection := macro_lockout(lock_event.title, lock_event.timestamp, evaluated_at, limits))
-        ):
+        if (rejection := calendar_check.lockout_rejection(limits)) is not None:
+            unverified_refusal = not calendar_check.verified and limits.macro_calendar_unknown == "closed"
+            lock_event = calendar_check.lockout
             return _rejected(
                 rejection.reason,
                 rejection.rule,
-                thesis=f"Rejected: macro lockout active for '{lock_event.title}'.",
+                thesis="Rejected: macro calendar unverified (policy closed)."
+                if unverified_refusal or lock_event is None
+                else f"Rejected: macro lockout active for '{lock_event.title}'.",
                 macro_clearance=False,
             )
+        macro_note = calendar_check.macro_note()
+        # The card's macro clearance is this deterministic gate's result; no LLM outcome sets or changes it.
+        macro_clearance = True
 
-        # 2b. Earnings blackout (agentic_trader.agent.earnings.earnings_blackout_reason over
-        # agentic_trader.risk.earnings_days_out; equities only; None calendar or a 0-day config
-        # skips the gate and leaves no note).
+        # 2b. Earnings blackout (agentic_trader.agent.earnings.resolve_earnings: live lookup, else the dated
+        # capture, else unverified; earnings_blackout_reason over agentic_trader.risk.earnings_days_out and
+        # earnings_unverified_refuses, i.e. risk.earnings_calendar_unknown; equities only; None calendar or a
+        # 0-day config skips the gate and leaves no note).
         earnings_note_value: str | None = None
         if (
             asset_class == AssetClass.EQUITY
@@ -550,19 +580,20 @@ class RiskEvaluator:
             and self.earnings_calendar is not None
         ):
             blackout_days = limits.earnings_blackout_days
-            try:
-                earnings_lookup = await self.earnings_calendar.next_earnings(
-                    candidate.contract, now=evaluated_at, horizon_days=blackout_days
-                )
-            except Exception as e:
-                logger.warning(
-                    "Earnings calendar lookup failed (%s); failing open (no blackout, unverified note).",
-                    e,
-                    extra={"contract": candidate.contract, "error": str(e)},
-                )
-                earnings_lookup = EarningsLookup(event=None, verified=False, horizon_end=evaluated_at.date())
-
-            blackout_reason = earnings_blackout_reason(earnings_lookup, candidate.contract, evaluated_at, blackout_days)
+            earnings_lookup = await resolve_earnings(
+                candidate.contract,
+                evaluated_at,
+                blackout_days,
+                live=self.earnings_calendar,
+                captures=self.earnings_captures,
+            )
+            blackout_reason = earnings_blackout_reason(
+                earnings_lookup,
+                candidate.contract,
+                evaluated_at,
+                blackout_days,
+                unknown=limits.earnings_calendar_unknown,
+            )
             if blackout_reason:
                 return _rejected(
                     f"Earnings Blackout: {blackout_reason}",
@@ -634,12 +665,42 @@ class RiskEvaluator:
                         corporate_actions=corporate_block,
                     )
 
+        # 2d. Filing veto (agentic_trader.risk.filing_veto_block; long equities only, a short never evaluates
+        # it). A missing or stale capture, or one that did not cover this symbol ("uncovered"), never refuses;
+        # preview annotates; enforce refuses an enforced-category filing inside its window. A non-native card
+        # (catalog, probe, alpha-versioned: `filing_veto_exempt`) gets the block labelled `exempt` and is never
+        # refused, matching the release exit's exempt set and the tap gate.
+        filings_block: dict[str, Any] | None = None
+        filing_policy = self.config.filing_veto
+        if (
+            asset_class == AssetClass.EQUITY
+            and str(candidate.direction).upper() == Direction.LONG
+            and filings is not None
+            and filing_policy.entry_block != "off"
+        ):
+            filings_block, rejection = filing_veto_evidence(
+                filings,
+                candidate.contract,
+                evaluated_at.astimezone(ET_TZ).date(),
+                filing_policy,
+                exempt=filing_veto_exempt(candidate),
+            )
+            if rejection is not None and filing_policy.entry_block == "enforce":
+                return _rejected(
+                    rejection.reason,
+                    rejection.rule,
+                    thesis=f"Rejected: filing veto for {candidate.contract}.",
+                    earnings_note=earnings_note_value,
+                    corporate_actions=corporate_block,
+                    filings=filings_block,
+                )
+
         # 3. Regime breakout suppression (agentic_trader.risk.regime_breakout); the regime detail
         #    stays in the thesis.
         if rejection := regime_breakout(candidate.strategy, regime.breakout_allowed):
             macro_detail = ""
-            if regime.macro_report and not regime.macro_report.stress.squeeze_breakout_allowed:
-                macro_detail = f" & Macro Stress ({regime.macro_report.stress.level.value})"
+            if regime.macro_stress and not regime.macro_stress.squeeze_breakout_allowed:
+                macro_detail = f" & Macro Stress ({regime.macro_stress.level.value})"
             return _rejected(
                 rejection.reason,
                 rejection.rule,
@@ -648,6 +709,7 @@ class RiskEvaluator:
                 ),
                 earnings_note=earnings_note_value,
                 corporate_actions=corporate_block,
+                filings=filings_block,
             )
         # 3b. The regime's reward/risk (agentic_trader.risk.reward_risk at required_rr), the tap-time regime
         #     gate's next rule: a native target is built at required_rr and always passes; a versioned alpha
@@ -659,6 +721,7 @@ class RiskEvaluator:
                 thesis=f"Rejected by risk manager: {rejection.reason}",
                 earnings_note=earnings_note_value,
                 corporate_actions=corporate_block,
+                filings=filings_block,
             )
 
         # 4. Session (agentic_trader.risk.entry_session_open): a closed session refuses; an open
@@ -677,47 +740,112 @@ class RiskEvaluator:
                     session_type=current_session_type,
                     earnings_note=earnings_note_value,
                     corporate_actions=corporate_block,
+                    filings=filings_block,
                 )
 
-        macro_summary = await self.calendar.get_macro_summary_for_prompt(
-            now=evaluated_at,
-            pre_minutes=limits.lockout_pre_minutes,
-            post_minutes=limits.lockout_post_minutes,
-        )
+        macro_summary = calendar_check.prompt_text()
         regime_summary = self.regime_detector.get_prompt_context(regime)
 
-        # If LLM evaluation is disabled or no LLM keys provided, return deterministic evaluation
-        has_api_key = bool(self.config.openai_api_key or self.config.anthropic_api_key or self.config.gemini_api_key)
-
-        if not use_llm or not has_api_key:
+        # The deterministic card: the whole result without the LLM, and the bracket an LLM error keeps.
+        deterministic_card: dict[str, Any] = {
+            "contract": candidate.contract,
+            "direction": candidate.direction,
+            "entry_price": entry,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "stop_distance_points": stop_distance,
+            "target_distance_points": target_distance,
+            "risk_reward_ratio": round(target_distance / stop_distance, 2) if stop_distance > 0 else 2.0,
+            "risk_dollars": risk_dollars,
+            "reward_dollars": reward_dollars,
+            "notional_value": notional_value,
+            "effective_leverage": effective_leverage,
+            "macro_clearance": macro_clearance,
+            "quantity": quantity,
+            "asset_class": asset_class,
+            "earnings_note": earnings_note_value,
+            "macro_note": macro_note,
+            "corporate_actions": corporate_block,
+            "filings": filings_block,
+            "news_context": news_block,
+        }
+        if not use_llm:
             return LLMTradeEvaluation(
                 approved=True,
                 rejection_reason=None,
-                contract=candidate.contract,
-                direction=candidate.direction,
-                entry_price=entry,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                stop_distance_points=stop_distance,
-                target_distance_points=target_distance,
-                risk_reward_ratio=round(target_distance / stop_distance, 2) if stop_distance > 0 else 2.0,
-                risk_dollars=risk_dollars,
-                reward_dollars=reward_dollars,
-                notional_value=notional_value,
-                effective_leverage=effective_leverage,
-                macro_clearance=True,
                 thesis_summary=(
                     f"Quantitative trigger verified: {candidate.trigger_detail} "
-                    f"Macro cleared (Regime: {regime.vix_regime.value}, VIX {regime.vix:.1f})."
+                    f"{'Macro lockout unverified' if macro_note else 'Macro cleared'} "
+                    f"(Regime: {regime.vix_regime.value}, VIX {regime.vix:.1f})."
                 ),
-                quantity=quantity,
-                asset_class=asset_class,
-                earnings_note=earnings_note_value,
-                corporate_actions=corporate_block,
-                news_context=news_block,
+                **deterministic_card,
             )
 
-        # 3. Call LLM for final reasoning & thesis synthesis
+        # 5. The LLM gate (docs/superpowers/specs/2026-10-27-llm-gate-hygiene-design.md). A native card's
+        #    verdict is applied; a catalog card's is commentary. Only a valid reply whose raw ``approved`` is
+        #    the JSON boolean true approves; an error never approves a native card.
+        applied = candidate.catalog_event is None
+
+        def verdict(
+            approved: bool,
+            rejection_reason: str | None,
+            stop: float | None,
+            target: float | None,
+            *,
+            model: str | None = None,
+            error: str | None = None,
+            malformed: bool = False,
+        ) -> dict[str, Any]:
+            """The recorded verdict: the bracket as the verdict would apply it, and the gate's identity."""
+            return {
+                "approved": approved,
+                "rejection_reason": rejection_reason,
+                "stop_loss": stop,
+                "take_profit": target,
+                "applied": applied,
+                "model": model,
+                "prompt_sha256": self.prompt_sha256,
+                "error": error,
+                "malformed": malformed,
+            }
+
+        def on_deterministic_bracket(
+            rejection_reason: str | None, thesis: str, llm_verdict: dict[str, Any]
+        ) -> LLMTradeEvaluation:
+            """A gate result on the deterministic card: a native card is not approved, a catalog card is."""
+            return LLMTradeEvaluation(
+                **deterministic_card,
+                approved=not applied,
+                rejection_reason=rejection_reason if applied else None,
+                thesis_summary=thesis,
+                sizing_tiers=sizing_tiers,
+                gating_reasons=gating_reasons,
+                session_type=current_session_type,
+                llm_verdict=llm_verdict,
+            )
+
+        def unavailable(error_type: str) -> LLMTradeEvaluation:
+            """An LLM error: a native card is withheld, a catalog card is sent as labelled commentary.
+            Desk-authored text with the error's type name, never exception text."""
+            label = llm_unavailable_reason(error_type) if applied else f"LLM commentary unavailable ({error_type})"
+            return on_deterministic_bracket(label, label, verdict(False, None, None, None, error=error_type))
+
+        def failed(error_type: str, failure: Exception | None = None) -> LLMTradeEvaluation:
+            """Log a gate error and return its result. The message and extras carry the type name only; the
+            traceback (with any exception text) stays in the local log."""
+            logger.warning(
+                "LLM evaluation failed (%s)",
+                error_type,
+                exc_info=failure,
+                extra={"contract": candidate.contract, "strategy": candidate.strategy, "error_type": error_type},
+            )
+            return unavailable(error_type)
+
+        if skip_llm_reason is not None:
+            return unavailable(skip_llm_reason)
+        if not (self.config.openai_api_key or self.config.anthropic_api_key or self.config.gemini_api_key):
+            return failed(LLM_KEY_MISSING)
+
         prompt = USER_EVALUATION_TEMPLATE.format(
             timeframe=candidate.timeframe,
             min_stop_atr_multiple=self.config.risk.min_stop_atr_multiple,
@@ -745,36 +873,66 @@ class RiskEvaluator:
             macro_summary=macro_summary,
         )
 
+        # One deadline, enforced here even if the client ignores ``timeout``. The request says exactly what is
+        # sent: no temperature, and ``drop_params=False`` so an unsupported parameter fails instead of vanishing.
+        # A missed deadline is named by whichever fires first, litellm's ``Timeout`` or asyncio's
+        # ``TimeoutError``: callers count errors and must not key on the exact type name.
+        timeout_seconds = self.config.llm_gate.timeout_seconds
+        response: Any = None
+        content: Any = None
+        failure: Exception | None = None
         try:
-            # Configure litellm call
-            model_name = self.config.llm_model
-            response = await litellm.acompletion(
-                api_key=self.config.llm_api_key,
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": build_system_prompt(self.config)},
-                    {"role": "user", "content": prompt},
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.2,
+            response = await asyncio.wait_for(
+                litellm.acompletion(
+                    api_key=self.config.llm_api_key,
+                    model=self.config.llm_model,
+                    messages=[
+                        {"role": "system", "content": build_system_prompt(self.config)},
+                        {"role": "user", "content": prompt},
+                    ],
+                    response_format={"type": "json_object"},
+                    timeout=timeout_seconds,
+                    drop_params=False,
+                ),
+                timeout=timeout_seconds,
             )
-            raw_text = response.choices[0].message.content.strip()
-            # Clean possible markdown wrapping
-            cleaned = re.sub(r"^```json\s*|\s*```$", "", raw_text, flags=re.MULTILINE).strip()
-            data = json.loads(cleaned)
+            content = response.choices[0].message.content
+            reply = classify_gate_reply(content)
+        except Exception as exc:
+            failure, reply = exc, classify_gate_reply(None, error=exc)
 
-            # Enforce hard invariants over LLM values
-            data["contract"] = candidate.contract
-            data["direction"] = candidate.direction
-            data["entry_price"] = entry
-            data["notional_value"] = notional_value
-            data["effective_leverage"] = effective_leverage
-            data["quantity"] = quantity
-            data["asset_class"] = asset_class
-            # A candidate that reached the LLM already passed the deterministic macro lockout gate
-            # (step 2 above); the card's Macro Check states that gate, never the LLM's own value.
-            data["macro_clearance"] = True
-
+        if reply.data is None:
+            if failure is None:
+                # A content-level error (not JSON, not an object, or a JSON-true approval that fails validation):
+                # the reply's length and head go to the local DEBUG log only, never the journal, a card or an extra.
+                text = "" if content is None else str(content)
+                logger.debug(
+                    "LLM gate reply unusable (%s): %d chars, head %r",
+                    reply.error_type,
+                    len(text),
+                    text[:REPLY_HEAD_CHARS],
+                    extra={
+                        "event": "llm_gate_reply_unusable",
+                        "contract": candidate.contract,
+                        "error_type": reply.error_type,
+                        "reply_chars": len(text),
+                    },
+                )
+            return failed(str(reply.error_type), failure)
+        data = reply.data
+        # An approval or a veto. A malformed veto carries no levels, so it keeps the deterministic bracket.
+        approved = reply.kind == "approve"
+        raw_model = getattr(response, "model", None)  # the provider's snapshot, e.g. gpt-5.6-sol
+        model = raw_model if isinstance(raw_model, str) else None
+        reason = data.get("rejection_reason")
+        thesis = data.get("thesis_summary")
+        if not isinstance(thesis, str):  # a malformed veto's reply may carry none
+            thesis = reason or ""
+        if not applied:
+            # A catalog probe tests the unfiltered study rule: the verdict is recorded, its text
+            # shown as commentary, and it never vetoes (deterministic gates already ran).
+            thesis = f"LLM commentary (not a gate): {thesis}".strip()
+        try:
             # Invalidation guarantee: stop distance >= 1.5 * ATR
             llm_stop = float(data.get("stop_loss", stop_loss))
             llm_stop_dist = abs(entry - llm_stop)
@@ -796,7 +954,7 @@ class RiskEvaluator:
             if candidate.alpha_policy is not None:
                 llm_stop, llm_target = stop_loss, take_profit
                 llm_stop_dist, llm_target_dist = stop_distance, target_distance
-                rr = target_distance / stop_distance
+                rr = round(target_distance / stop_distance, 2)
 
             # Final-bracket check (``_final_bracket``), so the card as sent -- every tier offered on it --
             # passes its own tap gate under this regime: a bracket other than the deterministic one must
@@ -804,8 +962,9 @@ class RiskEvaluator:
             # only shrink) and the re-sized max tier must pass ``per_trade_risk``, the probe cap and
             # ``aggregate_stop_risk`` on the scan's book. Otherwise the deterministic bracket and tiers are
             # restored. The LLM's verdict stands either way. Re-sized values go only to the card's own
-            # fields (``data``), never to the deterministic locals the fallback below returns.
+            # fields, never to the deterministic card an error keeps.
             card_quantity, card_tiers, card_gating = quantity, sizing_tiers, gating_reasons
+            card_notional, card_leverage = notional_value, effective_leverage
             if (llm_stop, llm_target) != (stop_loss, take_profit):
                 keep, resized = self._final_bracket(
                     candidate,
@@ -833,85 +992,62 @@ class RiskEvaluator:
                     card_quantity = resized.default_tier.quantity
                     card_tiers = [t.model_dump() for t in resized.tiers]
                     card_gating = resized.gating_reasons
-                    data["quantity"] = card_quantity
-                    data["notional_value"] = resized.default_tier.notional_dollars
-                    data["effective_leverage"] = round(
-                        resized.default_tier.notional_dollars / self.config.portfolio.cash, 2
-                    )
-            data["stop_loss"] = llm_stop
-            data["take_profit"] = llm_target
-            data["stop_distance_points"] = round(llm_stop_dist, 2)
-            data["target_distance_points"] = round(llm_target_dist, 2)
-            data["risk_reward_ratio"] = rr
-            data["risk_dollars"] = round(llm_stop_dist * multiplier * card_quantity, 2)
-            data["reward_dollars"] = round(llm_target_dist * multiplier * card_quantity, 2)
-            data["sizing_tiers"] = card_tiers
-            data["gating_reasons"] = card_gating
-            data["session_type"] = current_session_type
+                    card_notional = resized.default_tier.notional_dollars
+                    card_leverage = round(card_notional / self.config.portfolio.cash, 2)
 
-            data.pop("llm_verdict", None)  # only ever set below, never taken from the LLM
-            data.pop("rejection_rule", None)  # a shared rule's id; the LLM never supplies one
-            # The corporate-action block is attached below; a malformed key in the reply must not
-            # fail validation and turn an LLM veto into the fallback approval.
-            data.pop("corporate_actions", None)
-            data.pop("news_context", None)  # attached below from the scan's block; never taken from the reply
-            applied = candidate.catalog_event is None
-            data["llm_verdict"] = {
-                "approved": _explicit_true(data.get("approved")),
-                "rejection_reason": data.get("rejection_reason"),
-                "stop_loss": llm_stop,
-                "take_profit": llm_target,
-                "applied": applied,
-            }
-            if not applied:
-                # A catalog probe tests the unfiltered study rule: the verdict is recorded,
-                # its text shown as commentary, and it never vetoes (deterministic gates already ran).
-                data["approved"], data["rejection_reason"] = True, None
-                data["thesis_summary"] = f"LLM commentary (not a gate): {data.get('thesis_summary') or ''}".strip()
-
-            # Never ask the LLM for the earnings note (prompt/schema stay untouched);
-            # attach it deterministically after the LLM result is parsed.
-            evaluation = LLMTradeEvaluation(**data).model_copy(
-                update={
-                    "earnings_note": earnings_note_value,
-                    "corporate_actions": corporate_block,
-                    "news_context": news_block,
-                }
-            )
-            if applied and evaluation.llm_verdict is not None:
-                # Record exactly the decision taken, after pydantic's own bool parsing.
-                evaluation.llm_verdict["approved"] = evaluation.approved
-            return evaluation
-
-        except Exception as e:
-            logger.warning(
-                "LLM evaluation failed (%s), falling back to deterministic risk engine.",
-                e,
-                extra={"contract": candidate.contract, "strategy": candidate.strategy, "error": str(e)},
-            )
             return LLMTradeEvaluation(
-                approved=True,
-                rejection_reason=None,
+                approved=approved or not applied,
+                rejection_reason=reason if applied else None,
                 contract=candidate.contract,
                 direction=candidate.direction,
                 entry_price=entry,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                stop_distance_points=stop_distance,
-                target_distance_points=target_distance,
-                risk_reward_ratio=round(target_distance / stop_distance, 2),
-                risk_dollars=risk_dollars,
-                reward_dollars=reward_dollars,
-                notional_value=notional_value,
-                effective_leverage=effective_leverage,
-                macro_clearance=True,
-                thesis_summary=f"Automated thesis: {candidate.trigger_detail} (LLM fallback used: {e})",
-                quantity=quantity,
+                stop_loss=llm_stop,
+                take_profit=llm_target,
+                stop_distance_points=round(llm_stop_dist, 2),
+                target_distance_points=round(llm_target_dist, 2),
+                risk_reward_ratio=rr,
+                risk_dollars=round(llm_stop_dist * multiplier * card_quantity, 2),
+                reward_dollars=round(llm_target_dist * multiplier * card_quantity, 2),
+                notional_value=card_notional,
+                effective_leverage=card_leverage,
+                macro_clearance=macro_clearance,
+                thesis_summary=thesis,
+                quantity=card_quantity,
                 asset_class=asset_class,
-                sizing_tiers=sizing_tiers,
-                gating_reasons=gating_reasons,
+                sizing_tiers=card_tiers,
+                gating_reasons=card_gating,
                 session_type=current_session_type,
+                # Never asked of the LLM: the earnings, macro, corporate-action, filing-veto and news
+                # context are attached deterministically.
                 earnings_note=earnings_note_value,
+                macro_note=macro_note,
                 corporate_actions=corporate_block,
+                filings=filings_block,
                 news_context=news_block,
+                llm_verdict=verdict(
+                    approved,
+                    reason,
+                    llm_stop,
+                    llm_target,
+                    model=model,
+                    malformed=reply.malformed,
+                ),
+            )
+        except Exception as exc:
+            if approved:  # an approval that cannot be applied never approves: it is an error like any other
+                return failed(type(exc).__name__, exc)
+            # A veto stands even when its levels cannot be applied: it keeps the deterministic bracket, as a
+            # malformed veto does.
+            logger.warning(
+                "LLM veto kept on the deterministic bracket (%s)",
+                type(exc).__name__,
+                exc_info=exc,
+                extra={
+                    "contract": candidate.contract,
+                    "strategy": candidate.strategy,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return on_deterministic_bracket(
+                reason, thesis, verdict(False, reason, stop_loss, take_profit, model=model, malformed=reply.malformed)
             )

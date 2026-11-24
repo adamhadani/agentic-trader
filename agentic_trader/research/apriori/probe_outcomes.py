@@ -54,6 +54,9 @@ _DECISION_COLUMNS = (
     "surprise_short",
     "reaction_long",
     "reaction_short",
+    "eps",
+    "eps_forecast",
+    "n_estimates",
     "outcome",
 )
 

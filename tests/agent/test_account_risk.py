@@ -13,6 +13,7 @@ from agentic_trader.constants import ExecutionMode
 from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
 from agentic_trader.research.alpha.models import RegistrySnapshot
 from agentic_trader.telemetry.collector import MetricsCollector
+from tests.calendar_doubles import clear_check, lockout_check, union_double
 
 
 @pytest.fixture
@@ -50,8 +51,7 @@ def risk_desk(app_config, temp_db, mock_notifier):
     copilot.strategy_engine.scan_contract.return_value = [candidate]
     copilot.session_provider = AsyncMock()
     copilot.session_provider.is_session_active.return_value = (True, "Open")
-    copilot.calendar = AsyncMock()
-    copilot.calendar.is_in_lockout_window.return_value = (False, None)
+    copilot.calendar = union_double(clear_check())
     copilot.regime_detector = AsyncMock()
     copilot.regime_detector.get_regime.return_value = SimpleNamespace(summary_text="test")
     app_config.contracts = {"SPY": SimpleNamespace(name="SPY", ticker="SPY", asset_class="EQUITY")}
@@ -84,8 +84,18 @@ async def test_empty_dry_scan_does_not_read_broker_risk(risk_desk):
     ("session_open", "macro_lockout", "bypass_session", "detail"),
     [
         (False, False, False, "Session gate checked: Closed"),
-        (True, True, False, "Macro gate checked: Scheduled event; entry alerts paused"),
-        (False, True, True, "Macro gate checked: Scheduled event; entry alerts paused"),
+        (
+            True,
+            True,
+            False,
+            "Macro gate checked: Macro event lockout: Scheduled event at 13:30 UTC.; entry alerts paused",
+        ),
+        (
+            False,
+            True,
+            True,
+            "Macro gate checked: Macro event lockout: Scheduled event at 13:30 UTC.; entry alerts paused",
+        ),
     ],
 )
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -94,9 +104,9 @@ async def test_entry_policy_gates_record_scan_progress_without_scoring(
 ):
     risk_desk.readiness = ReadinessService(risk_desk.db.workflows, risk_desk.config, MetricsCollector())
     risk_desk.session_provider.is_session_active.return_value = (session_open, "Closed")
-    risk_desk.calendar.is_in_lockout_window.return_value = (
-        macro_lockout,
-        SimpleNamespace(title="Scheduled event", timestamp=datetime(2026, 9, 18, 13, 30, tzinfo=UTC)),
+    event_at = datetime(2026, 9, 18, 13, 30, tzinfo=UTC)
+    risk_desk.calendar.check.return_value = (
+        lockout_check("Scheduled event", event_at) if macro_lockout else clear_check(event_at)
     )
 
     await risk_desk.run_scan(use_llm=False, symbols=["SPY"], bypass_session_filter=bypass_session, dry_run=dry_run)
@@ -112,7 +122,7 @@ async def test_entry_policy_gates_record_scan_progress_without_scoring(
 
 
 async def test_failed_macro_check_does_not_record_healthy_scan(risk_desk):
-    risk_desk.calendar.is_in_lockout_window.side_effect = RuntimeError("Calendar unavailable")
+    risk_desk.calendar.check.side_effect = RuntimeError("Calendar unavailable")
     with pytest.raises(RuntimeError, match="Calendar unavailable"):
         await risk_desk.run_scan(use_llm=False, symbols=["SPY"])
     risk_desk.readiness.observe.assert_not_awaited()

@@ -134,9 +134,36 @@ def test_nonmarginable_long_uses_its_own_capacity(capacity_case):
         assess(capacity_case)
 
 
-def test_current_quote_exposure_cannot_bypass_notional_ceiling(capacity_case):
+def test_current_trade_exposure_cannot_bypass_notional_ceiling(capacity_case):
+    capacity_case[1].price = Decimal(101)
+    capacity_case[1].quote.ask_price = Decimal(100)
     capacity_case[2].portfolio.max_notional_exposure = 1005
     with pytest.raises(ValueError, match="notional"):
+        assess(capacity_case)
+
+
+def test_wide_iex_ask_does_not_price_notional(capacity_case):
+    # DHR 2026-11-19: IEX quoted 229.56/239.17 with the last trade at 229.59; pricing the notional at the ask
+    # refused a card sized to 98% of the per-trade cap. The limit and the last trade price it.
+    context, config = capacity_case[1], capacity_case[2]
+    context.quote.ask_price = Decimal(110)
+    config.sizing.max_trade_notional_cap = 1005
+    result = assess(capacity_case)
+    assert result.aggregate_notional == Decimal(1000)
+    context.price = Decimal(101)
+    with pytest.raises(ValueError, match="per-trade notional cap"):
+        assess(capacity_case)
+
+
+def test_short_notional_counts_the_bid(capacity_case):
+    # A sell limit fills at the bid; a bid above a staler trade and the limit prices the short's exposure.
+    order, context, config, _ = capacity_case
+    order.direction, order.side, order.stop_loss, order.take_profit = "SHORT", "SELL", 105, 90
+    context.quote.bid_price, context.quote.ask_price = Decimal(100), Decimal(101)
+    config.sizing.max_trade_notional_cap = 1005
+    assert assess(capacity_case).aggregate_notional == Decimal(1000)
+    context.quote.bid_price = Decimal(101)
+    with pytest.raises(ValueError, match="per-trade notional cap"):
         assess(capacity_case)
 
 
@@ -144,10 +171,54 @@ def test_current_quote_exposure_cannot_bypass_notional_ceiling(capacity_case):
 def test_age_covers_entire_acquisition_and_market_observations(capacity_case, clock):
     context = capacity_case[1]
     if clock == "quote":
-        context.quote.timestamp -= timedelta(minutes=5)
+        context.quote.timestamp -= timedelta(minutes=6)
+    elif clock == "trade_timestamp":
+        context.trade_timestamp -= timedelta(minutes=6)
     else:
         setattr(context, clock, getattr(context, clock) - timedelta(minutes=5))
     with pytest.raises(ValueError, match="stale|expired"):
+        assess(capacity_case)
+
+
+def test_trade_older_than_quote_limit_but_within_trade_limit_is_admitted(capacity_case):
+    context = capacity_case[1]
+    context.trade_timestamp -= timedelta(seconds=120)
+    context.quote.timestamp -= timedelta(seconds=1)
+    assess(capacity_case)
+
+
+def test_trade_older_than_trade_limit_is_refused(capacity_case):
+    capacity_case[1].trade_timestamp -= timedelta(seconds=301)
+    with pytest.raises(ValueError, match="Market trade is stale"):
+        assess(capacity_case)
+
+
+def test_quote_older_than_a_minute_but_within_quote_limit_is_admitted(capacity_case):
+    # ASND, 2026-11-16: a standing IEX quote 81 s old and a 108 s old trade refused a PEAD auto-entry.
+    context = capacity_case[1]
+    context.quote.timestamp -= timedelta(seconds=81)
+    context.trade_timestamp -= timedelta(seconds=108)
+    assess(capacity_case)
+
+
+def test_quote_older_than_quote_limit_is_refused(capacity_case):
+    # The quote is the liveness evidence: a trade inside its 300 s limit does not rescue a 121 s quote.
+    context = capacity_case[1]
+    context.quote.timestamp -= timedelta(seconds=121)
+    context.trade_timestamp -= timedelta(seconds=1)
+    with pytest.raises(ValueError, match="Market quote is stale"):
+        assess(capacity_case)
+
+
+def test_future_quote_beyond_skew_is_refused(capacity_case):
+    capacity_case[1].quote.timestamp += timedelta(seconds=5)
+    with pytest.raises(ValueError, match="Market quote is stale"):
+        assess(capacity_case)
+
+
+def test_future_trade_beyond_skew_is_refused(capacity_case):
+    capacity_case[1].trade_timestamp += timedelta(seconds=2)
+    with pytest.raises(ValueError, match="Market trade is stale"):
         assess(capacity_case)
 
 
@@ -245,12 +316,24 @@ def test_exact_protected_position_retains_original_risk_and_mark_to_stop_givebac
     assert assess(protected_capacity_case, [reservation()]).aggregate_stop_risk == Decimal(200)
 
 
-@pytest.mark.parametrize("fill_price", [None, "0", "99", "101"])
+@pytest.mark.parametrize("fill_price", [None, "0", "99", "101", "100.001"])
 def test_current_inventory_requires_compatible_confirmed_entry_basis(protected_capacity_case, fill_price):
     context = protected_capacity_case[1]
     context.orders = (context.orders[0].model_copy(update={"average_fill_price": fill_price}), *context.orders[1:])
     with pytest.raises(ValueError, match="basis|ownership"):
         assess(protected_capacity_case, [reservation()])
+
+
+def test_broker_rounding_of_a_multi_price_entry_average_is_the_same_basis(protected_capacity_case):
+    # DIS, 2026-11-17: fills 19 @ 121.15, 6 @ 121.13, 4 @ 121.12 and 2 @ 121.12 average 121.1403225806...;
+    # Alpaca reported the order's filled_avg_price as 121.140322 and the position's avg_entry_price as 121.140323.
+    context = protected_capacity_case[1]
+    context.positions = (context.positions[0].model_copy(update={"entry_price": 121.140323}),)
+    context.orders = (
+        context.orders[0].model_copy(update={"average_fill_price": "121.140322"}),
+        *context.orders[1:],
+    )
+    assess(protected_capacity_case, [reservation()])
 
 
 @pytest.mark.parametrize("change", ["no-bracket", "changed-limit", "missing-stop", "changed-stop"])

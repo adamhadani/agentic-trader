@@ -30,9 +30,11 @@ LEDGER_LOCK = "ledger"
 
 
 class EventKind(StrEnum):
+    OPERATIONS_SUMMARY = "operations_summary"
     ENTRY_CANCEL_REQUESTED = "entry_cancel_requested"
     ENTRY_CANCEL_RESOLVED = "entry_cancel_resolved"
     LIFETIME_REVIEW = "lifetime_review"
+    ENTRY_LIFETIME_MISSED = "entry_lifetime_missed"
     CLOSE_REQUESTED = "close_requested"
     CLOSE_RESOLVED = "close_resolved"
     ENTRY_QUEUED = "entry_queued"
@@ -63,18 +65,49 @@ class EventKind(StrEnum):
     CORPORATE_ACTIONS_CAPTURED = "corporate_actions_captured"
     CORPORATE_ACTIONS_CHECKED = "corporate_actions_checked"
     CARD_STATS_SNAPSHOT = "card_stats_snapshot"
+    INSIDER_FORM4_CAPTURE = "insider_form4_capture"
+    EARNINGS_CALENDAR_CAPTURE = "earnings_calendar_capture"
+    FILINGS_CAPTURE = "filings_capture"
+    RELEASE_EXIT_PASS = "release_exit_pass"
+    RELEASE_EXIT_CLOSE = "release_exit_close"
+    INSIDER_WATCH_DECISION = "insider_watch_decision"
+    AUTO_ENTRY_ATTEMPTED = "auto_entry_attempted"
+    WEEKLY_SCORECARD = "weekly_scorecard"
+
+
+class EntryTrigger(StrEnum):
+    """Who asked for an entry: an operator tap (or CLI) or the paper auto-entry sweep.
+
+    Stored on the entry work item and its ``entry_queued`` event; it names the caller and
+    changes no admission, risk or broker rule.
+    """
+
+    TAP = "tap"
+    AUTO = "auto"
 
 
 class ScanTrigger(StrEnum):
     """Which caller ran a full-universe scan; journaled in ``scan_candidates_ranked``.
 
-    It names the path a card came from and nothing else: ranking, budgets, sending, the
-    shadow ranker (``shadow_evidence``) and the card policy never read it.
+    It names the path a card came from. Ranking, budgets, sending, the shadow ranker
+    (``shadow_evidence``) and the card policy never read it; ``card_stats`` reads it only to keep
+    suggestion-scan candidates in its population.
     """
 
     SUGGESTION_SCAN = "suggestion_scan"  # the scheduled New York-time job (``make_suggestion_scan``)
     SWING_SCAN = "swing_scan"  # the daemon's interval job, including its run at daemon start
     OPERATOR_SCAN = "operator_scan"  # ``copilot scan`` / Telegram ``/scan`` with no symbols or timeframe
+
+
+class ScanStatus(StrEnum):
+    """How a journaled full-universe scan ended (``scan_candidates_ranked``'s ``status``).
+
+    A reader treats an event without ``status`` (journaled before this field) as ``completed``.
+    """
+
+    COMPLETED = "completed"  # ranked its candidates (possibly none) and sent or journaled them
+    MACRO_LOCKOUT = "macro_lockout"  # the whole-scan lockout gated it before any regime read
+    REGIME_UNAVAILABLE = "regime_unavailable"  # the regime read raised (a missing VIX, or any error)
 
 
 class RankedOutcome(StrEnum):
@@ -86,8 +119,11 @@ class RankedOutcome(StrEnum):
 
     SENT = "sent"
     LLM_VETOED = "llm_vetoed"
+    LLM_UNAVAILABLE = "llm_unavailable"  # the LLM gate errored or its breaker was open: a native card withheld
     CARD_POLICY_WITHHELD = "card_policy_withheld"
     BOOK_SIZING_BLOCKED = "book_sizing_blocked"  # enforce: the scaled default tier fell below the minimum size
+    JOURNAL_ONLY = "journal_only"  # a journal-only scan ranks and journals; it sends no card
+    BROAD_INDEX_EXCLUDED = "broad_index_excluded"  # a card-selection rule: no native card on a broad index ETF
 
 
 class NotificationKind(StrEnum):
@@ -97,6 +133,8 @@ class NotificationKind(StrEnum):
     SIGNAL = "signal"
     STOP = "stop"
     CARD_EXPIRED = "card_expired"
+    CARD_AUTO_ENTERED = "card_auto_entered"
+    OPERATIONS_SUMMARY = "operations_summary"
 
 
 @dataclass(frozen=True)

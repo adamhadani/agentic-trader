@@ -8,6 +8,7 @@ from agentic_trader.config import AppConfig
 from agentic_trader.constants import AssetClass
 from agentic_trader.research.alpha.models import RegistrySnapshot
 from agentic_trader.screeners.base import ScreenerCandidate
+from tests.calendar_doubles import clear_check, union_double
 
 
 @pytest.fixture
@@ -34,8 +35,7 @@ def mock_copilot():
     copilot.strategy_engine = MagicMock()
     copilot.session_provider = AsyncMock()
     copilot.session_provider.is_session_active.return_value = (True, "Session Active")
-    copilot.calendar = AsyncMock()
-    copilot.calendar.is_in_lockout_window.return_value = (False, None)
+    copilot.calendar = union_double(clear_check())
     copilot.regime_detector = AsyncMock()
     mock_regime = MagicMock()
     mock_regime.summary_text = "NORMAL"

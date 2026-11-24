@@ -293,3 +293,69 @@ def test_gex_cli_json_and_failure_exit(monkeypatch, fails):
     else:
         assert result.exit_code == 0
         assert GammaExposureProfile.model_validate_json(result.stdout).symbol == "SPY"
+
+
+def _gex_row(strike, oi, iv=0.2, dte=0.05, volume=10):
+    return {"strike": strike, "openInterest": oi, "volume": volume, "impliedVolatility": iv, "dte_years": dte}
+
+
+def test_missing_iv_excluded_from_gamma_not_defaulted():
+    calls = pd.DataFrame([_gex_row(500.0, 100), _gex_row(510.0, 300, iv=None)])
+    profile = GEXCalculator().calculate_gex("SPY", 500, calls, pd.DataFrame())
+    by_strike = {s.strike: s for s in profile.strikes}
+    assert by_strike[500.0].call_gex > 0
+    assert by_strike[510.0].call_gex == 0
+    assert (by_strike[510.0].call_oi, by_strike[510.0].call_volume) == (300, 10)
+    assert profile.call_wall_strike == 510.0
+    assert "calls: 1 contracts without impliedVolatility excluded from gamma exposure" in profile.data_quality_notes
+
+
+@pytest.mark.parametrize("bad", [None, float("nan"), 0.0, -1.0, float("inf")])
+def test_missing_expiry_excluded(bad):
+    puts = pd.DataFrame([_gex_row(500.0, 100), _gex_row(490.0, 200, dte=bad)])
+    profile = GEXCalculator().calculate_gex("SPY", 500, pd.DataFrame(), puts)
+    by_strike = {s.strike: s for s in profile.strikes}
+    assert by_strike[500.0].put_gex < 0
+    assert by_strike[490.0].put_gex == 0
+    assert by_strike[490.0].put_oi == 200
+    assert "puts: 1 contracts without dte_years excluded from gamma exposure" in profile.data_quality_notes
+    assert "NaN" not in profile.model_dump_json()
+
+
+def test_all_iv_missing_raises():
+    chain = pd.DataFrame([_gex_row(500.0, 100, iv=None)])
+    with pytest.raises(ValueError, match="no option contract has both implied volatility and expiry"):
+        GEXCalculator().calculate_gex("SPY", 500, chain, chain)
+    no_expiry = pd.DataFrame([{"strike": 500.0, "openInterest": 1, "impliedVolatility": 0.2}])
+    with pytest.raises(ValueError, match="no option contract has both"):
+        GEXCalculator().calculate_gex("SPY", 500, no_expiry, pd.DataFrame())
+
+
+def test_fetcher_surfaces_all_missing_iv_as_existing_error_path(monkeypatch):
+    class MockFastInfo:
+        last_price = 505.25
+
+    class MockChain:
+        calls = pd.DataFrame([{"strike": 510.0, "openInterest": 1500, "volume": 300}])
+        puts = pd.DataFrame([{"strike": 500.0, "openInterest": 2500, "volume": 600, "impliedVolatility": 0.0}])
+
+    class MockTicker:
+        def __init__(self, sym):
+            self.fast_info = MockFastInfo()
+            self.options = ["2026-09-25"]
+
+        def option_chain(self, date):
+            return MockChain()
+
+    monkeypatch.setattr(yf, "Ticker", MockTicker)
+    with pytest.raises(ValueError, match="no option contract has both implied volatility and expiry"):
+        OptionsDataFetcher(cache_ttl_seconds=5).fetch_and_calculate_gex("SPY", max_expirations=1)
+    # The CLI turns the ValueError into an ordinary "unavailable" exit; the message is the fixed string only.
+    result = CliRunner().invoke(cli, ["gex", "SPY"])
+    assert result.exit_code != 0
+    assert "GEX unavailable for SPY: no option contract has both implied volatility and expiry" in result.stderr
+
+
+def test_black_scholes_gamma_requires_iv():
+    with pytest.raises(TypeError):
+        black_scholes_gamma(100.0, 100.0, 0.1, 0.04)  # type: ignore[call-arg]

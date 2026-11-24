@@ -82,7 +82,7 @@ async def test_capacity_freshness_is_rechecked_by_final_transaction(risk_executi
     context = await copilot.broker.entry_market_context(request)
     context = context.model_copy(update={"requested_at": context.requested_at - timedelta(seconds=31)})
     reason = await store.begin_submission(
-        claim, copilot.config, risk_fingerprint=risk.fingerprint, broker_context=context
+        claim, copilot.config, preflight_risk_fingerprint=risk.fingerprint, broker_context=context
     )
     assert "stale" in reason.lower()
     assert (await store.get_work(item.id)).status == WorkStatus.CHECKING

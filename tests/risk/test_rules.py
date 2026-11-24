@@ -7,9 +7,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from agentic_trader.config import AppConfig
-from agentic_trader.constants import StrategyType
+from agentic_trader.config import AppConfig, FilingVetoConfig
+from agentic_trader.constants import CalendarStatus, StrategyType
 from agentic_trader.data.corporate_actions import CorporateAction, CorporateActionKind
+from agentic_trader.data.edgar_filings import FilingCategory, MatchedFiling
 from agentic_trader.risk import (
     Book,
     BookPosition,
@@ -21,14 +22,17 @@ from agentic_trader.risk import (
     aggregate_stop_risk,
     asset_class_notional,
     blocking_corporate_action,
+    blocking_filing,
     book_gates,
     concurrent_positions,
     corporate_action_block,
     correlation_group,
     drawdown_halt,
     earnings_days_out,
+    earnings_unverified_refuses,
     entry_session_open,
     exposure_known,
+    filing_veto_block,
     in_lockout_window,
     macro_lockout,
     meets_min_reward_risk,
@@ -251,19 +255,76 @@ def test_correlation_group_slash_prefix_and_empty_config():
     )
 
 
+VERIFIED = {"calendar_verified": True, "static_status": CalendarStatus.OK}
+
+
 def test_lockout_window_is_inclusive():
     event = datetime(2026, 10, 6, 12, 30, tzinfo=UTC)
     assert in_lockout_window(event - timedelta(minutes=60), event, 60, 30)
     assert in_lockout_window(event + timedelta(minutes=30), event, 60, 30)
     assert not in_lockout_window(event - timedelta(minutes=61), event, 60, 30)
     assert not in_lockout_window(event + timedelta(minutes=31), event, 60, 30)
-    inside = macro_lockout("CPI", event, event, limits())
+
+
+@pytest.mark.parametrize("policy", ["open", "closed"])
+def test_open_policy_or_verified_behaves_as_before(policy):
+    event = datetime(2026, 10, 6, 12, 30, tzinfo=UTC)
+    verified = limits(risk__macro_calendar_unknown=policy)
+    inside = macro_lockout("CPI", event, event, verified, **VERIFIED)
     assert inside.rule is RiskRule.MACRO_LOCKOUT and inside.reason == "Macro event lockout: CPI at 12:30 UTC."
     new_york = event.astimezone(ZoneInfo("America/New_York"))  # 08:30 EDT: the reason prints the UTC clock
-    assert macro_lockout("CPI", new_york, event, limits()).reason == "Macro event lockout: CPI at 12:30 UTC."
-    untitled = macro_lockout(None, event, event, limits())
+    assert (
+        macro_lockout("CPI", new_york, event, verified, **VERIFIED).reason == "Macro event lockout: CPI at 12:30 UTC."
+    )
+    untitled = macro_lockout(None, event, event, verified, **VERIFIED)
     assert untitled.reason == "Macro event lockout: scheduled release at 12:30 UTC."
-    assert macro_lockout(None, None, event, limits()) is None
+    assert macro_lockout(None, None, event, verified, **VERIFIED) is None
+    assert macro_lockout("CPI", event, event + timedelta(minutes=31), verified, **VERIFIED) is None
+    # Under the open policy an unverified calendar changes nothing: the window test alone decides.
+    unverified = {"calendar_verified": False, "static_status": CalendarStatus.EXPIRED}
+    open_limits = limits(risk__macro_calendar_unknown="open")
+    assert macro_lockout(None, None, event, open_limits, **unverified) is None
+    assert (
+        macro_lockout("CPI", event, event, open_limits, **unverified).reason == "Macro event lockout: CPI at 12:30 UTC."
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (
+            CalendarStatus.EXPIRED,
+            (
+                "Macro calendar unverified: the static tier-1 calendar is expired; new entries refused "
+                "(risk.macro_calendar_unknown: closed)."
+            ),
+        ),
+        (
+            CalendarStatus.INVALID,
+            (
+                "Macro calendar unverified: the static tier-1 calendar is invalid; new entries refused "
+                "(risk.macro_calendar_unknown: closed)."
+            ),
+        ),
+    ],
+)
+def test_closed_policy_refuses_unverified_before_the_window_test(status, expected):
+    event = datetime(2026, 10, 6, 12, 30, tzinfo=UTC)
+    closed = limits(risk__macro_calendar_unknown="closed")
+    # No event at all, an event far outside its window, and an event inside it: one refusal text.
+    for title, event_at in ((None, None), ("CPI", event + timedelta(days=3)), ("CPI", event)):
+        rejection = macro_lockout(title, event_at, event, closed, calendar_verified=False, static_status=status)
+        assert rejection == Rejection(RiskRule.MACRO_LOCKOUT, expected)
+
+
+def test_limits_snapshot_the_unknown_calendar_policy():
+    assert limits().macro_calendar_unknown == "open"
+    assert limits(risk__macro_calendar_unknown="closed").macro_calendar_unknown == "closed"
+
+
+def test_limits_snapshot_the_earnings_calendar_policy():
+    assert limits().earnings_calendar_unknown == "open"
+    assert limits(risk__earnings_calendar_unknown="closed").earnings_calendar_unknown == "closed"
 
 
 @pytest.mark.parametrize(
@@ -401,16 +462,113 @@ def test_blocking_corporate_action_sorts_matches_case_and_skips_dividends():
     )
 
 
+FV_TODAY = date(2026, 11, 6)
+FV_WINDOWS = {"late_filing": 30, "adverse_8k": 60, "offering": 7}
+_FV_FORMS = {FilingCategory.LATE_FILING: "NT 10-K", FilingCategory.ADVERSE_8K: "8-K", FilingCategory.OFFERING: "424B5"}
+
+
+def _filing(category, days_ago, symbol="ACME", *, items=(), accession="0000000001-26-000001"):
+    return MatchedFiling(
+        symbol=symbol,
+        category=category,
+        form=_FV_FORMS[category],
+        items=tuple(items),
+        filing_date=FV_TODAY - timedelta(days=days_ago),
+        acceptance=None,
+        accession=accession,
+    )
+
+
+@pytest.mark.parametrize(
+    ("category", "window"),
+    [(FilingCategory.LATE_FILING, 30), (FilingCategory.ADVERSE_8K, 60), (FilingCategory.OFFERING, 7)],
+)
+def test_filing_veto_windows_are_inclusive_at_the_edge_day(category, window):
+    edge, after, today = _filing(category, window), _filing(category, window + 1), _filing(category, 0)
+    assert blocking_filing((edge,), "ACME", FV_TODAY, windows=FV_WINDOWS) is edge
+    assert blocking_filing((today,), "ACME", FV_TODAY, windows=FV_WINDOWS) is today
+    assert blocking_filing((after,), "ACME", FV_TODAY, windows=FV_WINDOWS) is None
+    assert filing_veto_block((after,), "ACME", FV_TODAY, windows=FV_WINDOWS) is None
+    # A date after the decision date is never inside a window that runs back from it.
+    assert blocking_filing((_filing(category, -1),), "ACME", FV_TODAY, windows=FV_WINDOWS) is None
+    # The config's windows are keyed by FilingCategory; the rule reads them the same way.
+    config_windows = FilingVetoConfig().windows()
+    assert blocking_filing((edge,), "ACME", FV_TODAY, windows=config_windows) is edge
+    assert blocking_filing((after,), "ACME", FV_TODAY, windows=config_windows) is None
+
+
+def test_category_without_window_never_blocks():
+    windows = {"late_filing": 30, "adverse_8k": 60}
+    offering = _filing(FilingCategory.OFFERING, 0)
+    assert blocking_filing((offering,), "ACME", FV_TODAY, windows=windows) is None
+    assert filing_veto_block((offering,), "ACME", FV_TODAY, windows=windows) is None
+
+
+def test_the_newest_qualifying_filing_wins():
+    offering = _filing(FilingCategory.OFFERING, 3, accession="offering")
+    late = _filing(FilingCategory.LATE_FILING, 20, accession="late")
+    adverse = _filing(FilingCategory.ADVERSE_8K, 40, items=("2.05",), accession="adverse")
+    assert blocking_filing((adverse, late, offering), "ACME", FV_TODAY, windows=FV_WINDOWS) is offering
+    # A newer filing outside its own (shorter) window does not hide an older one inside its window.
+    stale_offering = _filing(FilingCategory.OFFERING, 10, accession="stale-offering")
+    assert blocking_filing((stale_offering, adverse), "ACME", FV_TODAY, windows=FV_WINDOWS) is adverse
+    # Same date: the first in the given (the capture's newest-first) order.
+    first, second = (
+        _filing(FilingCategory.LATE_FILING, 5, accession="a"),
+        _filing(FilingCategory.OFFERING, 5, accession="b"),
+    )
+    assert blocking_filing((first, second), "ACME", FV_TODAY, windows=FV_WINDOWS) is first
+
+
+def test_a_different_symbol_never_matches_and_symbols_match_case_insensitively():
+    late = _filing(FilingCategory.LATE_FILING, 2)
+    assert blocking_filing((late,), "OTHER", FV_TODAY, windows=FV_WINDOWS) is None
+    assert filing_veto_block((late,), "OTHER", FV_TODAY, windows=FV_WINDOWS) is None
+    assert blocking_filing((late,), " acme ", FV_TODAY, windows=FV_WINDOWS) is late
+    assert blocking_filing((), "ACME", FV_TODAY, windows=FV_WINDOWS) is None
+
+
+def test_filing_veto_rule_text():
+    adverse = _filing(FilingCategory.ADVERSE_8K, 30, items=("2.05", "9.01"))
+    rejection = filing_veto_block((adverse,), "acme", FV_TODAY, windows=FV_WINDOWS)
+    assert rejection is not None and rejection.rule == RiskRule.FILING_VETO == "filing_veto"
+    assert str(rejection) == (
+        "Filing veto: ACME filed 8-K Items 2.05, 9.01 on 2026-10-07 (30 days ago) — within the 60-day adverse_8k window."
+    )
+    late = _filing(FilingCategory.LATE_FILING, 0)
+    assert str(filing_veto_block((late,), "ACME", FV_TODAY, windows=FV_WINDOWS)) == (
+        "Filing veto: ACME filed NT 10-K on 2026-11-06 (today) — within the 30-day late_filing window."
+    )
+
+
 def test_risk_package_imports_no_transport_or_data_adapter():
     """Every entry rule is pure: importing ``agentic_trader.risk`` loads no provider adapter or data module."""
     script = (
         "import sys, agentic_trader.risk; "
         "loaded = sorted(m for m in sys.modules if m.startswith(('agentic_trader.transport', 'agentic_trader.data'))); "
         "assert 'agentic_trader.transport.alpaca' not in sys.modules, loaded; "
-        "assert 'agentic_trader.data.corporate_actions' not in sys.modules, loaded"
+        "assert 'agentic_trader.data.corporate_actions' not in sys.modules, loaded; "
+        "assert 'agentic_trader.data.filings_capture' not in sys.modules, loaded"
     )
     root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
         [sys.executable, "-c", script], cwd=root, check=False, capture_output=True, text=True, timeout=60
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("verified", "has_event", "days", "unknown", "expected"),
+    [
+        (False, False, 7, "closed", True),
+        (False, False, 7, "open", False),
+        (True, False, 7, "closed", False),
+        (False, True, 7, "closed", False),
+        (False, False, 0, "closed", False),
+    ],
+)
+def test_earnings_unverified_refuses(verified, has_event, days, unknown, expected):
+    assert (
+        earnings_unverified_refuses(verified=verified, has_event=has_event, blackout_days=days, unknown=unknown)
+        is expected
+    )

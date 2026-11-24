@@ -1,0 +1,259 @@
+{
+  "0000007431-26-000067": {
+    "document_type": "4",
+    "drops": {},
+    "filing_date": "10-SEP-2026",
+    "issuer_cik": 7431,
+    "transactions": []
+  },
+  "0000793074-26-000125": {
+    "document_type": "4/A",
+    "drops": {
+      "document_type": 5
+    },
+    "filing_date": "14-JUL-2026",
+    "issuer_cik": 793074,
+    "transactions": []
+  },
+  "0000880266-26-000070": {
+    "document_type": "4",
+    "drops": {},
+    "filing_date": "17-AUG-2026",
+    "issuer_cik": 880266,
+    "transactions": [
+      {
+        "code": "P",
+        "dollars": 100710.0,
+        "filing_date": "2026-08-17",
+        "owner_cik": 1694342,
+        "symbol": "AGCO",
+        "trans_date": "2026-08-14"
+      }
+    ]
+  },
+  "0000890926-26-000136": {
+    "document_type": "4/A",
+    "drops": {
+      "document_type": 3
+    },
+    "filing_date": "07-AUG-2026",
+    "issuer_cik": 890926,
+    "transactions": []
+  },
+  "0000905148-26-004073": {
+    "document_type": "4",
+    "drops": {
+      "owner_role": 6
+    },
+    "filing_date": "03-SEP-2026",
+    "issuer_cik": 1031203,
+    "transactions": []
+  },
+  "0000905148-26-004111": {
+    "document_type": "4",
+    "drops": {
+      "owner_role": 27
+    },
+    "filing_date": "08-SEP-2026",
+    "issuer_cik": 1031203,
+    "transactions": []
+  },
+  "0000919574-26-006250": {
+    "document_type": "4",
+    "drops": {},
+    "filing_date": "11-SEP-2026",
+    "issuer_cik": 1596993,
+    "transactions": [
+      {
+        "code": "S",
+        "dollars": 649585.5,
+        "filing_date": "2026-09-11",
+        "owner_cik": 1638233,
+        "symbol": "LPG",
+        "trans_date": "2026-09-10"
+      }
+    ]
+  },
+  "0000921895-26-002305": {
+    "document_type": "4",
+    "drops": {},
+    "filing_date": "25-AUG-2026",
+    "issuer_cik": 1704715,
+    "transactions": [
+      {
+        "code": "P",
+        "dollars": 2089200.0,
+        "filing_date": "2026-08-25",
+        "owner_cik": 24046,
+        "symbol": "AMR",
+        "trans_date": "2026-08-21"
+      }
+    ]
+  },
+  "0000921895-26-002677": {
+    "document_type": "4",
+    "drops": {
+      "owner_role": 2
+    },
+    "filing_date": "29-SEP-2026",
+    "issuer_cik": 1651562,
+    "transactions": []
+  },
+  "0001193125-26-401049": {
+    "document_type": "4",
+    "drops": {
+      "owner_role": 2
+    },
+    "filing_date": "24-SEP-2026",
+    "issuer_cik": 1889539,
+    "transactions": []
+  },
+  "0001225208-26-008014": {
+    "document_type": "4",
+    "drops": {},
+    "filing_date": "30-SEP-2026",
+    "issuer_cik": 39368,
+    "transactions": [
+      {
+        "code": "P",
+        "dollars": 98820.0,
+        "filing_date": "2026-09-30",
+        "owner_cik": 1275967,
+        "symbol": "FUL",
+        "trans_date": "2026-09-28"
+      }
+    ]
+  },
+  "0001247154-26-000005": {
+    "document_type": "4",
+    "drops": {},
+    "filing_date": "16-SEP-2026",
+    "issuer_cik": 1334036,
+    "transactions": [
+      {
+        "code": "P",
+        "dollars": 99226.2,
+        "filing_date": "2026-09-16",
+        "owner_cik": 1247154,
+        "symbol": "CROX",
+        "trans_date": "2026-09-15"
+      }
+    ]
+  },
+  "0001271373-26-000011": {
+    "document_type": "4",
+    "drops": {
+      "owner_role": 1
+    },
+    "filing_date": "18-SEP-2026",
+    "issuer_cik": 851968,
+    "transactions": []
+  },
+  "0001290936-26-000010": {
+    "document_type": "4",
+    "drops": {},
+    "filing_date": "28-AUG-2026",
+    "issuer_cik": 1089063,
+    "transactions": [
+      {
+        "code": "P",
+        "dollars": 2222240.0,
+        "filing_date": "2026-08-28",
+        "owner_cik": 1290936,
+        "symbol": "DKS",
+        "trans_date": "2026-08-27"
+      }
+    ]
+  },
+  "0001437749-26-026114": {
+    "document_type": "4",
+    "drops": {
+      "owner_role": 1
+    },
+    "filing_date": "06-AUG-2026",
+    "issuer_cik": 1811074,
+    "transactions": []
+  },
+  "0001437749-26-028127": {
+    "document_type": "4",
+    "drops": {
+      "owner_role": 1
+    },
+    "filing_date": "17-AUG-2026",
+    "issuer_cik": 1811074,
+    "transactions": []
+  },
+  "0001437749-26-030537": {
+    "document_type": "4",
+    "drops": {
+      "owner_role": 1
+    },
+    "filing_date": "16-SEP-2026",
+    "issuer_cik": 1811074,
+    "transactions": []
+  },
+  "0001807641-26-000007": {
+    "document_type": "4",
+    "drops": {},
+    "filing_date": "21-JUL-2026",
+    "issuer_cik": 23217,
+    "transactions": [
+      {
+        "code": "P",
+        "dollars": 510650.0,
+        "filing_date": "2026-07-21",
+        "owner_cik": 1807641,
+        "symbol": "CAG",
+        "trans_date": "2026-07-17"
+      }
+    ]
+  },
+  "0001868941-26-000050": {
+    "document_type": "4",
+    "drops": {},
+    "filing_date": "22-SEP-2026",
+    "issuer_cik": 1868941,
+    "transactions": [
+      {
+        "code": "P",
+        "dollars": 73600.0,
+        "filing_date": "2026-09-22",
+        "owner_cik": 1205068,
+        "symbol": "FLNC",
+        "trans_date": "2026-09-21"
+      }
+    ]
+  },
+  "0002010019-26-000016": {
+    "document_type": "4",
+    "drops": {},
+    "filing_date": "06-JUL-2026",
+    "issuer_cik": 1604821,
+    "transactions": [
+      {
+        "code": "S",
+        "dollars": 82218.0,
+        "filing_date": "2026-07-06",
+        "owner_cik": 2010019,
+        "symbol": "NTRA",
+        "trans_date": "2026-07-01"
+      },
+      {
+        "code": "S",
+        "dollars": 26719.0,
+        "filing_date": "2026-07-06",
+        "owner_cik": 2010019,
+        "symbol": "NTRA",
+        "trans_date": "2026-07-01"
+      },
+      {
+        "code": "S",
+        "dollars": 709774.0,
+        "filing_date": "2026-07-06",
+        "owner_cik": 2010019,
+        "symbol": "NTRA",
+        "trans_date": "2026-07-01"
+      }
+    ]
+  }
+}

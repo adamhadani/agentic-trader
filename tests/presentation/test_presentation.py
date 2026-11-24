@@ -81,6 +81,15 @@ def test_terminal_formatter_status():
     assert "#42 [EXECUTED]" in output
 
 
+def test_status_reports_render_the_auto_entry_line_only_when_set():
+    quiet = PortfolioStatusReport(cash_base=1.0)
+    assert "Auto-entry" not in TerminalFormatter.format_status_dashboard(quiet)
+    assert "Auto-entry" not in TelegramHtmlFormatter.format_status_html(quiet)
+    report = PortfolioStatusReport(cash_base=1.0, auto_entry="Auto-entry: paper (on)")
+    assert "Auto-entry: paper (on)" in TerminalFormatter.format_status_dashboard(report)
+    assert "Auto-entry: paper (on)" in TelegramHtmlFormatter.format_status_html(report)
+
+
 def test_telegram_html_formatter():
     pos = PositionView(
         id=1,
@@ -147,6 +156,7 @@ def test_telegram_html_formatter():
         min_rr_threshold=2.0,
         timestamp=datetime.now(UTC),
         summary_text="Market conditions normal.",
+        risk_multiplier=1.0,
     )
     regime_html = TelegramHtmlFormatter.format_macro_dashboard_html(regime, required_rr=2.0)
     assert "NORMAL" in regime_html

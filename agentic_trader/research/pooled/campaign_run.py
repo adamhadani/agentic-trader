@@ -78,8 +78,12 @@ from agentic_trader.research.pooled.scoring import (
     event_coverage_document,
     event_inputs_document,
     formula_id,
+    insider_coverage_document,
+    insider_inputs_document,
     score_book,
     score_read_document,
+    short_coverage_document,
+    short_inputs_document,
 )
 from agentic_trader.research.setups.study import _finite_json
 from agentic_trader.storage.alpha import POOLED_CONFIRMATION_KEY
@@ -241,6 +245,12 @@ def frozen_document(expression: str, protocol: CampaignProtocol) -> dict:
     events = event_inputs_document(protocol)
     if events is not None:  # an event-conditioned score is a different formula from the same text on bars alone
         body = {**body, "score_inputs": protocol.score_inputs, "event_inputs": events}
+    short = short_inputs_document(protocol)
+    if short is not None:  # a short-volume score is a different formula from the same text on bars alone
+        body = {**body, "score_inputs": protocol.score_inputs, "short_inputs": short}
+    insider = insider_inputs_document(protocol)
+    if insider is not None:  # an insider score is a different formula from the same text on bars alone
+        body = {**body, "score_inputs": protocol.score_inputs, "insider_inputs": insider}
     identity = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {"formula": body, "identity": identity}
 
@@ -373,6 +383,8 @@ async def execute_campaign(
             "score_inputs": protocol.score_inputs,
             "score_read": score_read_document(protocol),
             "event_inputs": event_inputs_document(protocol),
+            "short_inputs": short_inputs_document(protocol),
+            "insider_inputs": insider_inputs_document(protocol),
             "gates": {
                 name: {"status": gate.get("status"), "cube_sha256": gate.get("cube_sha256")}
                 for name, gate in gates.items()
@@ -588,8 +600,12 @@ async def _run_campaign(
         "score_inputs": protocol.score_inputs,
         "score_read": score_read_document(protocol),
         "event_inputs": event_inputs_document(protocol),
+        "short_inputs": short_inputs_document(protocol),
+        "insider_inputs": insider_inputs_document(protocol),
         "first_finite_session": first_finite,
         "event_coverage": event_coverage_document(built),
+        "short_coverage": short_coverage_document(built),
+        "insider_coverage": insider_coverage_document(built),
         "symbols_without_hourly": (
             sum(1 for symbol in built.cube.symbols if symbol not in built.hourly)
             if protocol.score_inputs == "hourly"

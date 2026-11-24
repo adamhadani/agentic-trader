@@ -24,12 +24,15 @@ from agentic_trader.cli.main import cli
 from agentic_trader.config import ScanBudget
 from agentic_trader.constants import AssetClass, SignalStatus
 from agentic_trader.data.corporate_actions import CorporateAction, CorporateActionKind, CorporateActionsLookup
+from agentic_trader.data.edgar_filings import FilingCategory, MatchedFiling
+from agentic_trader.data.filings_capture import FilingsLookup
 from agentic_trader.execution.durable import EventKind, WorkKind
 from agentic_trader.execution.freshness import ExecutionReply
 from agentic_trader.market.session import ET_TZ, MarketSessionInfo, MarketSessionType
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.storage.models import SignalRecord
 from tests.agent.test_scan_budget import budget_desk, evaluation  # noqa: F401  (pytest fixture + helper)
+from tests.calendar_doubles import clear_check, lockout_check, union_double
 
 
 NEXT_OPEN = datetime(2026, 9, 24, 13, 30, tzinfo=UTC)
@@ -91,8 +94,7 @@ def tap_desk(app_config, temp_db, mock_notifier):
     copilot.session_provider.get_session_info.return_value = session_info(
         next_close=datetime.now(UTC) + timedelta(hours=2)
     )
-    copilot.calendar = AsyncMock()
-    copilot.calendar.is_in_lockout_window.return_value = (False, None)
+    copilot.calendar = union_double(clear_check())
     copilot.regime_detector = AsyncMock()
     copilot.regime_detector.get_regime.return_value = SimpleNamespace(
         summary_text="calm", breakout_allowed=True, min_rr_threshold=2.0, risk_multiplier=1.0
@@ -497,12 +499,160 @@ async def test_corporate_action_evidence_that_does_not_cover_the_symbol_never_re
     assert (await temp_db.get_signal_by_id(sid))["status"] != SignalStatus.EXPIRED
 
 
+def filings_pass(*, covered=("SPY",), days_ago=2, fetched_at=None):
+    """One journaled filings-capture payload with a ``424B5`` offering by SPY ``days_ago`` days back."""
+    filed = datetime.now(UTC).astimezone(ET_TZ).date() - timedelta(days=days_ago)
+    offering = MatchedFiling(
+        symbol="SPY",
+        category=FilingCategory.OFFERING,
+        form="424B5",
+        items=(),
+        filing_date=filed,
+        acceptance=None,
+        accession="0000884394-26-000042",
+    )
+    return {
+        "requested": ["SPY", "QQQ"],
+        "covered": list(covered),
+        "unmapped": [],
+        "failed": {},
+        "fetched_at": (fetched_at or datetime.now(UTC)).isoformat(),
+        "filings": {"SPY": [offering.to_payload()]} if "SPY" in covered else {},
+    }
+
+
+@pytest.mark.parametrize("mode", ["enforce", "preview"])
+async def test_filing_veto_blocks_a_fresh_long_card_only_under_enforce(tap_desk, temp_db, mode):
+    sid = await record_card(temp_db)
+    tap_desk.config.filing_veto.entry_block = mode
+    tap_desk.filings_capture = AsyncMock()
+    tap_desk.filings_capture.latest.return_value = filings_pass()
+
+    reply = await tap_desk.execute_signal_by_id(sid)
+
+    if mode == "enforce":
+        assert reply.offer_reevaluate is True and "Filing veto:" in reply.text
+        (event,) = await tap_events(temp_db, sid)
+        assert event["payload"]["reason"].startswith("Filing veto: SPY filed 424B5 on ")
+        assert event["payload"]["reason"].endswith("(2 days ago) — within the 7-day offering window.")
+        assert (await temp_db.get_signal_by_id(sid))["status"] == SignalStatus.EXPIRED
+        tap_desk.entry_service.authorize.assert_not_awaited()
+    else:
+        tap_desk.entry_service.authorize.assert_awaited_once()
+        tap_desk.filings_capture.latest.assert_not_awaited()  # preview never reads at tap time
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        filings_pass(covered=("QQQ",)),  # uncovered
+        filings_pass(fetched_at=datetime.now(UTC) - timedelta(days=5)),  # stale
+        None,  # unavailable: no pass yet
+        filings_pass(days_ago=8),  # covered, outside the 7-day offering window
+    ],
+)
+async def test_filing_evidence_that_cannot_block_never_refuses_a_tap(tap_desk, temp_db, payload):
+    sid = await record_card(temp_db)
+    tap_desk.config.filing_veto.entry_block = "enforce"
+    tap_desk.filings_capture = AsyncMock()
+    tap_desk.filings_capture.latest.return_value = payload
+
+    await tap_desk.execute_signal_by_id(sid)
+
+    tap_desk.filings_capture.latest.assert_awaited_once()
+    tap_desk.entry_service.authorize.assert_awaited_once()
+    assert (await temp_db.get_signal_by_id(sid))["status"] != SignalStatus.EXPIRED
+
+
+async def test_a_failed_filings_read_at_tap_time_never_refuses(tap_desk, temp_db):
+    sid = await record_card(temp_db)
+    tap_desk.config.filing_veto.entry_block = "enforce"
+    tap_desk.filings_capture = AsyncMock()
+    tap_desk.filings_capture.latest.side_effect = RuntimeError("journal down")
+
+    await tap_desk.execute_signal_by_id(sid)
+
+    tap_desk.entry_service.authorize.assert_awaited_once()
+
+
+async def test_the_tap_time_filing_veto_never_refuses_a_short(tap_desk):
+    tap_desk.config.filing_veto.entry_block = "enforce"
+    tap_desk.filings_capture = AsyncMock()
+    tap_desk.filings_capture.latest.return_value = filings_pass()
+    now = datetime.now(UTC)
+
+    assert await tap_desk._filing_veto_reason("SPY", "SHORT", now, _scope_row()) is None
+    tap_desk.filings_capture.latest.assert_not_awaited()
+    assert (await tap_desk._filing_veto_reason("SPY", "long", now, _scope_row()) or "").startswith(
+        "Filing veto: SPY filed 424B5"
+    )
+
+
+def _scope_row(strategy="TREND_PULLBACK", *, probe=False, alpha_version=None, alpha_policy=None):
+    return {
+        "strategy": strategy,
+        "decision_provenance": {"paper_probe": probe} if probe else {},
+        "alpha_version": alpha_version,
+        "alpha_policy": alpha_policy,
+    }
+
+
+async def test_the_tap_filing_veto_exempts_every_non_native_scope_without_reading(tap_desk):
+    from agentic_trader.execution.release_exit import NATIVE_SCOPE  # noqa: PLC0415
+    from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG  # noqa: PLC0415
+    from agentic_trader.research.apriori.watch_contract import INSIDER_WATCH_STRATEGY_ID  # noqa: PLC0415
+
+    tap_desk.config.filing_veto.entry_block = "enforce"
+    tap_desk.filings_capture = AsyncMock()
+    tap_desk.filings_capture.latest.return_value = filings_pass()
+    now = datetime.now(UTC)
+    rows = {
+        "pead": _scope_row(tap_desk.pead_source.strategy_id),
+        "insider_watch": _scope_row(INSIDER_WATCH_STRATEGY_ID),
+        "probe": {**_scope_row(), "decision_provenance": {PAPER_PROBE_TAG: True}},
+        "alpha": _scope_row(alpha_version="a1"),
+        "alpha_policy_only": _scope_row(alpha_policy={"k": 1}),
+    }
+    for scope, row in rows.items():
+        assert tap_desk._release_exit_scope(row) not in (NATIVE_SCOPE, None), scope
+        assert await tap_desk._filing_veto_reason("SPY", "LONG", now, row) is None, scope
+    tap_desk.filings_capture.latest.assert_not_awaited()
+    native = _scope_row()
+    assert tap_desk._release_exit_scope(native) == NATIVE_SCOPE
+    assert (await tap_desk._filing_veto_reason("SPY", "LONG", now, native) or "").startswith("Filing veto: SPY")
+
+
+def test_the_evaluator_and_tap_gate_exempt_the_same_cards(tap_desk):
+    from agentic_trader.agent.filing_veto import filing_veto_exempt  # noqa: PLC0415
+    from agentic_trader.execution.release_exit import NATIVE_SCOPE  # noqa: PLC0415
+    from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG  # noqa: PLC0415
+    from agentic_trader.research.apriori.watch_contract import INSIDER_WATCH_STRATEGY_ID  # noqa: PLC0415
+    from agentic_trader.screeners.base import ScreenerCandidate  # noqa: PLC0415
+
+    def candidate(strategy="TREND_PULLBACK", **extra):
+        return ScreenerCandidate(
+            contract="SPY", asset_class=AssetClass.EQUITY, timeframe="4h", strategy=strategy, direction="LONG",
+            current_price=100.0, ema_20=1.0, ema_50=1.0, ema_200=1.0, rsi_14=1.0, atr_14=1.0,
+            candle_timestamp="t", recent_swing_low=1.0, recent_swing_high=2.0, trigger_detail="d", **extra,
+        )  # fmt: skip
+
+    pead = tap_desk.pead_source.strategy_id
+    cases = [
+        (candidate(), _scope_row()),
+        (candidate(pead, catalog_event={"k": 1}, probe=True, alpha_policy={"k": 1}, alpha_version="v"),
+         {**_scope_row(pead), "decision_provenance": {PAPER_PROBE_TAG: True}, "alpha_policy": {"k": 1}, "alpha_version": "v"}),
+        (candidate(INSIDER_WATCH_STRATEGY_ID, catalog_event={"k": 1}, alpha_policy={"k": 1}), _scope_row(INSIDER_WATCH_STRATEGY_ID, alpha_policy={"k": 1})),
+        (candidate(probe=True), {**_scope_row(), "decision_provenance": {PAPER_PROBE_TAG: True}}),
+        (candidate(alpha_version="a1", alpha_policy={"k": 1}), _scope_row(alpha_version="a1", alpha_policy={"k": 1})),
+        (candidate(alpha_policy={"k": 1}), _scope_row(alpha_policy={"k": 1})),
+    ]  # fmt: skip
+    for cand, row in cases:
+        assert filing_veto_exempt(cand) == (tap_desk._release_exit_scope(row) != NATIVE_SCOPE), cand.strategy
+
+
 async def test_macro_gate_turns_a_fresh_card_into_missed(tap_desk, temp_db):
     sid = await record_card(temp_db)
-    tap_desk.calendar.is_in_lockout_window.return_value = (
-        True,
-        SimpleNamespace(title="CPI", timestamp=datetime.now(UTC)),  # the rule re-judges the window: an aware time
-    )
+    tap_desk.calendar.check.return_value = lockout_check("CPI", datetime(2026, 10, 14, 12, 30, tzinfo=UTC))
 
     reply = await tap_desk.execute_signal_by_id(sid)
 
@@ -565,6 +715,42 @@ async def test_scan_reads_corporate_actions_once_and_records_each_cards_block(bu
     assert len(calls) > 5 and all(c.kwargs["corporate_actions"] is lookup for c in calls)
     sent = await temp_db.get_recent_signals(limit=10)
     assert len(sent) == 2 and all(s["decision_provenance"]["corporate_actions"] == block for s in sent)
+
+
+async def test_scan_reads_filings_once_and_records_each_cards_block(budget_desk, temp_db):  # noqa: F811
+    budget_desk.config.filing_veto.entry_block = "preview"
+    budget_desk.filings_capture = AsyncMock()
+    budget_desk.filings_capture.latest.return_value = None
+    block = {"status": "unavailable", "mode": "preview"}
+
+    async def evaluate(cand, **kwargs):
+        return SimpleNamespace(**{**vars(evaluation(cand)), "filings": block})
+
+    budget_desk.evaluator.evaluate_candidate = AsyncMock(side_effect=evaluate)
+
+    await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.SESSION)
+
+    budget_desk.filings_capture.latest.assert_awaited_once()  # one read for COLLECT and SEND
+    calls = budget_desk.evaluator.evaluate_candidate.await_args_list
+    lookups = {id(c.kwargs["filings"]) for c in calls}
+    assert len(calls) > 5 and len(lookups) == 1
+    lookup = calls[0].kwargs["filings"]
+    assert isinstance(lookup, FilingsLookup) and lookup.status == "unavailable"
+    sent = await temp_db.get_recent_signals(limit=10)
+    assert len(sent) == 2 and all(s["decision_provenance"]["filings"] == block for s in sent)
+
+
+async def test_scan_with_the_filing_veto_off_reads_nothing(budget_desk, temp_db):  # noqa: F811
+    budget_desk.config.filing_veto.entry_block = "off"
+    budget_desk.filings_capture = AsyncMock()
+
+    await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.SESSION)
+
+    budget_desk.filings_capture.latest.assert_not_awaited()
+    calls = budget_desk.evaluator.evaluate_candidate.await_args_list
+    assert calls and all(c.kwargs["filings"] is None for c in calls)
+    sent = await temp_db.get_recent_signals(limit=10)
+    assert sent and all(s["decision_provenance"]["filings"] is None for s in sent)
 
 
 async def test_dedup_exemption_applies_to_the_exact_setup_only(budget_desk, temp_db):  # noqa: F811

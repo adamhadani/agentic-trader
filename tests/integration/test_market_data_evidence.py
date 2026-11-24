@@ -321,3 +321,23 @@ def test_crypto_capture_preserves_its_own_endpoint_and_feed(captured_provider):
     page = read_reference(result["pages"][0])
     assert page["path"] == "/v1beta3/crypto/us/bars"
     assert page["parameters"]["symbols"] == "BTC/USD"
+
+
+def test_a_delayed_provider_sends_and_records_the_clamped_end(captured_provider):
+    venue, broker, provider = captured_provider
+    now = pd.Timestamp("2026-11-09T15:35:00Z").to_pydatetime()
+    through = now - pd.Timedelta(minutes=16)
+    delayed = AlpacaDataProvider(
+        stock_client=broker.data_client,
+        evidence=provider.evidence,
+        end_delay=pd.Timedelta(minutes=16).to_pytimedelta(),
+        clock=lambda: now,
+    )
+    venue.override = lambda *args: (200, {"bars": {"SPY": [row()]}, "next_page_token": None})
+
+    frame = delayed.fetch_bars("SPY", "1h", start=START.to_pydatetime(), end=now)
+
+    [(_, _, query, _)] = venue.calls
+    assert pd.Timestamp(query["end"][0]) == through and query["feed"] == ["sip"]
+    manifest = read_reference(read_reference(frame.attrs["evidence"])["manifest"])
+    assert manifest["request"]["end_inclusive"] == through.isoformat()

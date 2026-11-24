@@ -19,17 +19,29 @@ its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID 
 60 seconds; the weekly `com.agentictrader.alphaminer` job is retired (see below). Do not start a second daemon,
 `listen`, or Compose service while the installed poller owns the bot.
 
-- Swing scans: every four hours from startup, immediate first run, all timeframes,
-  the whole `universe:` when the equity session is open. The first run at daemon start is
-  deliberate (the `scan` readiness component needs an observation in each run). A run that
-  passes the session gate and ranks at least one native candidate journals its ranking as
-  `scan_candidates_ranked` with `trigger=swing_scan`.
+- Swing scans: every four hours from startup, immediate first run, all timeframes, the whole
+  `universe:`. They are **journal-only** (`ScanBudget.JOURNAL_ONLY`): they collect and rank as any
+  budgeted scan does, then journal each native candidate as `scan_candidates_ranked` with
+  `trigger=swing_scan`, `budget=journal_only` and outcome `journal_only`. They send no card, call no
+  LLM, record no signal and spend no card budget, so the run at daemon start cannot take a session
+  slot (the defect behind 61 restarts in 33 days). That run is kept, deliberately: it gives the `scan`
+  readiness component an observation in each daemon run (`scan_max_age_seconds` is not
+  session-aware). The suggestion scans own the cards.
+  The job has no session gate of its own, but `run_scan` applies its shared `all` gate: open whenever
+  futures or equities trade. When both are closed (weekends, holidays, the daily futures halt) the scan
+  ends there with `Session gate checked: Primary markets closed …`. In futures-only hours it reaches
+  contract selection (`_select_contracts`), which drops closed-session equities and the futures Alpaca
+  cannot execute, and ends as `Idle: nothing eligible`. Either way SCAN is observed ready and nothing
+  is journaled.
 - Suggestion scans: cron on the New York clock, weekdays, at
   `scheduler.suggestion_scan_times_et` (see below). They also add the dynamic
   suggestion universe.
-- Intraday scans: every 15 minutes from startup, session gated, `15m` filter,
-  restricted to the contracts configured explicitly under `contracts:`
-  (`AppConfig.non_universe_contracts`) — never the universe.
+- Intraday scans: **disabled in the shipped config** (`scheduler.intraday_scan_enabled: false`): with
+  Alpaca execution the explicit `contracts:` are idle by construction and each run still costs bar
+  requests and the scan lock. When enabled: every 15 minutes from startup, session gated, `15m`
+  filter, restricted to the contracts configured explicitly under `contracts:`
+  (`AppConfig.non_universe_contracts`) — never the universe — and journal-only
+  (`ScanBudget.JOURNAL_ONLY`), so it can send no card. A restricted scan journals nothing.
 - Position monitor: every minute, with additional broker stream wakeups.
 - Macro briefing: weekdays 12:30. Automatic legacy retuning is removed. Cron schedules
   inherit scheduler/system timezone. Intervals are not candle-close aligned.
@@ -40,8 +52,13 @@ its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID 
   predeclared pooled campaigns under operator approval
   ([pooled mining](alpha-pooled-mining.md)). The manual `alpha mine` command remains.
 
-Scans stage suggestions; an operator approves entry orders. Configuration loads at construction. The journal-backed alpha registry reloads
-atomically between scans; external config edits still require restart.
+Scans stage suggestions; on a live or simulator account an operator approves entry orders. On the Alpaca
+paper account with `execution.auto_entry: paper` (shipped) the scheduled suggestion job also enters its sent
+native cards that the LLM gate approved itself, and, with `execution.auto_entry_catalog` (shipped `["pead",
+"insider_watch"]`), its PEAD-probe and insider-watch cards with no LLM approval ([auto-entry
+runbook](#auto-entry-paper)); a `--no-llm` daemon's native cards and every registry alpha card stay tap-only.
+Configuration loads at construction. The
+journal-backed alpha registry reloads atomically between scans; external config edits still require restart.
 
 ### Suggestion scans
 
@@ -149,9 +166,10 @@ name (see below). The design and the filter order are in
   completed, finite daily sessions must reach the threshold. The threshold is the
   `min_dollar_volume_static_percentile` (default 0.25) percentile of the same median
   for every static universe equity, computed in the same scan from the same bars.
-  - Same bars means the same feed and the same completed-rows rule. The desk's
-    `market_data.alpaca_feed` is IEX, whose volume is a few percent of consolidated
-    volume. An absolute dollar floor would be miscalibrated: the first real dry run
+  - Same bars means the same feed and the same completed-rows rule: the scan-bar feed,
+    `market_data.bars_feed` ([scan bars on delayed SIP](#scan-bars-on-delayed-sip)). Until
+    2026-11-07 that was IEX, whose volume is a few percent of consolidated volume. An
+    absolute dollar floor would be miscalibrated: the first real dry run, on IEX,
     excluded SHOP, SOFI, IONQ, CRWV and RKLB at $50M.
   - `min_median_dollar_volume` is an optional absolute floor in the feed's own units.
     It defaults to 0; when set, the larger of the two applies.
@@ -237,9 +255,15 @@ calendar (same style as the ForexFactory macro feed: short timeout, per-date cac
 logged warning on failure) and rejects a candidate whose next report lands within
 `risk.earnings_blackout_days` calendar days (default 7; 0 disables the gate and the
 lookup entirely). A card that clears the gate carries a one-line `Earnings:` note
-(e.g. "No report within 7 days"); when the calendar could not be verified for every
-date in the window the note reads "Unverified — earnings calendar unavailable" and
-the gate fails open (never blocks on unverifiable data). Held positions are not yet
+(e.g. "No report within 7 days"). When the live calendar could not be verified for every
+date in the window, the gate reads the [calendar capture](#earnings-calendar-capture) as
+a fallback, and a card the capture vouches for reads "No report within 7 days (calendar
+capture YYYY-MM-DD)". With neither source the gate follows `risk.earnings_calendar_unknown`
+(code default `open`, which never blocks on unverifiable data and labels the card
+"Unverified — earnings calendar unavailable"; shipped `closed`, which refuses equity
+entries). A calendar page counts only with HTTP 200, `status.rCode` 200 and a `data` object, so a soft-error
+page (`data: null`) leaves the date unverified and the gate falls back to the capture, never reading it as an empty
+day. Held positions are not yet
 warned ahead of an earnings date — that is a follow-up, not covered by this gate.
 
 **Card freshness (September 23).** A card is an offer valid only until the close of
@@ -281,7 +305,14 @@ early closes kept) instead of today's; the card shows `Valid until: Www DD HH:MM
 the New York issue date, for example a CME evening-session futures card, not only under this option). A tap while the
 market is closed then answers `WAITING` and the card stays live; the next session's tap re-prices or
 misses as usual, and a scan skips a setup that already has a live card (`live card pending`). The
-default `session_close` keeps every existing tap result. See
+default `session_close` keeps every existing tap result.
+A native card recorded with `execution.native_entry_lifetime: session` (alpaca mode, equity cards) that is
+executed and still unfilled is cancelled by the lifetime service at its submission session's close + 5 minutes
+(16:05 New York, 13:05 on an early close; the card says "Unfilled entry is cancelled at the session close"), while
+the host is still awake, with `submitted_at` + 57,600 s as the outer bound; see
+[native entries](alpha-trade-lifetimes.md#native-entries). A marked entry found filled after that deadline gets
+one "cancel was missed" notice, without a halt. Earlier cards are not bounded. A native card cancelled unfilled
+this way ends `FAILED`, so the same setup may be carded again next session. See
 [card evidence](card-evidence.md#card-validity).
 
 **Session-close card sweep (September 24).** Correctness never depended on the buttons
@@ -407,7 +438,7 @@ message ("Cannot scan SYMBOL: …"):
   read refuses "asset lookup unavailable; try again shortly."
 - **Liquidity reference.** The scan fetches only this one name, so it cannot measure
   the static percentile itself. It uses the newest `dynamic_universe_built` event whose
-  `threshold` is non-null, whose `feed` equals `market_data.alpaca_feed` and whose
+  `threshold` is non-null, whose `feed` equals the scan-bar feed `market_data.bars_feed` and whose
   `built_at` is within the last 7 days (the age check binds; the reader looks in the
   `scan/<date>` streams of today and the seven previous New York dates, the only ones
   that can hold such an event). Its `reference` block is rebuilt as the
@@ -449,15 +480,21 @@ carried across a whole chain of re-prices, so a twice-repriced card still cites 
 original issue time. A legacy card without `valid_until` expires on the New York
 date change instead.
 
-**Card wording and measured record (October 8).** A card's title reads `📋 SETUP: …` (it was
-`🚨 TRADE SIGNAL: …`) in both the Telegram and terminal cards. Directly under the target line a
-native card states the measured record of its own `(strategy, direction)` from the latest
-`card_stats` snapshot in this scope — the number of mature candidates since the key's first journaled
-decision (New York date), target/stop/timeout rates, mean R after cost and the implied EV at the card's
-own ratio — or says `insufficient evidence (N/MIN mature candidates)` (MIN is
-`card_policy.min_mature_cards`), `statistics stale (last computed DATE)` or `no statistics in this
-scope` (every dry scan, and a key over the floor without a finite mean R). The block always ends
-with the italic caveat "Not validated alpha. …". The scan reads the snapshot once; a failed read records `card_stats_error` in
+**Card wording and expected excess (October 8; v2 October 28).** A card's title reads `📋 SETUP: …`
+(it was `🚨 TRADE SIGNAL: …`) in both the Telegram and terminal cards. Directly under the target line
+a native card states the **expected excess** of its own `(strategy, timeframe, direction)` from the
+latest `card_stats` snapshot in this scope.
+- The expected excess is the posterior mean ± its standard error in `net_excess_r_v1`: R against a
+  beta-matched SPY control, after a per-name cost of at least 5 bp per side. The posterior shrinks the
+  time-matured live record toward a frozen 2021–26 replay prior.
+- A second line gives the replay prior (`replay 2021–26: …R over N setups`, or `no replay prior` for a
+  key the replay never saw), then the live record. When the live record is mature it shows mature
+  candidates (21 or more sessions old) since the key's first decision, with target/stop/timeout rates;
+  below the floor it reads `N/MIN mature, not yet decisive`.
+- A v1 snapshot from before the deploy, a dry scan, or no snapshot reads `no statistics in this
+  scope`; an old snapshot reads `statistics stale (last computed DATE)`.
+
+The block always ends with the italic caveat "Not validated alpha. …". The scan reads the snapshot once; a failed read records `card_stats_error` in
 the scan summary and the cards state no statistics. `Macro Check` is the deterministic lockout gate:
 a card that reached the LLM passed it, so it reads Cleared whatever the LLM wrote. Contract and
 limits: [card evidence](card-evidence.md#evidence-block).
@@ -529,6 +566,47 @@ headlines); see [news context](news-context.md). Inspect it with `copilot db eve
 --limit 1` (the `news` key per candidate, universe scans) and `copilot cards outcomes --days 30`
 (`news_context`). A fetch or scoring failure shows as `unavailable` or `scoring failed` on the card and
 never changes the scan, readiness or the halt state; `news.enabled: false` removes the step.
+
+### LLM gate outage
+
+The native-card LLM gate has a deadline: `llm_gate.timeout_seconds` (default 60, 0 < x <= 180), applied both as
+`asyncio.wait_for` and as litellm's `timeout`. A timeout, an exception, a non-JSON or non-object reply, an invalid
+approval or a missing LLM API key on an LLM scan (type name `LLMKeyMissing`) is an error, and an error never
+approves. During an outage:
+
+- no native card is sent; each affected candidate is journaled with the outcome `llm_unavailable` and an `llm`
+  block carrying the error type name (`Timeout` or `TimeoutError` for a deadline), and no signal is recorded, so
+  nothing is auto-entered;
+- catalog cards (PEAD drift, paper probes and insider watch cards) are still sent, labelled "LLM commentary
+  unavailable ({TypeName})";
+- the first error opens a per-scan breaker: later candidates in that scan make no LLM call and read
+  `LLMUnavailableEarlierInScan`. The breaker resets at the next scan. A breaker-skipped candidate still spends LLM
+  budget, so at most `max_llm_evaluations_per_scan` candidates are journaled `llm_unavailable` and the rest read
+  `LLM evaluation budget spent`;
+- with the shipped defaults a hung LLM provider adds at most about 85 s to a scan: the news scorer's bound
+  (`news.score_timeout_seconds`, 20 s, plus its 5 s hard margin; its calls run concurrently) and one gate deadline
+  (`llm_gate.timeout_seconds`, 60 s);
+- the first scheduled suggestion scan of a New York date whose breaker opens queues one Telegram message, keyed
+  `llm-gate-unavailable/{et_date}` and committed with that scan's journal event (as the
+  `regime-unavailable/{et_date}` notice is): "⚠️ LLM gate unavailable ({TypeName}) at the {HH:MM} scan: native
+  cards are withheld until it recovers; catalog cards are labelled. See logs." ({HH:MM} is the scan's configured
+  New York slot). Later scans that day add none; operator `/scan`, `/scan SYMBOL`, Re-evaluate, the swing job and
+  dry runs never send it. A `/scan SYMBOL` or Re-evaluate that hits the outage replies "LLM unavailable
+  ({TypeName}); try again later." A Re-evaluate still spends the card's one re-evaluation: a later `/scan SYMBOL`
+  or scheduled scan considers the setup again once its duplicate window ends. The local log keeps the details:
+  the `llm_gate_breaker_open` warning, the evaluator's `LLM evaluation failed` warning with its traceback and, at
+  DEBUG, an unusable reply's length and first 200 characters (`llm_gate_reply_unusable`);
+- the end-of-session digest reads "LLM vetoes: N; LLM unavailable: N."; unavailable candidates are not listed in
+  its "top:" runners-up;
+- `copilot cards outcomes` reports mature ones as `llm_gate.llm_errors`, and `copilot db events --stream
+  scan/<date>` shows the outcome. Exception text never reaches the card, journal, provenance or notice.
+
+The gate sends `model`, `messages`, `response_format`, `timeout` and `drop_params=False`, with no `temperature`:
+`openai/gpt-5.6` with reasoning on only accepts the default, so production has always run at the model's default
+temperature and the old `0.2` was dropped silently. No code sets litellm's global `drop_params`; the macro
+explainer, doctor and chat graph opt in per call. Running at temperature 0.2 would need reasoning off, a behaviour
+change that requires its own prompt evaluation (traces plus the replay harness) first. See
+[card evidence](card-evidence.md#llm-gate-identity-and-outages).
 
 ### Shadow card ranker
 
@@ -612,7 +690,9 @@ In the summary, `llm_gate` compares vetoed and approved mean R and counts bracke
 `bracket_edited` (at any maturity), `bracket_edit_mature`, and the mean `llm_r_cost −
 r_cost` over approved edits (`bracket_edit_mean_delta_r`, the brackets that were sent),
 reported apart from vetoed ones (`vetoed_bracket_edit_mean_delta_r`). `market_exposure`
-gives sent and runner-up means with and without the control. `execution` covers every sent
+gives sent, runner-up and `journal_only` means with and without the control (`journal_only` is
+the swing-scan candidates, which never competed for a card and so are not runners-up;
+`counts` and `base_rates` carry the same third class). `execution` covers every sent
 card. A re-priced card is followed to its replacement (`final_signal_id`, `repriced`),
 whose status, entry order, fill and tap are the ones that count. A card is **entered** when
 its signal is `EXECUTED` or any `CLOSED_*`, and **filled** when the broker's
@@ -626,20 +706,27 @@ missing signal rows are counted, never zeroed. All of it is descriptive, never a
 The report itself never ranks, gates or sizes a card; the one gate derived from the same labels is
 `card_policy` (below). The `regime_context` and `recurrence` blocks ([card evidence](card-evidence.md#regime-and-recurrence-context)) bucket mature rows by the journaled VIX regime and macro stress, by the SPY tape derived at each decision (one extra SPY daily request per run), and by each setup's recurrence in the window; the next universe scan after the 2026-10-14 deploy is the first event with a `regime` block.
 
-**Card policy (October 8).** `card_policy.mode` is the one gate derived from these outcomes, and it
-ships `off`. Operate it in three steps: leave `off` until a `card_stats` snapshot exists; set
-`preview` with `min_measured_ev` (mean R after cost, for example `0.0`) and read `would_withhold` in
-`cards outcomes` (summary block `card_policy`) and the `card_policy_would_withhold` log lines for a few
-sessions; only then set `enforce`. Under `enforce`, a native candidate whose `(strategy, direction)`
-has at least `min_mature_cards` (20) mature labels and a measured mean below the threshold is skipped
-before the LLM with the fixed outcome `card_policy_withheld` (runner-up reason `card policy: measured
-EV …R over N < …R`); it spends no card or LLM budget and the next rank is considered. Insufficient,
+**Card policy (October 8; v2 October 28).** `card_policy.mode` is the one gate derived from these
+outcomes. The code default is `off`. The shipped config is `enforce` at `min_measured_ev: 0.0` (operator
+decision 2026-10-30, after `preview` from 2026-10-28); the threshold is posterior expected excess R in
+`net_excess_r_v1`.
+- **What to read under enforce:** `card_policy_withheld` in `cards outcomes` (summary block
+  `card_policy`), the reason on the runner-up (`card policy: expected excess …R over N < …R`). Expect most TREND_PULLBACK 4h cards to be withheld once the key has 20
+  mature live rows, since the replay prior is about −0.08R.
+- **Known gap:** the always-valid confidence sequence the v2 spec asked for is not built, so daily reads at
+  a fixed threshold inflate false withholds. A wrongly withheld key keeps its labels and can recover.
+- **Returning to preview:** set `card_policy.mode: "preview"` in `config/config.yaml` and do the controlled
+  restart; cards are then sent again and `would_withhold` is journaled.
+- **Under `enforce`:** a native candidate whose `(strategy, timeframe, direction)` has at least
+  `min_mature_cards` (20) mature labels and a posterior below the threshold is skipped before the
+  LLM. Its fixed outcome is `card_policy_withheld`, with runner-up reason `card policy: expected
+  excess …R over N < …R`. It spends no card or LLM budget, and the next rank is considered. Insufficient,
 stale, unavailable or partial evidence (a key with any bar-fetch failure, `n_fetch_failed`) never
 withholds, and a policy-locked card (versioned alpha or paper probe) is outside the policy: it shows
 its evidence and its `card_policy` block is null. Withheld candidates stay journaled (every
-full-universe scan) and keep being labelled, so a strategy can recover. Before `enforce`, count distinct
-setups per session: the same setup is journaled by repeated scans in a session and inflates
-`n_mature` and the floor. A mode change is a config edit plus the controlled restart. See
+full-universe scan) and keep being labelled, so a strategy can recover. Since v2 the record counts one
+row per setup and New York session (suggestion scans only). A key with an unreadable or unresolved
+row is partial and never withholds. A mode change is a config edit plus the controlled restart. See
 [card evidence](card-evidence.md#send-policy).
 
 **Book-aware sizing (October 9).** `book_sizing` in `config/config.yaml` shipped `mode: preview` on
@@ -660,19 +747,39 @@ blocks a card. After deploying, verify that the first scan's card provenance
 `cards outcomes` run has a `book_sizing` block. See
 [card evidence](card-evidence.md#book-aware-sizing).
 
-**Card statistics worker (October 8).** The daemon runs `card_stats` beside the research workers:
-once per New York date after `card_policy.stats_time_et` (08:30), outside the suggestion-scan
-windows and while no scan is running, it labels the last 90 days of journaled candidates and appends
-one `card_stats_snapshot` event (`copilot db events --stream card_stats`). `/readyz` includes
-`card_stats` with a four-day limit, so weekends and holidays stay ready. After a restart on a day
-without a snapshot the first poll labels before it reports `recorded`; it observes `labelling N scan
-events` first. A failed run (every bar fetch failed) writes nothing, turns `card_stats` not ready with
-`CardStatsUnavailable: every bar fetch failed for N candidates: TYPE` in its detail (exception type
-names only; any other error shows its type only; the log has the messages) and retries on the next
-poll. It stays not ready with that detail for the rest of the New York date, including the idle polls
-around the scan slots, until a poll finds or records today's snapshot; cards keep the previous
-snapshot until it is four days old and then say `statistics stale`. A shutdown during a labelling run records nothing, but
-process exit waits for the labelling thread's provider reads to finish. Details:
+**Card statistics worker (October 8; v2 since October 28).** The daemon runs `card_stats` beside the
+research workers: once per New York date after `card_policy.stats_time_et` (08:30), outside the
+suggestion-scan windows and while no scan is running, it reads the `scan_candidates_ranked` events of the
+last `card_policy.stats_window_days` New York dates (shipped 180) and labels the suggestion-scan population:
+scheduled `suggestion_scan` universe scans only, without broad index ETFs or the prior's excluded symbols
+(BIL, SHY), malformed candidates counted and dropped, and one row per contract, strategy, timeframe,
+direction and New York decision date (the earliest scan kept). Hourly bars come from the scan-bar feed;
+beta and per-name cost come from SIP daily bars whose every read ends 16 minutes before the run, because
+the subscription refuses SIP history that ends now. It appends one `card_stats_snapshot` event under
+`card_stats/net_excess_r_v1/{et_date}` (`copilot db events --stream card_stats`). `/readyz` includes
+`card_stats` with a four-day limit, so weekends and holidays stay ready. After a restart on a day without a
+snapshot, the first poll observes `labelling N scan events` and then labels before it reports `recorded`.
+
+A failed run writes nothing and turns `card_stats` not ready. The detail is
+`CardStatsUnavailable: MESSAGE`, which carries fixed text and exception type names only (any other error
+shows its type only; the log has the messages):
+
+- `card statistics prior unavailable: REASON`: the frozen prior did not load, so no bar is read. REASON is
+  a fixed phrase (`prior digest is not configured`, `prior file not found`, `prior file unreadable`,
+  `prior digest mismatch`, `prior file invalid`, `prior version mismatch`, `prior unit mismatch`,
+  `prior constants differ from the code`). Check that the file at `card_policy.prior_path` exists in the
+  installed checkout and that `shasum -a 256` of it equals `card_policy.prior_sha256`.
+- `the market proxy hourly read failed: TYPE`: the SPY hourly read failed.
+- `every daily bar fetch failed for N candidates: TYPE`: every SIP daily read failed (SPY's, or every
+  symbol's) for the rows whose hourly read succeeded.
+- `every bar fetch failed for N candidates: TYPE`: every hourly read failed.
+
+The worker retries on the next poll. The component stays not ready with that detail for the rest of the
+New York date, including the idle polls around the scan slots, until a poll finds or records today's
+snapshot. Until then cards read the previous snapshot. On deploy day that is a v1 snapshot, which cards
+render as `no statistics in this scope`. After that, the previous v2 snapshot serves until it is four days
+old, and then cards say `statistics stale`. A shutdown during a labelling run records nothing, but process
+exit waits for the labelling thread's provider reads to finish. Details:
 [card evidence](card-evidence.md#card-statistics-snapshot).
 
 **Corporate-actions worker (October 11).** The daemon runs `corporate_actions` beside the research
@@ -758,7 +865,9 @@ without modifying the process environment. Explicit environment values (even emp
 ones) win. `COPILOT_ENV_FILE=''` disables dotenv. `COPILOT_CONFIG` selects a YAML.
 
 Database precedence: `DB_PATH` → `DATABASE_URL` → explicit `DB_NAME` → YAML →
-production default. `--db-path` accepts a URL or SQLite path; `--db-name` explicitly
+production default. Neither the shipped YAML URL nor the production default names a
+database user: asyncpg takes it from `PGUSER` or the account running the daemon. To name
+one, set `DATABASE_URL` in `.envrc`; never commit a user or password to the YAML. `--db-path` accepts a URL or SQLite path; `--db-name` explicitly
 selects a SQLite sandbox. There is no automatic SQLite failover. `data/signals.db`
 is historical and must not be mistaken for the current PostgreSQL database.
 
@@ -858,6 +967,31 @@ regenerating the miner plist; the scheduled miner is now retired, so the pinned
 Do not restore old code against a newer schema without checking compatibility.
 Quarantined records can be reviewed/restored with an audited migration; they were
 not deleted. Keep broker-held protective orders in place during a daemon restart.
+
+## Tier-1 calendar renewal
+
+The macro lockout's authoritative schedule is a static file, `config/calendar/us-tier1-vN.json`
+(FOMC statement and press conference, CPI, PPI, Employment Situation), pinned in `config.yaml`
+by `risk.macro_calendar_path` and `risk.macro_calendar_sha256`. A merged version is immutable.
+`macro_calendar` readiness degrades 30 days before its `valid_through`
+(`risk.macro_calendar_renewal_days`), so the monitor's incident asks for the next version
+well before it expires. Renew it as follows.
+
+1. Build `us-tier1-vN+1.json` from the Fed's FOMC calendar and the BLS CPI, PPI and
+   Employment Situation schedule pages. Each event's `source_url` is the page its date came
+   from. Re-check every `tentative` FOMC date (the Fed confirms each meeting at the one
+   before it). `valid_through` is the shortest series' last listed date, and
+   `series_last_listed` records each series' last date. Do not invent dates or times.
+   `valid_from` must be on or before the deploy date: before it the static status reads
+   `expired`, so the lockout is unverified until then.
+2. Run `uv run pre-commit run --files config/calendar/us-tier1-vN+1.json` so the file's
+   bytes settle, then `shasum -a 256` it. Pin the new path and digest in `config.yaml`.
+3. Deploy in the usual pause order (watchdog, then daemon) and confirm
+   `doctor --readiness` reports `macro_calendar` ready.
+
+A release that moves or is cancelled (as in the 2025 shutdown) also means a new version:
+never edit a merged file. An expired or invalid calendar leaves the lockout unverified;
+with `risk.macro_calendar_unknown: open` that is labelled, never refused.
 
 ## Logs, audit and monitoring
 
@@ -983,6 +1117,9 @@ Cancellation attempts are audited before DELETE, so even a lost cancellation
 acknowledgement carries this protection warning. Only a pre-mutation refusal may
 say existing protective orders were left unchanged by this request. External SDK
 errors expose their type/HTTP status, not raw broker response text.
+After cancellation is confirmed by ID, a listed order from the same cancelled group
+that reads terminal by ID is a stale listing and is ignored (audited once as
+`stale_open_order_list`); an unknown order ID still refuses.
 
 `close_requests` persists a UUID client order ID before broker mutations. A partial
 unique index allows only one active request per environment/account mode/symbol,
@@ -1018,6 +1155,17 @@ are separate from subsequent deployment verification.
 Deployment checks must verify `/flatten` in default, private-chat and operator-chat
 command scopes, the chat menu button, current daemon revision and poll freshness.
 `scripts/verify_runtime.py` performs these checks without messages or orders.
+
+### November 12 BLK holding close
+
+The 20-session holding close of BLK (signal #47) cancelled both bracket legs and read
+both terminal by ID, then refused at 20:45:16.94 UTC because Alpaca's OPEN order list
+still listed the cancelled take-profit leg about 0.7 s after the by-ID read. No close
+was submitted, the position stayed unprotected and new risk halted for review. The
+post-confirmation re-check now reads each listed order of the cancelled group by ID
+and treats a terminal one as stale; unknown, filled or non-terminal orders still
+refuse with the same texts, and the reserved-quantity check still gates submission.
+Design: `docs/superpowers/specs/2026-11-13-close-stale-order-list-design.md`.
 
 
 ### Broker transport and stop replacement
@@ -1130,7 +1278,8 @@ from repeated runs are harmless. Output goes to `data/awake.log` and `data/awake
 Install with `./scripts/launchd.sh install-awake` (remove with `uninstall-awake`; `status`
 lists it). The plist is generated by the installed checkout's `launchd.sh` and loaded during
 the usual controlled restart procedure; editing the script does not regenerate it. It
-changes no trading behaviour.
+changes no trading behaviour. The incident alert window (`operations.quiet_hours`, weekdays
+09:15-16:30 ET) should stay aligned with this script's window.
 
 launchd supervises process exits; the daemon itself does not keep this Mac awake. During sleep,
 scans, reconciliation, notifications and collection pause; dark wakes can generate
@@ -1184,13 +1333,136 @@ is verified. All remain unqualified, and active-alpha count remains zero. Inspec
 [results and limits](alpha-session-campaign-2026-09-17.md); positive historical marks
 are not Alpaca paper-account P&L.
 
+### Operator entry cancel
+
+`/cancel <id>` previews one resting entry (signal id) with Cancel entry and Keep buttons;
+only the button sends the single, never-retried broker DELETE. CLI: `copilot cancel <id>`
+previews, `copilot cancel <id> --confirm` cancels. It works for timed and untimed entries
+and uses the durable `entry_cancel` path (cause `operator`). The reply is one of:
+cancelled (broker confirms no fills); filled before the cancel (position open and
+protected, no halt); or unconfirmed (new risk halts, inspect exact broker fills and
+protective orders; no retry). A partial fill racing the cancel therefore halts until
+reviewed. Refusal tokens (nothing was cancelled, no halt):
+
+| Token | Meaning |
+| --- | --- |
+| `unknown_signal` | no such signal |
+| `not_resting` | filled, closed or failed already; an untapped card replies "not submitted yet", a dismissed or expired one "never entered ... nothing to cancel", an entry not yet at the broker "still being submitted; try again in a minute" |
+| `cancel_in_progress` | a cancel exists for this signal (cancelling or cancelled) |
+| `filled_before_cancel` | an earlier cancel found the entry filled and protected |
+| `close_active` | a close is active for the symbol |
+| `incomplete_or_changed_bracket_group` | broker group incomplete or changed; inspect broker orders |
+| `broker_cannot_cancel` | the broker has no exact-order cancel |
+| `no_durable_entry` | no durable desk entry for the broker order |
+| `entry_group_unavailable:<Type>` | the broker group could not be read |
+
+Inspect with `copilot db queue --kind entry_cancel`.
+
+### Auto-entry (paper)
+
+Contract and measurement: [paper auto-entry](paper-auto-entry.md). `execution.auto_entry: paper` is active only
+on Alpaca paper with `execution.native_entry_lifetime: session`; a live account, or `native_entry_lifetime:
+off`, refuses to start with it set, and the simulator leaves it inactive. In YAML write the off value quoted,
+`auto_entry: "off"`: a bare `off` parses as a boolean and fails validation. `/status` and
+`scripts/verify_runtime.py` show the setting and whether it is active.
+
+- **Only LLM-approved cards.** A native card is marked for auto-entry only when the LLM gate approved it (its
+  `llm_verdict` applied, `approved: true`, no `error`). A daemon started with `copilot service daemon --no-llm`
+  records deterministic approvals with no verdict, so its suggestion cards are ordinary tap cards (Execute and
+  Dismiss, no auto line) and the sweep enters none; an LLM error withholds the native card altogether
+  ([LLM gate outage](#llm-gate-outage)).
+- **Catalog cards.** `execution.auto_entry_catalog` (shipped `["pead", "insider_watch"]`, operator approval
+  2026-11-14) also marks an enabled PEAD-probe or insider-watch card of a scheduled suggestion scan, with no LLM
+  approval and the lifetime of its `alpha_policy`; admission, `probe_block_reason` and the frozen-contract check
+  still apply, and the watch card line reads "auto-entered on paper; unvalidated; earns no promotion credit".
+  Remove an id (or set `[]`) and do the [controlled restart](#controlled-maintenance-and-restart) to stop new
+  markers for that source. That does not stop a card already marked that day: while `auto_entry` stays on, the
+  sweep still enters it if the restart lands inside its `execution.card_freshness.fresh_seconds` (1,800 s)
+  window. To stop it, set `auto_entry: "off"` ([turn it off](#auto-entry-paper)) or `/cancel` the entry. The list
+  is inert, with an `auto_entry_catalog_inert` warning at load and "Auto-entry: off (catalog list inert)" in
+  `/status`, whenever `auto_entry` is `"off"`. `portfolio.max_non_native_positions` (shipped 5 of the 8 slots, `null` removes it) refuses a catalog,
+  probe or alpha entry with `non_native_capacity` once open plus in-flight non-native positions reach it: a
+  business refusal, not a halt, so look for that reason before suspecting the broker when a catalog card is not
+  entered.
+- **Turn it off.** Set `execution.auto_entry: "off"` (quoted) in `config/config.yaml` and do the
+  [controlled restart](#controlled-maintenance-and-restart). Leave `auto_entry_catalog` as it is: with the
+  switch off the list is inert (`auto_entry_marker` marks nothing), `load_config` logs one
+  `auto_entry_catalog_inert` warning and the daemon starts normally. A live-account deploy sets the same
+  `auto_entry: "off"`. There is no runtime command; `/panic` halts all
+  new risk at once, and `/resume` follows the usual rules. Cards recorded while it was on keep their marker;
+  after the restart the sweep and digest jobs are not registered, so a marked card still `PENDING` is not
+  entered: it keeps its Dismiss-only card and expires with the session.
+- **Card states.** A new native card says "Paper auto-entry: entered for you on the paper account; no tap
+  needed" (it carries no separate session-close bullet: that line says it) with **Dismiss** until the entry is
+  placed, then **Cancel entry...** (its callback opens the `/cancel` preview with Cancel entry and Keep). The
+  line shows only while the card is `PENDING`, `SUBMITTING` or `EXECUTED`; a card delivered in any other status
+  renders exactly as a tap card. Not every refusal gets a fresh card:
+  - still `PENDING` (risk or admission refused, or the sweep ran more than
+    `execution.card_freshness.fresh_seconds`, 1,800 s, after the card): a fresh card says "Auto-entry refused:
+    {reason}" or "was not placed in time" and carries the normal Execute and Dismiss;
+  - expired, missed or re-priced at the sweep's tap check: the card's buttons are struck (Re-evaluate for a
+    configured contract) and one notice says "Auto-entry #id SYMBOL not placed: {reason}." (a re-price says
+    "re-priced; review card #new_id", the replacement being an ordinary tap card);
+  - `FAILED` (rejected at submission): the existing `entry/{work_id}/rejected` notice.
+- **Vetoes.** Dismiss before placement; Cancel entry... or `/cancel <id>` while the entry rests (one DELETE,
+  never retried; a fill racing it halts new risk until reviewed). The session-bounded lifetime cancels an
+  unfilled entry at the submission session's close + 5 minutes. The Dismiss-before-placement window is short,
+  from seconds up to about one minute, because the sweep runs right after the scan and every minute, so most
+  vetoes will be cancels of resting entries.
+- **Messages.** Each filled auto entry sends one `Auto-entry #id SYMBOL filled ...` notice. Three routine
+  notices are folded into the **digest** at the regular close + 15 minutes (16:15 New York, earlier on an
+  early close): the `accepted` resolution, the deadline cancel intent and the deadline cancel result confirmed
+  unfilled. A routine notice the digest can no longer report is queued as usual: once the digest of the entry's
+  New York date is queued, or for an entry of an earlier date. Never folded: anything resolving an `UNKNOWN`
+  outcome, operator cancels, `entry-terminal` (a broker-side end), refusals, ratchets, exits, partial fills,
+  missed bounds and halts.
+- **Where to look.** The `card/{signal_id}` stream's `auto_entry_attempted` event (outcome, reason,
+  signal and work status, `expiry_kind` `expired` or `repriced` for a card the sweep's tap check expired; a
+  synchronous rejection reads `rejected at submission`);
+  `copilot db queue --kind entry`; `copilot cards outcomes` for `entry_trigger`, `operator_action` and the
+  `operator` block ([card evidence](card-evidence.md#operator-outcomes)). The 20-session pass criteria are in
+  the [auto-entry doc](paper-auto-entry.md#measurement).
+
+### Weekly scorecard
+
+One Telegram `MESSAGE` per ISO week answers "is anything working?" for the three lanes (native cards, the PEAD
+probe, insider watch): last week's cards sent, entries (auto and tap), fills, closes and realized R, the
+trailing 90 days' realized and counterfactual records, and the account's adjusted equity at both ends of the week
+([contract](card-evidence.md#weekly-scorecard)). Configuration is the `scorecard:` block (`enabled`, code default
+`true`; `due_weekday` 5 = Saturday; `due_time_et` `"09:00"`; `activity_days` 7; `record_days` 90).
+
+- **Preview.** `copilot cards scorecard [--days 7]` prints the same text and sends nothing. It reads the journal
+  and the ledger and fetches paced SIP bars through the delayed reader, so run it outside a scan window.
+- **Key and due time.** The daemon's `weekly_scorecard` job ticks every 15 minutes and at startup. The key is
+  `weekly-scorecard/{iso_year}-W{iso_week:02d}` (a `weekly_scorecard` event on stream `scorecard/weekly` shares the
+  transaction with the message), so a second tick or a restart queues nothing. It is due from Saturday 09:00 New
+  York time and a daemon that was down then publishes the missed week on its first tick up to 4 days after the
+  due (with the shipped Saturday due, through Wednesday 09:00 ET); a start after that sends nothing for the missed
+  week, and the next Saturday publishes the next week.
+  Quiet hours do not apply: it is not an incident notice.
+- **Failure and retry.** A running scan defers it. Any failure logs one `weekly_scorecard_failed` line with the
+  exception's type name only and the next 15-minute tick retries, until the catch-up window closes; nothing
+  raises into the scheduler and nothing halts. A lane whose counterfactual bars could not be read says so with a
+  type name and shows `n/a`; the rest of the message still goes out.
+- **Disable.** Set `scorecard.enabled: false` and do the [controlled restart](#controlled-maintenance-and-restart);
+  the job is then not registered. There is no runtime command.
+- **Reading it.** Descriptive only: nothing in `risk/`, admission or `card_policy` reads it. Its footer says that
+  counterfactual labels assume study-price fills and that no lane has validated edge.
+
 ### Timed alpha lifecycle operations
 
-Only explicitly timed alpha positions participate in [trade lifetimes](alpha-trade-lifetimes.md); historical positions receive no inferred limits. Resting deadlines request one exact entry cancellation, then reconcile by GET. `entry_cancellation` readiness and `trader_entry_cancellations_unresolved` expose unresolved work. Entry admission remains blocked during cancellation even before an uncertainty halt. Partial fills, replacements or ambiguous outcomes require protection review and retain journal/outbox evidence; never manually replay the DELETE. `/resume` rechecks unresolved cancellation and timed-position evidence.
+Explicitly timed alpha positions and new native entries (marker `decision_provenance["entry_lifetime"]`, `execution.native_entry_lifetime: session`) participate in [trade lifetimes](alpha-trade-lifetimes.md); historical positions receive no inferred limits. A cancel whose DELETE the broker refused (the call errored, e.g. 422 not cancelable) and that then finds the entry fully filled with protective exits intact by exact read resolves as `filled_before_cancel` without a halt; an accepted DELETE followed by a fill is `unknown` and halts. Resting deadlines request one exact entry cancellation, then reconcile by GET. `entry_cancellation` readiness and `trader_entry_cancellations_unresolved` expose unresolved work. Entry admission remains blocked during cancellation even before an uncertainty halt. A working partial fill of a native, PEAD-probe or insider-watch entry rests until its submission session's close + 5 minutes and is reviewed only if it is still part-filled then. A catalog entry never rests past its own resting deadline and is reviewed at once without a configured calendar; a native entry without a calendar keeps its 16 h outer bound. `/resume` is refused while any entry is part-filled ("Unconfirmed broker entry … remains"). Terminal or alpha partials, replacements and ambiguous outcomes require protection review at once and retain journal/outbox evidence; never manually replay the DELETE. A halt reason `partial_entry_requires_protection_review` whose parent order later reads fully filled with its exits live (target `new`, stop `held`) is stale; clear it with `/resume`. `/resume` rechecks unresolved cancellation and timed-position evidence.
+
+A failed evidence read of a timed position (its durable entry identity, the broker order-group read, the session calendar or, at a passed holding deadline, the broker clock) is retried by each reconciliation pass (the 60 s monitor, plus one per stream trade update and non-dry scan) and is not a halt by itself: `execution.lifetime_evidence_review_after_failures` (default 5, range 1-60; `1` halts on the first counted failure) consecutive failed passes of one signal are required (about 5 minutes when only the monitor runs), counted in memory per run. Every failed pass marks `reconciliation` readiness not ready with `trade_lifetimes:{ExceptionType}` (type names only), so a persistent failure shows as degraded reconciliation and a `doctor --monitor` incident, then as a `lifecycle_evidence_unavailable:{ExceptionType}` review halt. Only the evidence read is retried: deterministic findings (a `REVIEW` decision, missing durable identity, partial exit), any failure after the evidence was read (decision, cancel or close action) and a malformed lifetime policy still halt on the first pass. A failed pass does not count while the entry is fully filled per the journaled order projection and the regular session is certainly closed per the static exchange calendar (weekend, holiday or outside 09:30-16:00 New York; early closes read as open): the count holds at its prior value and readiness still degrades. A resting entry, or any doubt in that check, counts as above. Recovery: fix the cause, confirm reads succeed (`copilot doctor --readiness`), then `/resume`. Incident 2026-10-26: a host wake-up `ConnectionError` on one read halted trading and skipped two sessions of scans. Incident 2026-11-07: an Alpaca `ReadTimeout` outage on a Saturday morning halted trading through the BLK probe.
 
 Holding expiry waits for a current eligible broker session and uses the existing close service with a stable ID. A failed attempt is retained for operator review, not retried every monitor cycle. General close claims/results now also create durable journal/outbox notifications; confirmed financial accounting remains separate. Monitor cadence and host availability bound response time: an elapsed lifetime is not a guaranteed fill time. Session-alpha promotion remains disabled.
 
-Inspect durable cancellation evidence with `copilot db queue --kind entry_cancel` and `copilot db events --stream entry-cancel/COMMAND_ID`. These are read-only; unresolved intents have no resend operation.
+Inspect durable cancellation evidence with `copilot db queue --kind entry_cancel` and `copilot db events --stream entry-cancel/COMMAND_ID`. These are read-only; unresolved intents have no resend operation. An `unknown` cancel has no resolve command, but `recover()` re-reads it by exact lookup every monitor cycle (never resending the DELETE):
+
+1. Inspect the exact parent and both legs (`copilot db queue --kind entry_cancel`, the Alpaca dashboard).
+2. If the entry is still resting, cancel it manually in the Alpaca dashboard (the whole bracket). The next cycle reads the complete zero-fill group and resolves the item to `accepted` (signal `FAILED`, reservation released).
+3. If it filled cleanly with both exits protecting it and the original DELETE was refused (the item's `transport_error` is set), the next cycle resolves it to `rejected` (`filled_before_cancel`); after an accepted DELETE a fill stays `unknown` and keeps blocking `/resume` (a resolve command is a follow-up), so confirm the position's protection by hand.
+4. Once the item is `accepted` or `rejected`, only the halt remains: `/resume` (it rechecks unresolved cancellations first).
 
 The [continuous timed ETF campaign](alpha-continuous-campaign.md) pairs the new lifetime contract with actual-data discovery: 48 frozen comparisons and a new trend/pullback hypothesis. Replay supports one continuous year with bounded acquisition chunks; trial/holdout accounting and session activation gates remain intact. Report research yield separately from deployment readiness.
 
@@ -1248,11 +1520,294 @@ itself.
   registry's promote/shadow/demote. Confirm a `pead_decision` journal event
   (`ok`, `unavailable` or empty) at the next scheduled 10:35 New York scan, and,
   if an event qualified, the drift card in Telegram.
+- A PEAD decision fetches each qualifying symbol's daily bars; a failed fetch is retried once after 2 seconds,
+  and a second failure leaves the reason with the suffix ` (after 1 retry)`.
+
+#### PEAD bars incident, 2026-11-05 to 2026-11-09
+
+The PEAD decision was `unavailable` on 11-05, 11-06 and 11-09. 11-05 and 11-06
+were each a single-chunk `ReadTimeout`, before #141's retry existed (merged
+2026-11-06 11:29 ET, after that day's 10:35 decision), so there was no retry on
+11-06. 11-09 was a sequential overrun with no error: the adjusted and raw reads
+ran one after the other, each a sequential loop over 100-symbol chunks (about 14
+requests of 4-8 s), past the 60 s `DRIFT_PREPARE_TIMEOUT_SECONDS`, and it also
+cost the insider-watch decision that followed it in the same window.
+
+The fix: `pead_live` chunks itself and runs all chunks of both requests
+concurrently (8 at a time) on a dedicated 8-thread executor, retrying only the
+failed chunk once; catalog sources now prepare concurrently under one 60 s
+window. The journaled reason carries the exception type name only, never the
+provider message. A cancelled chunk's in-flight GET finishes in the background
+on the PEAD executor (read-only, harmless), never on the loop's shared default
+executor.
+
+### Insider watch Form 4 capture
+
+The [watch cards](apriori-alphas.md#watch-cards) read SEC Form 4 filings from a daemon worker
+(`agentic_trader/data/insider_capture.py`), enabled with `insider_watch.enabled`.
+
+- **Schedule.** After 06:00 New York, one pass per day; a pass that cannot finish retries every 30 minutes. It
+  yields to the suggestion-scan windows (`scan_window`), which are never delayed. It captures each missing
+  filing date in order, yesterday at the latest, starting from `insider_watch.backfill_from` (2026-10-01) on
+  the first run and from the last journaled date afterwards. A weekend or federal holiday is journaled
+  `no_index` without a request; a business-day index that is a 404 is held, requested once more when a later
+  index returns, and then recorded `no_index` (`closed_inferred`). A date is journaled once every one of its
+  cohort-v3 Form 4 documents was read. A document that does not parse (its exception type name) or exceeds
+  the 16 MiB body budget (`document_too_large`) is recorded as that document's `error` at once. A document
+  404 may be EDGAR still publishing it: the first one holds the date (nothing recorded, `pending`; the time is
+  kept in the worker's memory, so a restart starts over), and only a 404 again on a pass at least 30 minutes
+  later records `document_not_found`; a 200 meanwhile captures it normally. A recorded error leaves the date
+  journaled, and the issuer's symbols are blocked from watch cards while that date is inside the cluster
+  window plus cooldown. A transport error (after one retry), a 429 or a 5xx records nothing for the date,
+  which the next pass retries.
+- **First deploy.** The first backfill from 2026-10-01 is about 1,900 SEC requests (about 16 minutes at 2 per
+  second). Deploy before about 10:00 New York or after the 10:35 decision, so it finishes outside the scan
+  window it yields to. `insider_capture` readiness is not ready until that first pass finishes, and a 10:35
+  decision before then is `capture_not_current`. With no capture yet it reads ready (`not_due; no capture yet`)
+  only until a pass has run in this process: once a pass has run and captured nothing, it stays not ready
+  until a capture exists, through later waiting and scan-window polls.
+- **Credential.** `EDGAR_USER_AGENT` (an identifying contact string, required by SEC) is read from the daemon's
+  environment only and sent as the `User-Agent`. Never print, log, journal or commit it; failures are logged by
+  exception type name. Without it the worker idles (`missing_user_agent`, logged once) and `insider_capture` reports not ready.
+- **Journal and files.** One `insider/form4/<filing date>` event per date on journal stream `insider/form4`
+  (transactions, index and row counts, per-rule drops, one record per document). Raw bytes are private files
+  under `<state>/data/insider/<filing date>/`, never in Git.
+- **Readiness.** `insider_capture` is ready while the latest captured filing date is at most 4 days old (a long
+  weekend); it is not a data-quality check. Inspect with `uv run copilot doctor --readiness` and the journal
+  stream. Parse errors of the trailing 30 days are appended to the detail.
+- **Decision journal.** The 10:35 scan journals one `insider_watch_decision` per session on `scan/<ET date>`
+  (`completed`, `skipped` or `unavailable`, its reason, counts, phase timings). A session without a card is
+  normal when no cluster qualifies (`completed`, zero events).
+- **Unavailable reasons.** An unavailable decision sends no card and queues one
+  `insider-watch-unavailable/<date>` notice; native and PEAD cards are unaffected.
+
+  | Reason | Meaning and action |
+  | --- | --- |
+  | `capture_not_current: latest filing date X` | The capture is behind D minus 1 day. Check `EDGAR_USER_AGENT`, the `insider/form4` stream and EDGAR reachability; the worker catches up on its next pass. |
+  | `scope_mismatch: <date>` | The capture of that date was taken under another scope (cohort CIKs or owner rules) than the history reads, so the history ends before it. The worker refuses to capture over an archive that is not the pinned one (`InsiderArchiveMismatch` in `insider_capture` readiness); restore the pinned archive. Journaled captures are never rewritten: investigate before changing anything. |
+  | `calendar_source` / `calendar_mismatch` | The trading calendar was not Alpaca's, or its prefix differs from the study's pinned digest. Never relax the pin; investigate the calendar source. |
+  | `plausibility_cache_missing` | The pooled cube's raw-bar cache (`insider_watch.pooled_cache_dir`) is not on this machine. Restore the cache; there is no silent pass. |
+  | `plausibility_not_checked` | Defensive: the archive was read without the study's plausibility bars. The daemon always builds the reader, so this is not expected; there is no silent pass. |
+  | `timeout` | The preparation outlasted the scan's shared 60 s bound: a cold archive read near 10:35 (the read continues; the next decision finds it done). Sources prepare concurrently, so one slow source cannot use up another's time. Check the phase timings in the journal. |
+  | `error: <Type>` | The preparation raised (for example a cube or digest mismatch, or a history seeded under another entry). The type name is in the reason; the daemon log has the traceback. |
+  | `not_a_trading_session` | The scan ran outside a regular session; no action. |
+  | `service unavailable: <Type>` / `insider watch source unavailable` | The frozen entry, its protocol or a client could not be built. The exception's type name (only) is in the reason; fix the config or digest and restart. |
+
+  A `skipped` decision (halt, gated session or late scan) is not a fault. Lateness uses
+  `apriori.max_drift_lateness_seconds`, the same cap as the PEAD probe: changing it moves both.
+- **Operate.** Use `copilot cards outcomes` for the evidence block. To stop new watch cards without touching
+  positions, set `insider_watch.enabled: false` and restart; open watch positions keep their protection.
+
+### Earnings calendar capture
+
+A daemon worker (`agentic_trader/data/earnings_capture.py`), enabled with `earnings_capture.enabled` (shipped
+`true`), keeps a dated record of the Nasdaq forward earnings calendar, so that each season's forward dates are
+kept as they were published. The [release exit](#release-exit) reads the latest capture
+(`EarningsCaptureStore.reports_between`) beside the live Nasdaq lookup; with the capture off or stale, a failed
+live lookup leaves a position `unknown` (never closed), so turning the capture off makes `unknown` more likely.
+The capture is also the earnings blackout's fallback: when the live lookup raises or cannot verify, the scan and the
+tap gate read the same store (`resolve_earnings`) and apply the blackout from the capture; with neither source,
+`risk.earnings_calendar_unknown: closed` (shipped) refuses equity entries
+([risk policy](risk-policy.md)).
+
+- **Schedule.** On each New York weekday after 06:00, outside the suggestion-scan windows (which are never
+  delayed), it takes one capture dated that day. A poll runs every 30 minutes until one is journaled.
+- **Targets.** One Nasdaq calendar page per weekday from today through `earnings_capture.horizon_days` (28)
+  ahead, one request per second. A page is accepted only with HTTP 200, `status.rCode` 200 and a `data` object (a
+  soft-error page with `data: null` is unaccepted, never an empty day). A page is retried once, only after a
+  transport error, HTTP 429 or a 5xx; any other unaccepted response fails the pass at once.
+- **All or nothing.** If any page is still unaccepted (after its retry, where one applies), nothing is journaled and the next poll
+  tries again. A scan window that opens between two requests stops the pass quietly.
+- **Journal and files.** One `earnings/calendar/<capture date>` event on stream `earnings/calendar` holds every
+  forward row and each page's body digest. The compressed raw bodies are private files under
+  `<state>/data/earnings_calendar/<capture date>/`, never in Git.
+- **Readiness.** `earnings_capture` is ready while the latest capture is at most 4 days old (a long weekend).
+  A failed poll is observed by exception type name and stays ready while a capture that recent exists, so a
+  transient Nasdaq outage does not page; the component turns not ready once the latest capture is older than 4
+  days or the worker stops observing. With no capture yet it reads ready (`not_due; no capture yet`) only until
+  a pass has run in this process. It is not a data-quality check.
+- **Runbook.** Inspect with `uv run copilot doctor --readiness` and
+  `uv run copilot db events --stream earnings/calendar --limit 1`. A not-ready component means no capture in
+  4 days: check Nasdaq reachability and the daemon log (`earnings_capture_failed`: for an incomplete capture the log names the
+  target date and the reason, an HTTP status, `rCode`, fixed string or exception type name; for any other failure the
+  exception type only). A missed day cannot be recovered afterwards, because a later fetch shows the calendar as
+  revised since, not as it was published that day. To
+  stop the worker, set `earnings_capture.enabled: false` and restart (the release exit then has the live lookup
+  only).
+
+When `earnings_capture` readiness is not ready while Nasdaq is failing, equity entries are being refused (policy
+`closed`). The config-only rollback is `risk.earnings_calendar_unknown: open` plus a controlled restart. A
+`scan --dry-run` uses a temporary journal with no capture, so during a Nasdaq outage under `closed` it refuses
+equities that the daemon clears from its capture.
+
+#### Incident: Nasdaq 403, 2026-11-10 to 2026-11-12
+
+Nasdaq's CDN returned HTTP 403 to the desk's Python clients from about
+10:38 ET on 11-10 to about 07:50 ET on 11-12 (about 45 h). `pead_decision` was unavailable on 11-10 and 11-11, the
+11-11 capture failed (`CaptureIncomplete`), and the equity earnings blackout failed open throughout (no blackout,
+"Unverified" note), so a native card could have been auto-entered days before a report. The fallback and the
+`closed` policy above close that gap; the live client and its headers are unchanged. A 2026-11-13 follow-up
+made an HTTP 200 soft-error page (`status.rCode` other than 200, or `data: null`) unverified in the live lookup,
+so the blackout reads the capture instead of treating it as "no reports".
+
+### Filings capture
+
+A daemon worker (`agentic_trader/data/filings_capture.py`), enabled with `filing_veto.capture` (code default
+`false`), journals each covered symbol's recent negative EDGAR filings as the evidence of the `filing_veto` entry
+rule ([spec](superpowers/specs/2026-11-06-release-exit-filing-veto-design.md)).
+
+- **Symbols.** The corporate-actions worker's list, read on each pass: the universe, held equities (tracked and
+  broker-held) and `corporate_actions.extra_symbols`. Dynamic-universe names (up to 20 per scan) are not on it,
+  so in v1 they are uncovered by design: their candidates journal `uncovered` and are never refused, and the
+  `filing_veto` block of `cards outcomes` reports them apart (`by_universe.dynamic`) from the static names.
+- **Schedule.** On each New York weekday, one pass per slot: `open` at the first poll from 06:00, and
+  `pre-HHMM` `filing_veto.pre_scan_minutes` (30) before each suggestion scan (with 10:35 and 14:35: `pre-1005`
+  and `pre-1405`). The worker polls every 5 minutes and runs only the latest due slot, so a slot missed while
+  the daemon was down is skipped once a later one is due. It never runs inside a suggestion-scan window (which
+  is never delayed): a window that opens between two requests stops the pass and journals nothing, and the
+  slot runs after the window.
+- **Requests.** The SEC ticker map (`www.sec.gov/files/company_tickers.json`) once per pass, then each mapped
+  CIK's `data.sec.gov/submissions/CIK##########.json` (only `filings.recent` is read; symbols sharing a CIK
+  share its request). Two requests per second; one retry after 5 seconds, only after a transport error, HTTP
+  429 or a 5xx; only those two hosts, no redirects, the 16 MiB body budget and a 120 s deadline per request.
+- **Outcomes.** Each requested symbol is `covered`, `unmapped` (absent from the ticker map, or under two CIKs:
+  never guessed) or `failed` (`http_<status>` or the exception type name). A failed ticker map, or five CIKs
+  failing in a row (`consecutive_failures`: an EDGAR outage rather than a few bad symbols; a success resets the
+  count), fails the whole pass: nothing is journaled and the next poll retries the slot.
+- **Journal.** One `filings/capture/<ET date>/<slot>` event on stream `filings/capture` per pass: `requested`,
+  `covered`, `unmapped`, `failed`, `ticker_map_sha256`, `fetched_at`, `lookback_days` and `filings`. A covered
+  symbol's list holds its `NT 10-K`/`NT 10-Q`/`NT 20-F` (and `/A`), adverse 8-K (Items 2.04, 2.05, 2.06, 4.02,
+  5.01) and `424B4`/`424B5` filings dated within the widest window (60 days); an empty list is the evidence of
+  no such filing. Each filing carries its `primary_document` and `primary_doc_description` (EDGAR's
+  `primaryDocument` and `primaryDocDescription`; null when absent), so an offering match can be read as debt or
+  equity: `424B4`/`424B5` cover equity, convertible and debt offerings alike, and the cited negative drift is
+  for convertibles. Raw bodies are not kept.
+- **Credential.** `EDGAR_USER_AGENT`, as for the insider capture: read from the daemon's environment only, sent as
+  the `User-Agent`, never printed, logged, journaled or committed. Without it the worker sends nothing and
+  `filings_capture` reports `missing_user_agent` (not ready).
+- **Readiness.** `filings_capture` is ready while the newest pass that covered at least one symbol and at least
+  90% of its mapped (requested minus unmapped) symbols is at most `filing_veto.max_age_seconds` (4 days) old.
+  The detail counts the newest pass's covered, unmapped and failed symbols, failures by status or type name,
+  and names the last 90% pass when the newest one fell short. A failed poll is observed by type name and stays ready while such
+  a pass exists. With no pass yet it reads ready (`not_due; no capture yet`) only until a poll has passed the
+  weekend, scan-window and 06:00 gates in this process. It is an ordinary component under quiet hours. It is
+  not a data-quality check of EDGAR itself.
+- **Runbook.** Inspect with `uv run copilot doctor --readiness` and
+  `uv run copilot db events --stream filings/capture --limit 1`. `low coverage` means many mapped symbols
+  failed: read the failure breakdown in the detail and the daemon log (`filings_capture_failed`, with the
+  pass's reason in `detail`: the ticker map's status or type name, or `consecutive_failures`); `http_403`
+  usually means SEC rejected the user agent, `http_429` throttling. `stale` means no recent pass at all: check
+  `EDGAR_USER_AGENT` and SEC reachability. Evidence that is stale,
+  missing or does not cover a symbol never refuses an entry. To stop the worker, set `filing_veto.capture:
+  false` and restart.
+- **Before enforce (record).** The filing veto and the release exit shipped in `preview` on 2026-11-07 and `enforce` on 2026-11-16, on the [preview-week evidence](filing-veto-release-exit-preview-2026-11-14.md). The list below is the record of what was open (the same list is in the [release exit](#release-exit) section):
+  1. Open (v1 gap): dynamic-universe names are uncovered by the filings capture by design; they journal
+     `uncovered` and are never refused (their rate is reported apart, `by_universe.dynamic` of the `filing_veto`
+     block).
+  2. Done: `offering` is journal-only. `filing_veto.enforce_categories` (shipped `late_filing`, `adverse_8k`)
+     names the categories that refuse under `enforce`; an offering match is still journaled and labelled
+     (`🗂 Filing (not enforced)`).
+  3. Done: catalog (`pead`, `insider_watch`), paper-probe and alpha-versioned cards are exempt from the filing veto
+     at both gates (the release exit's scope); their `filings` block records `exempt: true`.
+  4. Done: the morning operations summary lists the release exit's gaps (a missing pass, `unknown` native
+     positions, owed closes never notified, owed closes never attempted; see the release exit's Failure and
+     Notice bound items).
+
+### Release exit
+
+The release exit (`agentic_trader/execution/release_exit.py`, `release_exit.mode`, code default `off`) keeps a
+native equity position from being held through an earnings release
+([spec](superpowers/specs/2026-11-06-release-exit-filing-veto-design.md), section 3). It changes no entry rule,
+never touches the trading halt and opens no lifetime review.
+
+- **When.** A five-minute daemon job (`release_exit`) runs one pass per New York trading day, on its first tick
+  at or after the close minus `release_exit.minutes_before_close` (30, valid 10–120): 15:30, or 12:30 on a 13:00
+  early close. The close and the next session come from the lifetime service's
+  broker calendar. A daemon started after that day's close skips the date and journals nothing for it. The job is
+  registered unless the mode is `off` or the desk has no broker trading calendar (no Alpaca credentials, as in a
+  simulator without keys); without one the daemon logs `release_exit_disabled` once at startup and runs no pass.
+- **Which reports.** With T today and N the next trading day: a report on T after the close or at an unspecified
+  time, any report dated after T and before N (a weekend or holiday), or a report on N before the open or at an
+  unspecified time. A report on N after the close is N's own pass.
+- **Evidence.** The union of the live Nasdaq lookup (the earnings blackout's calendar and cache, over T to N) and
+  the latest [earnings calendar capture](#earnings-calendar-capture) when it is at most 4 days old and holds every
+  weekday of T to N (a malformed capture payload reads as unusable and is logged as `earnings_capture_unreadable`). A report in either source counts; on a timing disagreement the reading that exits today wins.
+  `none` needs a verified live lookup or a usable capture; with neither the status is `unknown`, which is never
+  closed and never read as "no report".
+- **Scope.** Tracked `EXECUTED` equity positions, both directions. A catalog card (`pead`, `insider_watch`), a
+  paper probe (`probe`) or an alpha-versioned card (`alpha`) is journaled `exempt` with its decision and never
+  closed; non-equity positions are skipped.
+- **Journal.** One `release_exit_pass` event per date (stream `release-exit`, key `release-exit/<ET date>`):
+  `mode`, `trading_day`, `next_trading_day`, `close_at`, `capture_date` and one entry per position (`signal_id`,
+  `symbol`, `direction`, `scope`, `status` (`would_close`, `close`, `none`, `unknown` or `exempt`), `decision`,
+  `report_date`, `timing`, `sources`, `live_verified`, and `request_id` for a `close`).
+- **Preview.** Each `would_close` position gets one notice in the pass's transaction (key
+  `release-exit/<ET date>/<signal id>/<report date>`, so a report that qualifies on two passes, such as one on the
+  next session at an unspecified time, is noticed on each): "Release exit (preview): SYMBOL reports DATE before
+  open. In enforce the desk would close this long at about 15:30 ET today. Nothing was sent to the broker;
+  /close SIGNAL_ID closes it manually." It names `/close` with the position's signal ID, the single-position
+  close: `/flatten` would close every broker position, the exempt PEAD, probe and insider-watch ones included. It
+  is an ordinary outbox message sent during market hours.
+- **Enforce.** After the pass is journaled, each `close` entry goes once through `PositionCloseService.close_signal`
+  with request ID `release-` plus the first 32 hex digits of
+  `sha256("native/<signal id>/<report date>/<ET date>")` (stable across ticks and restarts within the trading day,
+  new on the next day's pass, so a close that failed on one pass never blocks the next) and context
+  `{reason: release_exit, report_date, timing, sources}`; the close service keeps its intent, recovery and refusals.
+  Each close holds the desk's reconciliation lock (as the monitor, `/close` and `/flatten` do) for its own call and
+  journaled result only, never across the pass, so the earnings lookups never stall the position monitor.
+  Each result is a `release_exit_close` event (key `release-exit/<ET date>/<signal id>`: `close_result`,
+  `close_status`, `outcome` `submitted`, `refused`, `failed`, `error` or `already_exiting`, `notified`). A refused, failed or
+  raising close queues "Release exit could not close SYMBOL: reason." (key
+  `release-exit/<ET date>/<signal id>/<report date>/failed`) with "The position keeps its stop; /close SIGNAL_ID
+  closes it manually." when the request never reached the broker, or "Check its protective orders at the broker;
+  /close SIGNAL_ID closes it manually." once it did (the reason then carries the broker's protection statement). A
+  position that is already closed, or that another close or exit order owns, gets no notice. Nothing is retried:
+  a restart re-calls only a close whose result was never journaled, and the stable request ID makes that call a
+  no-op. Only a process whose configured mode is `enforce` makes those calls: a daemon restarted into `preview`
+  after an interrupted `enforce` pass never touches the broker.
+- **Failure.** A pass that raises before journaling is retried on the next tick until the close. If this process
+  attempted the date's pass and it never completed, its first tick at or after the close queues one
+  `release-exit-unavailable/<ET date>` notice naming the exception type only. Two cases queue **no** notice and
+  show only as a date missing from the `release_exit` block of `cards outcomes` (and as `release_exit_failed` in
+  the daemon log): the broker calendar unavailable through the close (the close time is then unknown), and a
+  host asleep, or a daemon down or restarted, through the whole window from close − `minutes_before_close` to
+  the close. Both are reported by the next morning's operations summary as a missing `release-exit/<ET date>`
+  pass ([operational monitoring](operational-monitoring.md)). Readiness is unchanged.
+- **Notice bound.** Notices are queued only up to the trading day's close + 30 minutes (16:30, the end of the
+  alert window; 13:30 on an early close). A failed owed close, or an unavailable date, found later is journaled
+  (`notified: false` on the `release_exit_close` event) and logged (`release_exit_close_not_submitted`,
+  `release_exit_unavailable`), never sent as a live notice. The next morning's operations summary lists each
+  such refused, failed or errored close (symbol, signal ID, `/close SIGNAL_ID`; a `submitted` or `already_exiting`
+  close owes no notice), every native position whose status was `unknown`, every owed close with no close event
+  at all (the process died or the host slept between the pass and its closes, and was not restarted that day),
+  and a missing pass, for the trading day that ended the quiet period.
+- **Runbook.** Inspect with `uv run copilot db events --stream release-exit --limit 5` and the `release_exit`
+  block of `uv run copilot cards outcomes` ([card evidence](card-evidence.md#release-exit)). The daemon log
+  carries `release_exit_failed`, `release_exit_lookup_failed`, `release_exit_unavailable` and
+  `release_exit_close_not_submitted` with type names or fixed outcomes. To act on a preview notice,
+  `/close SIGNAL_ID` (the notice names it) closes that one position; `/flatten` would close every broker position,
+  exempt ones included. To stop the job, set `release_exit.mode: off` and restart. The shipped config is
+  `enforce` since 2026-11-16 (decision and evidence: [preview week](filing-veto-release-exit-preview-2026-11-14.md));
+  rollback to notices only is `release_exit.mode: preview` plus a controlled restart. The veto's rollback is
+  `filing_veto.entry_block: preview`, or adding `offering` to `filing_veto.enforce_categories` to widen it.
+- **Before enforce (record).** The release exit and the filing veto shipped in `preview` on 2026-11-07 and `enforce` on 2026-11-16, on the [preview-week evidence](filing-veto-release-exit-preview-2026-11-14.md). The list below is the record of what was open (the same list is in the [filings capture](#filings-capture) section):
+  1. Open (v1 gap): dynamic-universe names are uncovered by the filings capture by design; they journal
+     `uncovered` and are never refused (their rate is reported apart, `by_universe.dynamic` of the `filing_veto`
+     block).
+  2. Done: `offering` is journal-only. `filing_veto.enforce_categories` (shipped `late_filing`, `adverse_8k`)
+     names the categories that refuse under `enforce`; an offering match is still journaled and labelled
+     (`🗂 Filing (not enforced)`).
+  3. Done: catalog (`pead`, `insider_watch`), paper-probe and alpha-versioned cards are exempt from the filing veto
+     at both gates (the release exit's scope); their `filings` block records `exempt: true`.
+  4. Done: the morning operations summary lists the release exit's gaps (a missing pass, `unknown` native
+     positions, owed closes never notified, owed closes never attempted; see the release exit's Failure and
+     Notice bound items).
 
 ## Provider read and forecast hardening
 
 See [forecast contract hardening](forecast-contract-hardening.md). Active `doctor` includes
-a recent request against the exact configured Alpaca feed; HTTP permission and actual
+an exact request against the scan-bar feed (under `sip_delayed`, a delayed SIP request beside a
+recent one on the quote feed: [scan bars](#scan-bars-on-delayed-sip)); HTTP permission and actual
 bar freshness are distinct. Read fallbacks share bounded executor capacity and Alpaca
 socket timeouts. Unfinished reads are never replayed by the fallback wrapper.
 
@@ -1275,6 +1830,111 @@ Source-specific [volume calibration](alpha-volume-calibration.md) uses the share
 daily study harness with frozen training/forward intervals and exact feed identity.
 `alpha volume-study` is research-only. `/alphas` now provides a compact explanation
 and status summary; use `alpha forward` and `alpha list` for full evidence/definitions.
+
+### Scan bars on delayed SIP
+
+Since 2026-11-07 the shipped config sets `market_data.scan_bars: sip_delayed` (code default
+`configured`): scan bars come from SIP, and every request ends `market_data.sip_delay_minutes`
+(16, from 16 to 60) before now. IEX bars hid about two-thirds of the setups that the SIP-measured
+evidence (the card-stats prior, the setup base rates, the bracket counterfactual) describes
+([native supply](native-supply-2026-11-07.md)).
+
+- **One definition, every reader in the same units.** `MarketDataConfig.bars_feed` and
+  `bars_end_delay` serve:
+  - the scan fetcher (`MarketDataFetcher`: daily, hourly (and so 4h) and 15m bars);
+  - `build_bar_source` without an explicit feed (book sizing's daily batch, and the hourly labelling of
+    `cards outcomes` and `card_stats`);
+  - the dynamic universe's `feed` label and the `/scan SYMBOL` reference match;
+  - the `card_stats` snapshot's `feed`;
+  - the registry alphas' bar completeness (below);
+  - the `doctor` market-data probe (below);
+  - the `bars` block of every `scan_candidates_ranked` event.
+
+  `configured` restores bars on `market_data.alpaca_feed` with no delay.
+- **Why delayed.** Without the SIP subscription a SIP request ending under 15 minutes ago is HTTP 403,
+  and the composite provider would then fall back to yfinance silently. The floor is 16 minutes, not 15:
+  an end exactly 15 minutes old sits on the entitlement edge, where request queueing or clock skew means a
+  403. `AlpacaDataProvider(end_delay=…)` clamps every bar request: a missing or later end becomes now −
+  delay, an earlier end is kept, and a naive bound reads as UTC (as the SDK reads it) instead of raising.
+  A window that starts at or after the clamped end sends no request and returns no bars, so `cards
+  outcomes` labels a candidate decided within the delay `immature`, not `fetch_failed`. The bar evidence
+  records the clamped end. A 10:35 scan still has the 9:00 hourly bar, which ended at 10:00; only its
+  in-progress bar now stops at 10:19.
+- **What stays real-time IEX.** Broker latest trade and quote (`alpaca_data_feed`, from
+  `ALPACA_DATA_FEED`), so the tap gate re-prices on the live quote. `fetch_latest_price` keeps the
+  subscription's default feed, and positions and streams are untouched. `ALPACA_DATA_FEED` still sets
+  `market_data.alpaca_feed`, but under `sip_delayed` it never moves scan bars. The `alpha_pipeline`
+  workers keep their own pinned feeds.
+- **Liquidity reference.** The dynamic threshold is in the scan bars' units, so after the switch
+  `/scan SYMBOL` ignores a cached IEX `dynamic_universe_built` reference until the next suggestion scan
+  journals one on SIP.
+- **Effect on cards.** A native card's entry is the latest 4h close as of about 16 minutes before the
+  decision. PEAD and insider-watch catalog cards are priced from the same scan dataset's last hourly close
+  (`screeners/earnings_drift.py`), so their entry is also about 16 minutes old and on SIP. The tap gate still
+  re-prices on the live IEX quote, and an auto-entry's session limit order may fill a little less often
+  after a rise.
+- **Registry alphas.**
+  - **Pinned shadow versions swap.** The registry has 16 shadow versions:
+    - 12 are 15m with no clock (6 pinned `alpaca:sip`, 6 `alpaca:iex`);
+    - 1 is 15m `unverified`;
+    - 3 are 4h `unverified`.
+
+    From the first SIP scan, the 6 IEX-pinned versions log `deployment_data_contract_mismatch` on every
+    observation and the 6 SIP-pinned ones start accruing evidence. This is the deployment-feed identity rule
+    working as designed: shadow evidence earns no promotion credit, and no qualified alpha's feed changes
+    silently.
+  - **The partial-bar limit and its fix.** Delayed bars hold nothing after receipt − 16 minutes, so a bar
+    whose nominal close falls inside the delay is partial: at 10:35 the 10:15 15m bar has data only to
+    10:19, and on an operator `/scan` before :16 past the hour so does the current 1h bar. The alpha clock
+    judges completeness by nominal close, so it would count that bar complete and score the 12 clock-less
+    15m shadow versions on a partial bar at every scheduled scan. Under `sip_delayed` a fixed-clock bar is
+    complete only if it closes at or before receipt − `bars_end_delay`: shadow observations
+    (`TradingCopilot.run_scan`) take that horizon as their `as_of`, and registry screening and probe cards
+    (`FormulaicAlphaStrategy`, installed with `bars_end_delay`) cap their clock the same way. At 10:35 the
+    10:00 bar (closed 10:15) is the latest complete 15m bar. The stale-bar and forecast-freshness checks
+    use the same horizon, and a shadow observation's `observed_at` is that horizon. Native strategies are
+    unchanged (they read the in-progress last bar, as before), and session-clock alphas read the decision
+    worker's own receipt-stamped bars.
+- **Research mining.** `download_bars` (`alpha mine --feed alpaca`) and `alpha replay` still default to
+  `market_data.alpaca_feed`, which `ALPACA_DATA_FEED` sets (IEX in production). New Alpaca definitions mined
+  that way are pinned to `alpaca:iex` and will not match scan bars. Pass `alpha replay --feed sip` with an
+  `--end` before today (replay requests through the day after `--end`, capped at now), or pin SIP for the mining command (`ALPACA_DATA_FEED=sip`). `download_bars`
+  sends no end and has no end delay, so the subscription can refuse such a SIP read as recent: a charged
+  `bar_acquisition_failed` run, never a fallback.
+- **`doctor` covers both feeds.** Under `sip_delayed` the `market_data` component runs two probes: a
+  delayed SIP bar request (the scan feed, ending 16 minutes back) and a recent bar request on
+  `alpaca_data_feed`, the stand-in for admission's real-time IEX latest trade and quote. Its status is the
+  worse of the two and the message names both. `details.access` replaces `recent_access` with one entry
+  per probe (`scan_bars`, `quotes`), each with its `feed`, a `delayed` flag, `access` and either
+  `observations` or `error_type` and `http_status`. The component name, readiness and the quiet-hours
+  lists are unchanged; under `configured` the single recent probe and its `recent_access` detail are
+  unchanged.
+- **Scan journal.** Every `scan_candidates_ranked` event carries a top-level `bars` block:
+  `{"feed": "alpaca:sip", "end_delay_minutes": 16}` under `sip_delayed`, `{"feed": "alpaca:<feed>",
+  "end_delay_minutes": null}` under `configured`. An event without it was read on the configured feed
+  (IEX in production), so the block marks the IEX-to-SIP boundary in the evidence.
+- **Card statistics relabel.** The next `card_stats` snapshot relabels its whole 180-day window on
+  delayed SIP hourly bars: candidates selected on IEX before the switch are then labelled on SIP. SIP labels
+  are closer to the consolidated tape and match the SIP prior, but a key's posterior can move with no new
+  card, and the card caveat reads "live record (sip)" ([card evidence](card-evidence.md#limits)).
+- **Verify after deploy:**
+  - the next suggestion scan's `dynamic` block and `dynamic_universe_built` event carry `feed: sip`, and
+    its `scan_candidates_ranked` event carries `bars: {feed: alpaca:sip, end_delay_minutes: 16}`;
+  - the active `uv run copilot doctor` reports market data OK ("Delayed alpaca:sip request (ending 16 min
+    ago) permitted; recent alpaca:iex request permitted"), and `doctor --readiness` stays ready;
+  - no yfinance fallback in bar evidence: no `fallback_triggered` log with `failed_provider: alpaca`
+    during a scan, and that day's `market-data/<date>/*/manifest.json` requests carry
+    `feed: alpaca:sip` with `end_inclusive` at least 16 minutes before `requested_at` (a failed
+    `result.json` with `http_status: 403` means the clamp is missing);
+  - `raw_setups` in the `scan_candidates_ranked` funnel in line with the SIP replay: about 3 a scan in
+    this tape, against about 1 on IEX;
+  - the card-stats relabel: on the day the first SIP snapshot lands (after 08:30 New York),
+    `uv run copilot db events --stream card_stats --limit 2` returns it (`feed: sip`) and the last IEX
+    snapshot (`feed: iex`). For each key apply the send rule
+    ([card evidence](card-evidence.md#send-policy): `n_mature` at least `card_policy.min_mature_cards`,
+    no `n_fetch_failed` or `n_unresolved`, `posterior_mean` below `card_policy.min_measured_ev`) to both.
+    A key whose withhold decision flips between the two is the relabel, not new evidence: record it with
+    the deployment evidence rather than acting on it as a change in the strategy's record.
 
 ### Separate prospective IEX feed
 

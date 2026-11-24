@@ -168,3 +168,183 @@ def test_apriori_study_rejects_an_unknown_entry_id(tmp_path):
     entry.write_text(json.dumps({"id": "other"}))
     result = CliRunner().invoke(cli, ["alpha", "apriori-study", str(entry), "--output", str(tmp_path / "run")])
     assert result.exit_code != 0 and "Unknown catalog entry id" in result.output
+
+
+INSIDER = REPO / "config/research/apriori/insider-v1.json"
+
+
+def test_insider_requires_filings_and_actions(tmp_path):
+    result = CliRunner().invoke(
+        cli, ["alpha", "apriori-study", str(INSIDER), "--output", str(tmp_path / "run"), "--cache", str(tmp_path)]
+    )
+    assert result.exit_code != 0 and "--insider-filings and --corporate-actions are required" in result.output
+
+
+def test_insider_requires_the_pooled_cache(tmp_path):
+    args = ["--insider-filings", str(tmp_path), "--corporate-actions", str(tmp_path / "a.json")]
+    result = CliRunner().invoke(cli, ["alpha", "apriori-study", str(INSIDER), "--output", str(tmp_path / "run"), *args])
+    assert result.exit_code != 0 and "--cache is required" in result.output
+
+
+def test_filings_flag_refused_for_pead(tmp_path):
+    result = CliRunner().invoke(
+        cli,
+        ["alpha", "apriori-study", str(ENTRY), "--output", str(tmp_path / "run"), "--insider-filings", str(tmp_path)],
+    )
+    assert result.exit_code != 0 and "--insider-filings applies only to the insider entry" in result.output
+
+
+def test_insider_existing_output_refused(tmp_path):
+    output = tmp_path / "run"
+    output.mkdir()
+    result = CliRunner().invoke(cli, ["alpha", "apriori-study", str(INSIDER), "--output", str(output)])
+    assert result.exit_code != 0 and "refusing to overwrite" in result.output
+
+
+def test_apriori_study_dispatches_insider(tmp_path, monkeypatch):
+    seen = {}
+
+    async def fake_build(entry, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha.build_insider_leg_inputs", fake_build)
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha._apriori_clients", _fake_clients)
+    args = ["--insider-filings", str(tmp_path / "f"), "--corporate-actions", str(tmp_path / "a.json")]
+    out = tmp_path / "run"
+    CliRunner().invoke(
+        cli, ["alpha", "apriori-study", str(INSIDER), "--output", str(out), "--cache", str(tmp_path), *args]
+    )
+    assert seen["repo_root"] == REPO and seen["cache_dir"] == tmp_path
+    assert seen["insider_filings_dir"] == tmp_path / "f" and seen["static_symbols"] == ["S00"]
+    assert json.loads((out / "result.json").read_text())["status"] == "failed"
+
+
+RUNUP = REPO / "config/research/apriori/runup-v1.json"
+
+
+def _runup_args(tmp_path, *, skip=()):
+    flags = {
+        "--earnings-pages": str(tmp_path / "pages"),
+        "--corporate-actions": str(tmp_path / "a.json"),
+        "--cache": str(tmp_path),
+    }
+    return [part for flag, value in flags.items() if flag not in skip for part in (flag, value)]
+
+
+@pytest.mark.parametrize("missing", ["--earnings-pages", "--corporate-actions", "--cache"])
+def test_runup_requires_pages_actions_and_cache(tmp_path, missing):
+    args = [
+        "alpha",
+        "apriori-study",
+        str(RUNUP),
+        "--output",
+        str(tmp_path / "run"),
+        *_runup_args(tmp_path, skip=(missing,)),
+    ]
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code != 0 and missing in result.output and "runup entry" in result.output
+
+
+def test_earnings_pages_refused_for_other_entries(tmp_path):
+    for entry in (ENTRY, INSIDER):
+        extra = ["--insider-filings", str(tmp_path), "--corporate-actions", str(tmp_path / "a.json")]
+        args = [
+            "alpha",
+            "apriori-study",
+            str(entry),
+            "--output",
+            str(tmp_path / "run"),
+            "--earnings-pages",
+            str(tmp_path),
+        ]
+        result = CliRunner().invoke(cli, [*args, *(extra if entry == INSIDER else []), "--cache", str(tmp_path)])
+        assert result.exit_code != 0 and "--earnings-pages applies only to the runup and idday entries" in result.output
+
+
+def test_insider_refuses_nothing_new_for_runup_flags(tmp_path):
+    args = ["--insider-filings", str(tmp_path), *_runup_args(tmp_path)]
+    result = CliRunner().invoke(cli, ["alpha", "apriori-study", str(RUNUP), "--output", str(tmp_path / "run"), *args])
+    assert result.exit_code != 0 and "--insider-filings applies only to the insider entry" in result.output
+
+
+def test_apriori_study_dispatches_runup(tmp_path, monkeypatch):
+    seen = {}
+
+    async def fake_build(entry, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha.build_runup_inputs", fake_build)
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha._apriori_clients", _fake_clients)
+    out = tmp_path / "run"
+    CliRunner().invoke(cli, ["alpha", "apriori-study", str(RUNUP), "--output", str(out), *_runup_args(tmp_path)])
+    assert seen["repo_root"] == REPO and seen["cache_dir"] == tmp_path
+    assert seen["earnings_pages"] == tmp_path / "pages" and seen["actions_file"] == tmp_path / "a.json"
+    assert seen["market_cache_dir"] == out / "market" and seen["static_symbols"] == ["S00"]
+    assert json.loads((out / "result.json").read_text())["status"] == "failed"
+
+
+IDDAY = REPO / "tests/research/apriori/fixtures/idday-v1-test.json"
+
+
+def _idday_args(tmp_path, *, skip=()):
+    flags = {
+        "--cache": str(tmp_path),
+        "--earnings-pages": str(tmp_path / "pages"),
+        "--corporate-actions": str(tmp_path / "a.json"),
+        "--corporate-actions-xu": str(tmp_path / "axu.json"),
+        "--investor-days": str(tmp_path / "days"),
+        "--parser-check": str(tmp_path / "check.json"),
+    }
+    return [part for flag, value in flags.items() if flag not in skip for part in (flag, value)]
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "--cache",
+        "--earnings-pages",
+        "--corporate-actions",
+        "--corporate-actions-xu",
+        "--investor-days",
+        "--parser-check",
+    ],
+)
+def test_apriori_study_idday_requires_its_options(tmp_path, missing):
+    args = ["alpha", "apriori-study", str(IDDAY), "--output", str(tmp_path / "run")]
+    result = CliRunner().invoke(cli, [*args, *_idday_args(tmp_path, skip=(missing,))])
+    assert result.exit_code != 0 and missing in result.output and "idday entry" in result.output
+
+
+def test_apriori_study_idday_rejects_insider_filings(tmp_path):
+    args = ["alpha", "apriori-study", str(IDDAY), "--output", str(tmp_path / "run"), *_idday_args(tmp_path)]
+    result = CliRunner().invoke(cli, [*args, "--insider-filings", str(tmp_path)])
+    assert result.exit_code != 0 and "--insider-filings applies only to the insider entry" in result.output
+
+
+@pytest.mark.parametrize("flag", ["--corporate-actions-xu", "--investor-days", "--parser-check"])
+def test_new_options_rejected_for_other_entries(tmp_path, flag):
+    for entry in (ENTRY, RUNUP):
+        extra = _runup_args(tmp_path) if entry == RUNUP else []
+        args = ["alpha", "apriori-study", str(entry), "--output", str(tmp_path / "run"), *extra, flag, str(tmp_path)]
+        result = CliRunner().invoke(cli, args)
+        assert result.exit_code != 0 and "apply only to the idday entry" in result.output
+
+
+def test_apriori_study_dispatches_idday(tmp_path, monkeypatch):
+    seen = {}
+
+    async def fake_build(entry, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha.build_idday_inputs", fake_build)
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha._apriori_clients", _fake_clients)
+    out = tmp_path / "run"
+    CliRunner().invoke(cli, ["alpha", "apriori-study", str(IDDAY), "--output", str(out), *_idday_args(tmp_path)])
+    assert seen["repo_root"] == REPO and seen["cache_dir"] == tmp_path
+    assert seen["actions_v3"] == tmp_path / "a.json" and seen["actions_xu"] == tmp_path / "axu.json"
+    assert seen["investor_days_dir"] == tmp_path / "days" and seen["parser_check"] == tmp_path / "check.json"
+    assert seen["market_cache_dir"] == out / "market" and seen["static_symbols"] == ["S00"]
+    assert json.loads((out / "result.json").read_text())["status"] == "failed"
