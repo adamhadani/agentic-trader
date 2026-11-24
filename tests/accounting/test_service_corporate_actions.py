@@ -22,6 +22,7 @@ def _broker(activities):
 def _store():
     store = MagicMock()
     store.begin = AsyncMock(return_value="token")
+    store.status = AsyncMock(return_value={})
     store.bind = AsyncMock()
     store.commit = AsyncMock(return_value=True)
     store.fail = AsyncMock()
