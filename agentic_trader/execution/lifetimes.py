@@ -26,6 +26,7 @@ from agentic_trader.execution.lifetime_policy import (
     aware_utc,
     entry_lifetime_of,
     has_holding_deadline,
+    submission_session_close,
 )
 from agentic_trader.market.session import regular_session_certainly_closed
 
@@ -142,6 +143,35 @@ def _resting_deadline(
     return policy.entry_deadline(order.submitted_at)
 
 
+def _partial_resting_deadline(
+    policy: LifetimePolicy, order: OrderObservation, now: datetime, sessions: Sequence[MarketCalendarDay] | None
+) -> datetime | LifetimeDecision | None:
+    """How long a working partial fill may rest: its deadline, ``None`` when it never rests, or the REVIEW
+    decision that names the missing evidence.
+
+    Alpaca activates a bracket's exits only once the whole entry fills, so the filled shares are unprotected
+    while the remainder works. A native entry rests its partial until its own deadline (a native partial
+    whose deadline evidence fails keeps the generic partial review). A catalog or probe entry
+    (``SessionLifetimePolicy``) rests it until the earlier of its resting deadline and its submission
+    session's close + 5 minutes, only when ``sessions`` (its submission date) establishes that close.
+    An alpha (elapsed-time) partial never rests.
+    """
+    if isinstance(policy, NativeEntryLifetimePolicy):
+        resting = _resting_deadline(policy, order, now, sessions)
+        return resting if isinstance(resting, datetime) else None
+    if not isinstance(policy, SessionLifetimePolicy):
+        return None
+    if order.submitted_at is None or aware_utc(order.submitted_at) > now:
+        return LifetimeDecision(LifetimeAction.REVIEW, "missing_or_future_submission_time")
+    if sessions is None:
+        return LifetimeDecision(LifetimeAction.REVIEW, "session_calendar_unavailable")
+    try:
+        close = submission_session_close(order.submitted_at, sessions)
+    except SessionEvidenceError as exc:
+        return LifetimeDecision(LifetimeAction.REVIEW, str(exc))
+    return min(policy.entry_deadline(order.submitted_at), close)
+
+
 def assess_lifetime(
     policy: LifetimePolicy,
     identity: EntryIdentity,
@@ -150,7 +180,8 @@ def assess_lifetime(
     sessions: Sequence[MarketCalendarDay] | None = None,
 ) -> LifetimeDecision:
     """``sessions``: from the fill date for a session-counted holding exit, or the submission date for
-    a native entry's session-close bound (``None`` leaves a native entry its elapsed outer bound)."""
+    a native entry's session-close bound and a catalog/probe working partial's (``None`` leaves a native
+    entry its elapsed outer bound and sends a catalog/probe partial to review)."""
     now = aware_utc(now)
     quantity, filled = Decimal(order.quantity), Decimal(order.filled_quantity)
     if (
@@ -180,12 +211,15 @@ def assess_lifetime(
             LifetimeAction.CLOSE_POSITION if now >= deadline else LifetimeAction.NONE, "holding_lifetime", deadline
         )
     if filled:
-        # A native entry's working partial fill rests like the unfilled remainder until its deadline;
-        # alpha, catalog and probe partials, and any terminal partial, go to review at once.
-        if isinstance(policy, NativeEntryLifetimePolicy) and order.status == "partially_filled":
-            resting = _resting_deadline(policy, order, now, sessions)
-            if isinstance(resting, datetime) and now < resting:
-                return LifetimeDecision(LifetimeAction.NONE, "within_resting_lifetime", resting)
+        # A native or catalog/probe entry's working partial fill rests like its unfilled remainder until its
+        # submission session closes (_partial_resting_deadline); an alpha partial, a terminal partial and one
+        # past that bound go to review at once.
+        if order.status == "partially_filled":
+            rests_until = _partial_resting_deadline(policy, order, now, sessions)
+            if isinstance(rests_until, LifetimeDecision):
+                return rests_until
+            if rests_until is not None and now < rests_until:
+                return LifetimeDecision(LifetimeAction.NONE, "within_resting_lifetime", rests_until)
         return LifetimeDecision(LifetimeAction.REVIEW, "partial_entry_requires_protection_review")
     if order.status in UNFILLED_TERMINAL:
         return LifetimeDecision(LifetimeAction.NONE, "unfilled_terminal")
@@ -295,21 +329,20 @@ class TradeLifetimeService:
 
         A session-counted holding exit reads from the fill date and fails loudly without a calendar.
         A native entry reads its submission date only; without a calendar, or when the read fails, its
-        elapsed outer bound alone applies, so a calendar outage never halts or cancels early.
+        elapsed outer bound alone applies, so a calendar outage never halts or cancels early. A catalog or
+        probe entry's working partial fill also reads its submission date. Without a calendar it is reviewed
+        at once; a failed read raises, so the sweep retries it as a failed evidence read before any review.
         """
         if isinstance(lifetime, NativeEntryLifetimePolicy):
-            if self.calendar is None or parent.submitted_at is None:
-                return None
-            submitted = aware_utc(parent.submitted_at).astimezone(NEW_YORK).date()
             try:
-                return [
-                    day for day in await self.calendar.get_calendar_range(submitted, submitted) if day.is_trading_day
-                ]
+                return await self._submission_sessions(parent)
             except Exception as exc:
                 logger.warning(
                     "Native entry session calendar unavailable (%s); using the outer bound", type(exc).__name__
                 )
                 return None
+        if isinstance(lifetime, SessionLifetimePolicy) and parent.status == "partially_filled":
+            return await self._submission_sessions(parent)
         if not isinstance(lifetime, SessionLifetimePolicy) or parent.filled_at is None:
             return None
         if self.calendar is None:
@@ -318,6 +351,14 @@ class TradeLifetimeService:
         span = timedelta(days=holding_calendar_span_days(lifetime.holding_sessions))
         days = await self.calendar.get_calendar_range(start, start + span)
         return [day for day in days if day.is_trading_day]
+
+    async def _submission_sessions(self, parent: OrderObservation) -> list | None:
+        """The broker's trading days on the parent's New York submission date; ``None`` without a calendar or
+        a submission time. A read failure raises."""
+        if self.calendar is None or parent.submitted_at is None:
+            return None
+        submitted = aware_utc(parent.submitted_at).astimezone(NEW_YORK).date()
+        return [day for day in await self.calendar.get_calendar_range(submitted, submitted) if day.is_trading_day]
 
     async def _missed_native_bound(self, signal: dict[str, Any], lifetime: NativeEntryLifetimePolicy) -> None:
         """A marked entry that filled at or after its deadline missed the cancel (late reconciliation,
