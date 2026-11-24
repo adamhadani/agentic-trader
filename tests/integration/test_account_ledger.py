@@ -100,8 +100,11 @@ async def test_import_failures_never_publish_unreconciled_account_pnl(ledger_des
 
 
 @pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
-async def test_a_fill_torn_import_is_re_read_and_commits_one_reconciled_checkpoint(ledger_desk):
-    """The 2026-11-23 shape on the real store: the account moves during the activity read, whose feed lags it."""
+@pytest.mark.parametrize("landed", ["during-the-read", "before-the-refresh"])
+async def test_a_fill_torn_import_is_re_read_and_commits_one_reconciled_checkpoint(ledger_desk, landed):
+    """The 2026-11-23 shape on the real store: the account holds the change while the feed shows it only from
+    the next read. It lands between the first read's snapshots, or before the refresh, so only the move from
+    the last committed checkpoint reveals it."""
     service, venue, state = ledger_desk
     await service.refresh()
     flows = (await service.current_risk()).cash_flows
@@ -109,21 +112,27 @@ async def test_a_fill_torn_import_is_re_read_and_commits_one_reconciled_checkpoi
     checkpoints = len(await service.store.store.events(stream="account/ledger"))
     deposit = {"id": "late-deposit", "activity_type": "CSD", "net_amount": "100"}
     original = venue.override
+    reads = 0
+
+    def move_cash():
+        state["account"]["cash"] = str(Decimal(state["account"]["cash"]) + 100)
 
     def lagging_feed(method, path, query, body):
-        if path == "/v2/account/activities" and deposit not in state["activities"]:
-            # The deposit reaches the account during this read; the feed shows it only from the next read.
-            state["account"]["cash"] = str(Decimal(state["account"]["cash"]) + 100)
-            response = original(method, path, query, body)
-            if not query.get("page_token"):
+        nonlocal reads
+        if path == "/v2/account/activities" and not query.get("page_token"):
+            reads += 1
+            if reads == 1 and landed == "during-the-read":
+                move_cash()
+            elif reads == 2:
                 state["activities"].append(deposit)
-            return response
         return original(method, path, query, body)
 
+    if landed == "before-the-refresh":
+        move_cash()
     venue.override = lagging_feed
     report = await service.refresh()
     assert report.ready and report.issues == []
-    assert _activity_gets(venue) - one_import == 2 * one_import
+    assert reads == 2 and _activity_gets(venue) - one_import == 2 * one_import
     events = await service.store.store.events(stream="account/ledger")
     assert len(events) == checkpoints + 1, "Only the reconciled read is committed"
     assert (await service.current_risk()).cash_flows == flows + 100

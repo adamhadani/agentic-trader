@@ -2,7 +2,8 @@
 
 2026-11-23 10:39 ET: CHYM's auto-entry filled between the import's two account snapshots, so the persisted
 checkpoint read "Broker accounting changed during import" and the next two auto-entries (PDD, BFH) were refused
-on it within a second. The importer now re-reads (GETs only) while the account has moved since the refresh began.
+on it within a second. The importer now re-reads (GETs only) while a read crosses an account change: its
+snapshots differ, or the account moved since the last committed checkpoint.
 """
 
 from decimal import Decimal
