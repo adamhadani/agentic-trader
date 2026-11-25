@@ -67,6 +67,26 @@ are deduplicated; revisions and reversions append events, and removed activities
 append retractions. Failed imports preserve prior evidence and record an error.
 Rebuild replays events and invalidates outstanding importer tokens.
 
+A fill reaches the account a moment before the activity feed. An import that reads across
+it is torn: its two account snapshots differ, or the account already holds the fill while
+the feed does not, so cash and quantity fail to reconcile. Checkpoints taken 0.3–0.8 s
+after a fill have been torn and ones taken 2.1 s or more after have been clean. On
+2026-11-23 a torn checkpoint, 0.55 s after CHYM's auto-entry fill, refused the PDD and BFH
+auto-entries that followed it. The importer therefore re-reads the whole import (GETs only)
+under the same lock and fencing token when a read crosses an account change (its two
+snapshots differ, or the account moved since the last committed checkpoint) and its only
+issues are cash or quantity mismatches.
+It makes at most `accounting.import_attempts` reads, `accounting.import_retry_delay_seconds`
+apart, and commits only the last, so no reader sees an intermediate one. A steady mismatch
+against the committed account is committed after one read, with no delay, and so is any
+issue a re-read cannot clear, such as an unsupported activity. When the reads run out, a
+last read that was itself torn keeps `Broker accounting changed during import; retry on
+next refresh`, and a stable but unexplained one carries `Activity feed behind a recent
+account change; retry on next refresh`. A read error is never retried inside a refresh; it
+takes the failed-import path. A separate process that starts an import (`copilot perf`,
+`db ledger --sync`) supersedes the daemon's for its whole retry loop, which then fails
+closed like any superseded import.
+
 `/readyz` includes current-run accounting freshness. Import errors, reconciliation
 failures or missing/stale observations degrade readiness; they do not automatically
 set the emergency halt. New Alpaca entries require valid risk evidence;
@@ -89,7 +109,10 @@ uv run copilot doctor --readiness
 ```
 
 Configuration under `accounting`: `refresh_seconds: 60`, `max_age_seconds: 180`,
-`max_pages: 100`, `cash_tolerance: 0.01` (may be tightened, never greater than a cent).
+`max_pages: 100`, `cash_tolerance: 0.01` (may be tightened, never greater than a cent),
+`import_attempts: 3` (reads per refresh, 1–3) and `import_retry_delay_seconds: 2` (0–3).
+The bounds cap the sleep at 6 s per refresh, or 12 s for a preflight queued behind
+another retrying refresh, inside the 60-second entry preflight lease.
 Refresh must be shorter than freshness. Keep raw activities/account identities in
 private storage, out of Git and shared diagnostics. Never delete events needed for
 replay. Back up PostgreSQL before migration 006; deploy only after integration

@@ -380,6 +380,8 @@ async def ledger_desk(alpaca_http, temp_db, app_config, request):
         return None
 
     venue.override = dispatch
+    # A torn import is re-read; tests that tear one (the activity-race case) need not sleep between attempts.
+    app_config.accounting.import_retry_delay_seconds = 0
     service = AccountLedgerService(broker, LedgerStore(db.workflows), app_config.accounting)
     yield service, venue, state
     await db.engine.dispose()

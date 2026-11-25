@@ -916,6 +916,10 @@ class AccountingConfig(BaseModel):
     max_age_seconds: float = Field(default=180, gt=0, allow_inf_nan=False)
     max_pages: int = Field(default=100, ge=1, le=1000)
     cash_tolerance: float = Field(default=0.01, ge=0, le=0.01, allow_inf_nan=False)
+    # Reads per refresh when a fill tears the import (GETs only; see AccountLedgerService.refresh). Bounded so a
+    # preflight queued behind another retrying refresh still sleeps at most 12 s of its 60 s entry lease.
+    import_attempts: int = Field(default=3, ge=1, le=3)
+    import_retry_delay_seconds: float = Field(default=2.0, ge=0, le=3, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_freshness(self):

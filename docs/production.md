@@ -895,6 +895,18 @@ uses the timestamped worker cache; CLI `perf` refreshes it read-only first. The
 all available history, not account-day return or tax accounting. See the
 [ledger contracts and recovery commands](account-ledger.md).
 
+A fill that lands mid-import, with the account holding it before the activity feed does,
+makes the importer read the whole import again under the same lock. It reads up to
+`accounting.import_attempts` (3) times, 2 s apart, and commits only the last read; the log
+line `ledger_import_retried` marks each re-read. A committed `ledger_checkpoint` with
+`Broker accounting changed during import` means the account was moving during its read:
+either the reads ran out, or the read also had an issue a re-read cannot clear and was
+committed at once. `Activity feed behind a recent account change` means the reads ran out
+with the account settled but the feed not caught up. Expect the next refresh, within
+60 s, to be clean. A real mismatch persists past it without either note. An entry refused
+in that window (`account risk unavailable` or `admission evidence unavailable` in
+`auto_entry_attempted`) is not attempted again automatically.
+
 Tracked metrics still require exact entry/exit IDs, actual full fill prices and
 chronological order; quarantined/unverified signals are excluded. Account-level
 partial realization does not assign partial exits to a signal by symbol.

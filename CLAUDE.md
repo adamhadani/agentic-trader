@@ -66,7 +66,8 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    sources stop carding at the ceiling. Only a valid preflight token commits
    `submitting`; never expire or replay a broker submission. Unknown outcomes halt
    new risk and recover by exact client ID, including after a 404. Alpaca admission
-   requires fresh journaled account drawdown; every tier shares its cap. Final
+   requires fresh journaled account drawdown (an import torn by a fill is read again, GETs only, up to
+   `accounting.import_attempts` reads in all, and only the last read commits); every tier shares its cap. Final
    submission re-reads fresh account risk under the ledger lock, rechecks the lease after the wait and
    re-assesses capacity on that observation; a refresh since preflight is not refused (`risk_fingerprint` is the
    snapshot used, `preflight_risk_fingerprint` the preflight's). Rejected/unfilled

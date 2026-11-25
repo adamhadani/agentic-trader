@@ -8,7 +8,7 @@ import pytest
 from alpaca.common.exceptions import APIError
 from click.testing import CliRunner
 
-from agentic_trader.accounting.service import AccountLedgerService
+from agentic_trader.accounting.service import CHANGED_DURING_IMPORT, FEED_BEHIND, AccountLedgerService
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.cli.main import cli
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
@@ -18,6 +18,10 @@ from scripts.verify_runtime import verified_account_report
 
 
 pytestmark = [pytest.mark.enable_socket, pytest.mark.allow_hosts(["127.0.0.1", "localhost"])]
+
+
+def _activity_gets(venue) -> int:
+    return sum(1 for method, path, *_ in venue.calls if method == "GET" and path == "/v2/account/activities")
 
 
 @pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
@@ -43,6 +47,7 @@ async def test_http_pagination_replay_and_report(ledger_desk):
 async def test_import_failures_never_publish_unreconciled_account_pnl(ledger_desk, problem):
     service, venue, state = ledger_desk
     await service.refresh()
+    one_import = _activity_gets(venue)
     if problem == "saturated":
         service.config.max_pages = 1
     elif problem == "nonadvancing":
@@ -67,9 +72,23 @@ async def test_import_failures_never_publish_unreconciled_account_pnl(ledger_des
     else:
         state["activities"][1]["price"] = "NaN"
     if problem in {"cash", "corporate", "race", "malformed"}:
+        seen = _activity_gets(venue)
         report = await service.refresh()
         assert not report.ready and report.gross_realized is None
         assert "Unavailable" in TelegramHtmlFormatter.format_account_ledger_html(report)
+        if problem in {"cash", "race"}:
+            # The cash moved since the last committed checkpoint and only a cash mismatch is left: all three
+            # reads run, and the last, stable but still unexplained, says the feed is behind.
+            assert _activity_gets(venue) - seen == 3 * one_import
+            assert FEED_BEHIND in report.issues and CHANGED_DURING_IMPORT not in report.issues
+            # Against the committed mismatch the next refresh reads once and no longer blames the feed.
+            seen = _activity_gets(venue)
+            again = await service.refresh()
+            assert _activity_gets(venue) - seen == one_import
+            assert not again.ready and FEED_BEHIND not in again.issues
+        else:
+            # An issue a re-read cannot clear is committed after one read.
+            assert _activity_gets(venue) - seen == one_import
     else:
         with pytest.raises((ValueError, APIError)):
             await service.refresh()
@@ -78,6 +97,46 @@ async def test_import_failures_never_publish_unreconciled_account_pnl(ledger_des
     # Previously imported evidence survives request/pagination failures.
     assert len(await service.store.activities()) >= 101
     assert {c[0] for c in venue.calls} == {"GET"}
+
+
+@pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
+@pytest.mark.parametrize("landed", ["during-the-read", "before-the-refresh"])
+async def test_a_fill_torn_import_is_re_read_and_commits_one_reconciled_checkpoint(ledger_desk, landed):
+    """The 2026-11-23 shape on the real store: the account holds the change while the feed shows it only from
+    the next read. It lands between the first read's snapshots, or before the refresh, so only the move from
+    the last committed checkpoint reveals it."""
+    service, venue, state = ledger_desk
+    await service.refresh()
+    flows = (await service.current_risk()).cash_flows
+    one_import = _activity_gets(venue)
+    checkpoints = len(await service.store.store.events(stream="account/ledger"))
+    deposit = {"id": "late-deposit", "activity_type": "CSD", "net_amount": "100"}
+    original = venue.override
+    reads = 0
+
+    def move_cash():
+        state["account"]["cash"] = str(Decimal(state["account"]["cash"]) + 100)
+
+    def lagging_feed(method, path, query, body):
+        nonlocal reads
+        if path == "/v2/account/activities" and not query.get("page_token"):
+            reads += 1
+            if reads == 1 and landed == "during-the-read":
+                move_cash()
+            elif reads == 2:
+                state["activities"].append(deposit)
+        return original(method, path, query, body)
+
+    if landed == "before-the-refresh":
+        move_cash()
+    venue.override = lagging_feed
+    report = await service.refresh()
+    assert report.ready and report.issues == []
+    assert reads == 2 and _activity_gets(venue) - one_import == 2 * one_import
+    events = await service.store.store.events(stream="account/ledger")
+    assert len(events) == checkpoints + 1, "Only the reconciled read is committed"
+    assert (await service.current_risk()).cash_flows == flows + 100
+    assert "late-deposit" in {a["id"] for a in await service.store.activities()}
 
 
 async def test_initial_snapshot_failure_and_staleness_are_visible(ledger_desk):
